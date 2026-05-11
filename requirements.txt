@@ -19,11 +19,8 @@ urllib3>=2.0.0
 # ── RSS Feed Parsing (Credit Ratings) ────────────────────────────
 feedparser>=6.0.11
 
-# ── NSE Data ─────────────────────────────────────────────────────
-nsefin>=0.1.5
-
-# ── Mutual Fund Data ─────────────────────────────────────────────
-mftool>=2.7
+# ── Mutual Fund Data (FIXED: removed mftool, use requests instead)
+# mftool removed — we call mfapi.in directly via requests (already in src/mf_flows.py)
 
 # ── Timezone ─────────────────────────────────────────────────────
 pytz>=2024.1
