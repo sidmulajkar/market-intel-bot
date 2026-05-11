@@ -23,4 +23,4 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SUPABASE_URL:     ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:     ${{ secrets.SUPABASE_KEY }}
-        run: python jobs/bot_handler.py
+        run: PYTHONPATH=$GITHUB_WORKSPACE python jobs/bot_handler.py

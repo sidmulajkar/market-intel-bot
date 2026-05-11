@@ -26,4 +26,4 @@ jobs:
           FINNHUB_KEY:      ${{ secrets.FINNHUB_KEY }}
           SUPABASE_URL:     ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:     ${{ secrets.SUPABASE_KEY }}
-        run: python jobs/insider_tracker.py
+        run: PYTHONPATH=$GITHUB_WORKSPACE python jobs/insider_tracker.py
