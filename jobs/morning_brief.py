@@ -1,6 +1,22 @@
-import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys
+
+# GUARANTEED PATH FIX - works on all systems
+_dir = os.path.dirname(os.path.abspath(__file__))
+_root = os.path.dirname(_dir)
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+
+# Verify path fix worked before importing
+import importlib.util
+_spec = importlib.util.find_spec("src.data_fetcher")
+if _spec is None:
+    print(f"ERROR: src not found. sys.path = {sys.path}")
+    print(f"_root = {_root}")
+    print(f"Files in _root: {os.listdir(_root)}")
+    sys.exit(1)
+
+print(f"✅ Path confirmed: {_root}")
 
 from src.data_fetcher      import fetch_global_indices, fetch_watchlist_data
 from src.heatmap_generator import generate_heatmap
@@ -9,61 +25,75 @@ from src.ai_engine         import AIEngine
 from src.telegram_sender   import send_image, send_text, fmt_morning_report
 from src.db                import save_daily_snapshot, get_watchlist
 
+
 def main():
     print("=" * 50)
     print("🌅 MORNING BRIEF STARTING")
     print("=" * 50)
 
     stocks = get_watchlist()
-    print(f"📋 Watchlist loaded: {len(stocks)} stocks")
-    print(f"   Symbols: {', '.join(stocks)}")
+    print(f"📋 Watchlist: {len(stocks)} stocks — {stocks}")
 
     if not stocks:
-        send_text("⚠️ *Morning Brief*\nWatchlist is empty!\nAdd stocks via: `/add SYMBOL`")
+        send_text(
+            "⚠️ *Morning Brief*\n"
+            "Watchlist is empty!\n"
+            "Add stocks: `/add SYMBOL`"
+        )
         return
 
+    # ── Global Heatmap ────────────────────────────────────────────
     print("🌍 Fetching global indices...")
     index_data  = fetch_global_indices()
-    valid_index = {k: v for k, v in index_data.items()
-                   if v.get("ok") and v.get("price", 0) > 0}
-    print(f"   Valid markets: {len(valid_index)}/18")
+    valid_index = {
+        k: v for k, v in index_data.items()
+        if v.get("ok") and v.get("price", 0) > 0
+    }
+    print(f"   Valid: {len(valid_index)}/18")
 
-    print("🎨 Generating world heatmap...")
     try:
-        heatmap = generate_heatmap(valid_index)
-        send_image(heatmap, caption="🌍 *World Equity Heatmap*")
+        send_image(
+            generate_heatmap(valid_index),
+            caption="🌍 *World Equity Heatmap*"
+        )
         print("   ✅ World heatmap sent")
     except Exception as e:
         print(f"   ⚠️ World heatmap failed: {e}")
 
-    print("🏭 Generating sector heatmap...")
+    # ── Sector Heatmap ────────────────────────────────────────────
     try:
-        sector_map = generate_sector_heatmap()
-        send_image(sector_map, caption="🏭 *India Sector Heatmap*")
+        send_image(
+            generate_sector_heatmap(),
+            caption="🏭 *India Sector Heatmap*"
+        )
         print("   ✅ Sector heatmap sent")
     except Exception as e:
         print(f"   ⚠️ Sector heatmap failed: {e}")
 
-    print("📊 Generating watchlist heatmap...")
+    # ── Watchlist Heatmap ─────────────────────────────────────────
     try:
-        wl_map = generate_watchlist_heatmap(stocks)
-        send_image(wl_map, caption="📊 *My Watchlist Heatmap*")
+        send_image(
+            generate_watchlist_heatmap(stocks),
+            caption="📊 *My Watchlist Heatmap*"
+        )
         print("   ✅ Watchlist heatmap sent")
     except Exception as e:
         print(f"   ⚠️ Watchlist heatmap failed: {e}")
 
-    print("🤖 Running AI morning brief...")
+    # ── AI Brief ─────────────────────────────────────────────────
+    print("🤖 Running AI analysis...")
     try:
-        ai     = AIEngine()
-        prompt = AIEngine.morning_brief_prompt(valid_index)
-        brief  = ai.analyze("fast", prompt)
+        ai      = AIEngine()
+        prompt  = AIEngine.morning_brief_prompt(valid_index)
+        brief   = ai.analyze("fast", prompt)
         send_text(fmt_morning_report(brief))
         print("   ✅ AI brief sent")
     except Exception as e:
         print(f"   ⚠️ AI brief failed: {e}")
         send_text("⚠️ AI brief temporarily unavailable")
 
-    print("📈 Scanning watchlist alerts...")
+    # ── Watchlist Alerts ──────────────────────────────────────────
+    print("📈 Checking watchlist alerts...")
     try:
         wl_data = fetch_watchlist_data(stocks)
         alerts  = []
@@ -77,18 +107,24 @@ def main():
             if d.get("volume_spike"):
                 alerts.append(f"⚡ *{sym}*: Volume spike!")
         if alerts:
-            send_text("🔔 *Pre-Market Alerts*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n" + "\n".join(alerts))
+            send_text(
+                "🔔 *Pre-Market Alerts*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                + "\n".join(alerts)
+            )
     except Exception as e:
         print(f"   ⚠️ Alert scan failed: {e}")
 
+    # ── Save Snapshot ─────────────────────────────────────────────
     try:
         save_daily_snapshot(valid_index)
     except Exception as e:
-        print(f"   ⚠️ Snapshot save failed: {e}")
+        print(f"   ⚠️ Snapshot failed: {e}")
 
     print("=" * 50)
     print("✅ MORNING BRIEF COMPLETE")
     print("=" * 50)
+
 
 if __name__ == "__main__":
     main()
