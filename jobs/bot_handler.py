@@ -1,8 +1,6 @@
-"""
-Bot Handler Job — Entry point for GitHub Actions
-"""
 import sys
-sys.path.insert(0, ".")
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.bot_handler import run_bot_handler
 

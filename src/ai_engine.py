@@ -1,12 +1,22 @@
 """
-AI Engine — Smart Router
-Groq (speed) → Google AI Studio (volume) → fallback
+AI Engine — Groq + Google AI Studio
+Fixed: RateLimitError import + correct model names
 """
 import os
 import time
 import requests
-from groq import Groq, RateLimitError
 
+# ── GROQ ──────────────────────────────────────────────────────────
+try:
+    from groq import Groq
+    # BUG FIX: RateLimitError is groq.APIStatusError in newer versions
+    # Use base Exception and check status code instead
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+    print("⚠️  groq not installed")
+
+# ── GOOGLE ────────────────────────────────────────────────────────
 try:
     import google.generativeai as genai
     GOOGLE_AVAILABLE = True
@@ -28,21 +38,25 @@ SYSTEM_PROMPT = (
 class AIEngine:
 
     def __init__(self):
-        self.groq_client  = Groq(api_key=GROQ_KEY) if GROQ_KEY else None
+        self.groq_client  = None
         self.google_model = None
+
+        if GROQ_AVAILABLE and GROQ_KEY:
+            try:
+                self.groq_client = Groq(api_key=GROQ_KEY)
+            except Exception as e:
+                print(f"⚠️  Groq init failed: {e}")
+
         if GOOGLE_AVAILABLE and GOOGLE_KEY:
             try:
                 genai.configure(api_key=GOOGLE_KEY)
-                self.google_model = genai.GenerativeModel('gemini-2.5-flash')
+                # BUG FIX: Use gemini-1.5-flash — confirmed free tier model
+                # gemini-2.5-flash may not be available on all accounts
+                self.google_model = genai.GenerativeModel('gemini-1.5-flash')
             except Exception as e:
                 print(f"⚠️  Google AI init failed: {e}")
 
     def analyze(self, task: str, prompt: str) -> str:
-        """
-        task = 'fast'   → Groq first
-        task = 'volume' → Google first
-        task = 'any'    → Groq first with Google fallback
-        """
         if task == "fast":
             return (self._try_groq(prompt)
                     or self._try_google(prompt)
@@ -71,19 +85,23 @@ class AIEngine:
                     temperature=0.2,
                 )
                 return resp.choices[0].message.content
-            except RateLimitError:
-                wait = 30 * (2 ** attempt)
-                print(f"⏳ Groq rate limited — waiting {wait}s (attempt {attempt+1}/3)")
-                if attempt < 2:
-                    time.sleep(wait)
-                else:
-                    return ""
+
             except Exception as e:
-                print(f"⚠️  Groq error attempt {attempt+1}: {e}")
-                if attempt < 2:
-                    time.sleep(5)
+                err_str = str(e).lower()
+                # BUG FIX: Check for rate limit by string, not exception type
+                if "rate_limit" in err_str or "429" in err_str:
+                    wait = 30 * (2 ** attempt)
+                    print(f"⏳ Groq rate limited — waiting {wait}s")
+                    if attempt < 2:
+                        time.sleep(wait)
+                    else:
+                        return ""
                 else:
-                    return ""
+                    print(f"⚠️  Groq error attempt {attempt+1}: {e}")
+                    if attempt < 2:
+                        time.sleep(5)
+                    else:
+                        return ""
         return ""
 
     def _try_google(self, prompt: str) -> str:
@@ -91,8 +109,14 @@ class AIEngine:
             return ""
         for attempt in range(3):
             try:
-                cfg  = genai.GenerationConfig(max_output_tokens=600, temperature=0.2)
-                resp = self.google_model.generate_content(prompt, generation_config=cfg)
+                cfg  = genai.GenerationConfig(
+                    max_output_tokens=600,
+                    temperature=0.2
+                )
+                resp = self.google_model.generate_content(
+                    prompt,
+                    generation_config=cfg
+                )
                 return resp.text
             except Exception as e:
                 print(f"⚠️  Google AI error attempt {attempt+1}: {e}")
@@ -103,7 +127,6 @@ class AIEngine:
         return ""
 
     def sentiment(self, text: str) -> dict:
-        """FinBERT sentiment via HuggingFace free API"""
         if not HF_KEY or not text.strip():
             return {"neutral": 1.0}
         API_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
@@ -118,7 +141,8 @@ class AIEngine:
                 if resp.status_code == 200:
                     result = resp.json()
                     if result and isinstance(result[0], list):
-                        return {r["label"]: round(r["score"], 3) for r in result[0]}
+                        return {r["label"]: round(r["score"], 3)
+                                for r in result[0]}
                 elif resp.status_code == 503:
                     print(f"⏳ FinBERT loading (attempt {attempt+1})...")
                     time.sleep(20)
@@ -128,8 +152,6 @@ class AIEngine:
                 print(f"⚠️  FinBERT error: {e}")
                 time.sleep(5)
         return {"neutral": 1.0}
-
-    # ── PROMPT BUILDERS ───────────────────────────────────────────
 
     @staticmethod
     def morning_brief_prompt(index_data: dict) -> str:
@@ -158,28 +180,24 @@ Under 200 words. Sharp. No disclaimers.
     @staticmethod
     def stock_analysis_prompt(symbol: str, data: dict, news: list) -> str:
         news_text = "\n".join(
-            [f"• {n['headline']} ({n.get('source','')})" for n in news[:5]]
+            [f"• {n['headline']}" for n in news[:5]]
         ) if news else "No recent news."
-        vol_note = "🚨 VOLUME SPIKE" if data.get("volume_spike") else "Normal"
+        vol_note  = "🚨 VOLUME SPIKE" if data.get("volume_spike") else "Normal"
         return f"""
 Analyze {symbol}:
-💰 Price: {data.get('price','N/A')}
-📊 Day Change: {data.get('day_change',0):+.2f}%
-📈 Volume: {data.get('volume',0):,} vs Avg {data.get('avg_volume',0):,} → {vol_note}
-📅 7D Range: {data.get('week_low')} – {data.get('week_high')}
-📅 1M Range: {data.get('month_low')} – {data.get('month_high')}
+Price: {data.get('price','N/A')}
+Day Change: {data.get('day_change',0):+.2f}%
+Volume: {data.get('volume',0):,} vs Avg {data.get('avg_volume',0):,} → {vol_note}
+7D Range: {data.get('week_low')} to {data.get('week_high')}
+1M Range: {data.get('month_low')} to {data.get('month_high')}
+News: {news_text}
 
-News:
-{news_text}
-
-5 bullets exactly:
-1. 📈 Trend: [Bullish/Bearish/Neutral] + reason
-2. 🎯 Key Levels: Support ___ | Resistance ___
-3. 📰 News: [Positive/Negative/Neutral] + why
-4. Signal: 🟢 BUY / 🔴 SELL / 🟡 HOLD / 👁 WATCH
-5. ⚠️ Risk: [Low/Medium/High] + main risk
-
-No disclaimers. Direct.
+5 bullets:
+1. Trend: Bullish/Bearish/Neutral + reason
+2. Key Levels: Support and Resistance
+3. News Impact: Positive/Negative/Neutral
+4. Signal: BUY / SELL / HOLD / WATCH
+5. Risk: Low/Medium/High + main risk
 """
 
     @staticmethod
@@ -187,20 +205,22 @@ No disclaimers. Direct.
         lines = []
         for sym, d in watchlist_data.items():
             if d.get("ok"):
-                spike = " ⚡" if d.get("volume_spike") else ""
-                lines.append(f"• {sym}: {d.get('day_change',0):+.2f}%{spike}")
+                spike = " spike" if d.get("volume_spike") else ""
+                lines.append(
+                    f"{sym}: {d.get('day_change',0):+.2f}%{spike}"
+                )
         return f"""
 End-of-day watchlist:
-{chr(10).join(lines) if lines else 'No data available'}
+{chr(10).join(lines) if lines else 'No data'}
 
 Provide:
-1. 🏆 Today's top winner + loser (one-liner each)
-2. 📊 Overall market mood today
-3. 🌙 What to watch overnight
-4. 📅 Key events tomorrow
-5. 💡 One trade idea for tomorrow
+1. Top winner and loser today
+2. Overall market mood
+3. What to watch overnight
+4. Key events tomorrow
+5. One trade idea for tomorrow
 
-Under 200 words. Sharp.
+Under 200 words.
 """
 
     @staticmethod
@@ -210,24 +230,20 @@ Under 200 words. Sharp.
             for c, d in index_data.items() if d.get("ok")
         ]
         watch_lines = [
-            f"• {s}: {d.get('day_change',0):+.2f}%"
+            f"{s}: {d.get('day_change',0):+.2f}%"
             for s, d in watchlist_data.items() if d.get("ok")
         ]
         return f"""
 Weekly Market Digest:
+Global: {chr(10).join(global_lines[:10])}
+Watchlist: {chr(10).join(watch_lines)}
 
-Global Markets:
-{chr(10).join(global_lines[:12])}
+Weekly brief:
+1. This Week's Theme
+2. Key Global Story
+3. India Standout performer
+4. Next Week Outlook
+5. Watchlist Focus for next week
 
-My Watchlist:
-{chr(10).join(watch_lines)}
-
-Strategic weekly brief:
-1. 📊 This Week's Theme: Dominant narrative
-2. 🌍 Global Story: Key macro development
-3. 🇮🇳 India Standout: Best/worst + reason
-4. 📅 Next Week: Bullish/Bearish/Mixed + reason
-5. 🎯 Watchlist Focus: 2-3 stocks for next week
-
-Under 250 words. Strategic.
+Under 250 words.
 """

@@ -1,18 +1,24 @@
 """
-World Equity Heatmap Generator — FinXray style
-Uses pilmoji for correct flag emoji rendering via Twemoji
-Returns BytesIO PNG ready for Telegram sendPhoto
+World Equity Heatmap Generator
+Fixed: Pilmoji CDN fallback if Twemoji unavailable on runner
 """
 from PIL import Image, ImageDraw, ImageFont
-from pilmoji import Pilmoji
 from io import BytesIO
 from datetime import datetime
 import pytz
 
-BG         = (0,   0,   0)
-HDR_GREEN  = (0, 153,  51)
-WHITE      = (255, 255, 255)
-GREY       = (160, 160, 160)
+BG        = (0,   0,   0)
+HDR_GREEN = (0, 153,  51)
+WHITE     = (255, 255, 255)
+GREY      = (160, 160, 160)
+
+# BUG FIX: Check if pilmoji + network works, fall back to plain PIL
+try:
+    from pilmoji import Pilmoji
+    PILMOJI_AVAILABLE = True
+except ImportError:
+    PILMOJI_AVAILABLE = False
+    print("⚠️  pilmoji not available — using plain text flags")
 
 def _cell_bg(pct: float) -> tuple:
     if   pct >=  3.0: return (0,   120,   0)
@@ -51,10 +57,57 @@ def _load_fonts() -> dict:
         "ts":      tf(reg,  12),
     }
 
+def _draw_cards_plain(img, draw, F, countries, y, CARD_W, CARD_H, CARD_PAD, IMG_W):
+    """
+    BUG FIX: Plain PIL drawing without pilmoji
+    Used as fallback when pilmoji/CDN unavailable
+    Replaces flag emoji with ISO country code text
+    """
+    n_rows = (len(countries) + 4) // 5
+    for row_i in range(n_rows):
+        row   = countries[row_i * 5: (row_i + 1) * 5]
+        tot_w = len(row) * CARD_W + (len(row) - 1) * CARD_PAD
+        x0    = (IMG_W - tot_w) // 2
+
+        for col_i, (country, data) in enumerate(row):
+            x      = x0 + col_i * (CARD_W + CARD_PAD)
+            pct    = data.get("change_pct", 0.0)
+            status = data.get("status",     "CLOSED")
+            iso    = data.get("iso",         "")
+            bg     = _cell_bg(pct)
+            tc     = _text_color(pct)
+
+            draw.rounded_rectangle(
+                [(x, y), (x + CARD_W, y + CARD_H)],
+                radius=8, fill=bg,
+            )
+            # Use ISO code instead of emoji flag
+            draw.text((x + CARD_W // 2, y + 8),  iso,
+                      fill=tc, font=F["status"], anchor="mt")
+            draw.text((x + CARD_W // 2, y + 24), country,
+                      fill=tc, font=F["country"], anchor="mt")
+            sign = "+" if pct >= 0 else ""
+            draw.text((x + CARD_W // 2, y + 44),
+                      f"{sign}{pct:.2f}%",
+                      fill=tc, font=F["pct"], anchor="mt")
+
+            sc  = _status_color(status)
+            bx1 = x + CARD_W // 2 - 28
+            by1 = y + CARD_H - 22
+            bx2 = x + CARD_W // 2 + 28
+            by2 = y + CARD_H - 6
+            draw.rounded_rectangle([(bx1, by1), (bx2, by2)],
+                                   radius=4, fill=sc)
+            draw.text((x + CARD_W // 2, (by1 + by2) // 2),
+                      status, fill=WHITE, font=F["status"], anchor="mm")
+
+        y += CARD_H + CARD_PAD + 4
+    return y
+
 def generate_heatmap(index_data: dict) -> BytesIO:
     """
-    Generate FinXray-style world equity heatmap.
-    Returns BytesIO PNG ready for Telegram.
+    Generate FinXray-style world equity heatmap PNG.
+    Returns BytesIO ready for Telegram sendPhoto.
     """
     REGION_ORDER   = ["Americas", "Asia", "Europe"]
     SECTION_LABELS = {
@@ -74,17 +127,10 @@ def generate_heatmap(index_data: dict) -> BytesIO:
     CARD_H   = 115
     CARD_PAD = 11
 
-    total_card_rows = sum(
-        (len(grouped[r]) + 4) // 5
-        for r in REGION_ORDER if grouped[r]
-    )
+    total_rows = sum((len(grouped[r]) + 4) // 5
+                     for r in REGION_ORDER if grouped[r])
     n_sections = len([r for r in REGION_ORDER if grouped[r]])
-    IMG_H = (
-        130
-        + n_sections * 100
-        + total_card_rows * (CARD_H + CARD_PAD + 4)
-        + 30
-    )
+    IMG_H = 130 + n_sections * 100 + total_rows * (CARD_H + CARD_PAD + 4) + 30
 
     img  = Image.new("RGB", (IMG_W, IMG_H), BG)
     F    = _load_fonts()
@@ -98,85 +144,91 @@ def generate_heatmap(index_data: dict) -> BytesIO:
               fill=WHITE, font=F["sub"], anchor="mt")
     y += 24
     ist = datetime.now(pytz.timezone("Asia/Kolkata"))
-    ts  = ist.strftime("As of %d-%b-%Y %H:%M IST")
-    draw.text((IMG_W // 2, y), ts, fill=GREY, font=F["ts"], anchor="mt")
+    draw.text((IMG_W // 2, y),
+              ist.strftime("As of %d-%b-%Y %H:%M IST"),
+              fill=GREY, font=F["ts"], anchor="mt")
     y += 28
 
     drawn_sections = set()
 
-    with Pilmoji(img) as pilmoji:
-        for region_name in REGION_ORDER:
-            countries = grouped[region_name]
-            if not countries:
+    for region_name in REGION_ORDER:
+        countries = grouped[region_name]
+        if not countries:
+            continue
+
+        section = SECTION_LABELS[region_name]
+        if section not in drawn_sections:
+            y += 8
+            draw.rectangle([(0, y), (IMG_W, y + 38)], fill=HDR_GREEN)
+            draw.text((IMG_W // 2, y + 19), section,
+                      fill=WHITE, font=F["section"], anchor="mm")
+            y += 48
+            drawn_sections.add(section)
+
+        draw.text((IMG_W // 2, y), region_name,
+                  fill=GREY, font=F["region"], anchor="mt")
+        y += 22
+
+        # BUG FIX: Try pilmoji, fall back to plain PIL
+        if PILMOJI_AVAILABLE:
+            try:
+                n_rows = (len(countries) + 4) // 5
+                with Pilmoji(img) as pilmoji:
+                    for row_i in range(n_rows):
+                        row   = countries[row_i * 5: (row_i + 1) * 5]
+                        tot_w = len(row) * CARD_W + (len(row) - 1) * CARD_PAD
+                        x0    = (IMG_W - tot_w) // 2
+
+                        for col_i, (country, data) in enumerate(row):
+                            x      = x0 + col_i * (CARD_W + CARD_PAD)
+                            pct    = data.get("change_pct", 0.0)
+                            status = data.get("status",     "CLOSED")
+                            flag   = data.get("flag",        "")
+                            bg     = _cell_bg(pct)
+                            tc     = _text_color(pct)
+
+                            draw.rounded_rectangle(
+                                [(x, y), (x + CARD_W, y + CARD_H)],
+                                radius=8, fill=bg)
+
+                            pilmoji.text(
+                                (x + CARD_W // 2 - 12, y + 6),
+                                flag, fill=tc, font=F["country"],
+                                emoji_scale_factor=1.4)
+
+                            draw.text((x + CARD_W // 2, y + 32),
+                                      country, fill=tc,
+                                      font=F["country"], anchor="mt")
+
+                            sign = "+" if pct >= 0 else ""
+                            draw.text((x + CARD_W // 2, y + 52),
+                                      f"{sign}{pct:.2f}%",
+                                      fill=tc, font=F["pct"], anchor="mt")
+
+                            sc   = _status_color(status)
+                            bx1  = x + CARD_W // 2 - 28
+                            by1  = y + CARD_H - 22
+                            bx2  = x + CARD_W // 2 + 28
+                            by2  = y + CARD_H - 6
+                            draw.rounded_rectangle(
+                                [(bx1, by1), (bx2, by2)],
+                                radius=4, fill=sc)
+                            draw.text((x + CARD_W // 2, (by1 + by2) // 2),
+                                      status, fill=WHITE,
+                                      font=F["status"], anchor="mm")
+
+                        y += CARD_H + CARD_PAD + 4
+                y += 10
                 continue
+            except Exception as e:
+                print(f"⚠️  Pilmoji failed ({e}), using plain PIL")
 
-            section = SECTION_LABELS[region_name]
-            if section not in drawn_sections:
-                y += 8
-                draw.rectangle([(0, y), (IMG_W, y + 38)], fill=HDR_GREEN)
-                draw.text((IMG_W // 2, y + 19), section,
-                          fill=WHITE, font=F["section"], anchor="mm")
-                y += 48
-                drawn_sections.add(section)
-
-            draw.text((IMG_W // 2, y), region_name,
-                      fill=GREY, font=F["region"], anchor="mt")
-            y += 22
-
-            n_rows = (len(countries) + 4) // 5
-            for row_i in range(n_rows):
-                row   = countries[row_i * 5: (row_i + 1) * 5]
-                tot_w = len(row) * CARD_W + (len(row) - 1) * CARD_PAD
-                x0    = (IMG_W - tot_w) // 2
-
-                for col_i, (country, data) in enumerate(row):
-                    x      = x0 + col_i * (CARD_W + CARD_PAD)
-                    pct    = data.get("change_pct", 0.0)
-                    status = data.get("status",     "CLOSED")
-                    flag   = data.get("flag",        "")
-                    bg     = _cell_bg(pct)
-                    tc     = _text_color(pct)
-
-                    draw.rounded_rectangle(
-                        [(x, y), (x + CARD_W, y + CARD_H)],
-                        radius=8, fill=bg,
-                    )
-
-                    # Flag emoji via pilmoji (Twemoji CDN)
-                    flag_x = x + CARD_W // 2 - 12
-                    pilmoji.text(
-                        (flag_x, y + 6), flag,
-                        fill=tc, font=F["country"],
-                        emoji_scale_factor=1.4,
-                    )
-
-                    draw.text(
-                        (x + CARD_W // 2, y + 32), country,
-                        fill=tc, font=F["country"], anchor="mt",
-                    )
-
-                    sign = "+" if pct >= 0 else ""
-                    draw.text(
-                        (x + CARD_W // 2, y + 52),
-                        f"{sign}{pct:.2f}%",
-                        fill=tc, font=F["pct"], anchor="mt",
-                    )
-
-                    sc   = _status_color(status)
-                    bx1  = x + CARD_W // 2 - 28
-                    by1  = y + CARD_H - 22
-                    bx2  = x + CARD_W // 2 + 28
-                    by2  = y + CARD_H - 6
-                    draw.rounded_rectangle(
-                        [(bx1, by1), (bx2, by2)], radius=4, fill=sc,
-                    )
-                    draw.text(
-                        (x + CARD_W // 2, (by1 + by2) // 2),
-                        status, fill=WHITE, font=F["status"], anchor="mm",
-                    )
-
-                y += CARD_H + CARD_PAD + 4
-            y += 10
+        # Fallback: plain PIL without emoji
+        y = _draw_cards_plain(
+            img, draw, F, countries, y,
+            CARD_W, CARD_H, CARD_PAD, IMG_W
+        )
+        y += 10
 
     img = img.crop((0, 0, IMG_W, y + 15))
     buf = BytesIO()

@@ -1,62 +1,50 @@
-"""
-🏦 CREDIT MONITOR — Daily at 6:00 PM IST
-Scans for credit rating changes across all sources
-"""
 import sys
-import json
-sys.path.insert(0, ".")
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.credit_monitor  import get_all_rating_events, format_credit_alerts_message
 from src.ai_engine       import AIEngine
 from src.telegram_sender import send_text
-from src.db              import was_alert_sent, log_alert_sent
+from src.db              import was_alert_sent, log_alert_sent, get_watchlist
 
 def main():
     print("=" * 50)
     print("🏦 CREDIT MONITOR STARTING")
     print("=" * 50)
 
-    with open("config/watchlist.json") as f:
-        config = json.load(f)
-    symbols = config.get("stocks", [])
+    symbols = get_watchlist()
+    events  = get_all_rating_events(symbols)
+    send_text(format_credit_alerts_message(events))
 
-    events = get_all_rating_events(symbols)
-    msg    = format_credit_alerts_message(events)
-    send_text(msg)
-
-    # Alert on critical downgrades/defaults only
     critical = [e for e in events
                 if "DOWNGRADED" in e.get("action", "")
                 or "DEFAULTED"  in e.get("action", "")]
 
     for e in critical[:3]:
-        sym  = e.get("symbol", e.get("source", "MARKET"))
-        key  = f"credit_{sym}_{e['action']}"
+        sym = e.get("symbol", "MARKET")
+        key = f"credit_{sym}_{e['action'][:10]}"
         if not was_alert_sent(sym, key):
             ai     = AIEngine()
             prompt = f"""
-URGENT: Credit rating event detected:
+URGENT: Credit rating event:
 {e['subject']}
-Agency: {e['agency']}
-Action: {e['action']}
+Agency: {e['agency']} | Action: {e['action']}
 
 Quick 3-point impact analysis:
-1. Immediate market impact (bonds/equity)
-2. Contagion risk to sector?
+1. Immediate market impact
+2. Contagion risk?
 3. Investor action needed?
 
-Under 80 words. Very direct.
+Under 80 words.
 """
-            analysis = ai.analyze("fast", prompt)
-            send_text(
-                f"🚨 *CRITICAL RATING ALERT*\n\n"
-                f"{e['action']} — {e['agency']}\n"
-                f"{e['subject'][:150]}\n\n"
-                f"🤖 *Impact:*\n{analysis}"
-            )
-            log_alert_sent(sym, key)
+            try:
+                analysis = ai.analyze("fast", prompt)
+                send_text(f"🚨 *CRITICAL RATING ALERT*\n\n{e['action']} — {e['agency']}\n{e['subject'][:150]}\n\n🤖 *Impact:*\n{analysis}")
+                log_alert_sent(sym, key)
+            except Exception as ex:
+                print(f"⚠️ AI failed: {ex}")
 
-    print("✅ Credit monitor complete!")
+    print("✅ CREDIT MONITOR COMPLETE")
 
 if __name__ == "__main__":
     main()

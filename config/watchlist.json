@@ -1,0 +1,18 @@
+{
+  "stocks": [
+    "RELIANCE.NS",
+    "TCS.NS",
+    "INFY.NS",
+    "HDFCBANK.NS",
+    "ICICIBANK.NS",
+    "WIPRO.NS",
+    "AAPL",
+    "TSLA",
+    "NVDA",
+    "MSFT"
+  ],
+  "alerts": {
+    "price_change_threshold_pct": 3.0,
+    "volume_spike_multiplier": 2.0
+  }
+}
