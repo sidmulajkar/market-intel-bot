@@ -29,8 +29,8 @@ jobs:
         run: pip install -r requirements.txt --quiet
 
       - name: 🌅 Run Morning Brief
+        working-directory: ${{ github.workspace }}
         env:
-          PYTHONPATH:       ${{ github.workspace }}
           GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
           GOOGLE_AI_KEY:    ${{ secrets.GOOGLE_AI_KEY }}
           TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
@@ -39,4 +39,4 @@ jobs:
           HF_KEY:           ${{ secrets.HF_KEY }}
           SUPABASE_URL:     ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:     ${{ secrets.SUPABASE_KEY }}
-        run: PYTHONPATH=$GITHUB_WORKSPACE python jobs/morning_brief.py
+        run: python jobs/morning_brief.py
