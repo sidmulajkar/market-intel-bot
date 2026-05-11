@@ -1,0 +1,7 @@
+{
+  "timezone": "Asia/Kolkata",
+  "market": "NSE",
+  "ai_provider_preference": ["groq", "google", "huggingface"],
+  "max_news_articles": 5,
+  "retry_attempts": 3
+}

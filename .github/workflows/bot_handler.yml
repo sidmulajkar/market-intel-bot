@@ -1,0 +1,34 @@
+name: 🤖 Telegram Bot Command Handler
+
+on:
+  schedule:
+    # Every 5 minutes — GitHub Actions minimum interval
+    # This makes the bot respond within 5 minutes of any command
+    - cron: '*/5 * * * *'
+  workflow_dispatch:   # Manual trigger for testing
+
+jobs:
+  bot-handler:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4     # Must finish before next 5-min run starts
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: pip install -r requirements.txt --quiet
+
+      - name: 🤖 Run Bot Handler
+        env:
+          TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SUPABASE_URL:     ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:     ${{ secrets.SUPABASE_KEY }}
+        run: python jobs/bot_handler.py

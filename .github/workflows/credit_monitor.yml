@@ -1,0 +1,27 @@
+name: 🏦 Credit Rating Monitor
+
+on:
+  schedule:
+    # 6:00 PM IST = 12:30 PM UTC (daily)
+    - cron: '30 12 * * 1-6'
+  workflow_dispatch:
+
+jobs:
+  credit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12', cache: 'pip' }
+      - run: pip install -r requirements.txt --quiet
+      - name: 🏦 Run Credit Monitor
+        env:
+          GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
+          GOOGLE_AI_KEY:    ${{ secrets.GOOGLE_AI_KEY }}
+          TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FINNHUB_KEY:      ${{ secrets.FINNHUB_KEY }}
+          SUPABASE_URL:     ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:     ${{ secrets.SUPABASE_KEY }}
+        run: python jobs/credit_monitor.py
