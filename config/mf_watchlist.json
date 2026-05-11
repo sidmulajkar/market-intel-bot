@@ -1,0 +1,19 @@
+{
+  "scheme_codes": [
+    "119598", "119551", "120503", "100016",
+    "101206", "120178", "120716", "120828",
+    "120841", "119755"
+  ],
+  "scheme_names": {
+    "119598": "SBI Bluechip Fund",
+    "119551": "Axis Bluechip Fund",
+    "120503": "HDFC Top 100 Fund",
+    "100016": "HDFC Equity Fund",
+    "101206": "ICICI Pru Bluechip",
+    "120178": "Mirae Asset Large Cap",
+    "120716": "Kotak Bluechip Fund",
+    "120828": "SBI Midcap Fund",
+    "120841": "HDFC Midcap Opportunities",
+    "119755": "Axis Long Term Equity"
+  }
+}
