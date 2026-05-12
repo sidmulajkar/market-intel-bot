@@ -1,15 +1,12 @@
 name: 🌅 Morning Market Brief
 
 on:
-  schedule:
-    - cron: '15 2 * * 1-6'
   workflow_dispatch:
 
 jobs:
   morning-brief:
     runs-on: ubuntu-latest
     timeout-minutes: 12
-
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
