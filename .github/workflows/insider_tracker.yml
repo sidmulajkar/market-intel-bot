@@ -3,6 +3,10 @@ name: 🕵️ Insider Trading Tracker
 on:
   workflow_dispatch:
 
+concurrency:
+  group: insider-tracker
+  cancel-in-progress: false
+
 jobs:
   insider:
     runs-on: ubuntu-latest

@@ -3,6 +3,10 @@ name: 🏦 Credit Rating Monitor
 on:
   workflow_dispatch:
 
+concurrency:
+  group: credit-monitor
+  cancel-in-progress: false
+
 jobs:
   credit:
     runs-on: ubuntu-latest

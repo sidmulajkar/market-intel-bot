@@ -3,6 +3,10 @@ name: 📋 Bulk & Block Deals Tracker
 on:
   workflow_dispatch:
 
+concurrency:
+  group: deals-tracker
+  cancel-in-progress: false
+
 jobs:
   deals:
     runs-on: ubuntu-latest

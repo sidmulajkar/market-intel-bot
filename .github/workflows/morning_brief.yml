@@ -3,6 +3,10 @@ name: 🌅 Morning Market Brief
 on:
   workflow_dispatch:
 
+concurrency:
+  group: morning-brief
+  cancel-in-progress: false
+
 jobs:
   morning-brief:
     runs-on: ubuntu-latest

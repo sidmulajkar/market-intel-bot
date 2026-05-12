@@ -3,6 +3,10 @@ name: 🌃 Evening Global Report
 on:
   workflow_dispatch:
 
+concurrency:
+  group: evening-global
+  cancel-in-progress: false
+
 jobs:
   evening-global:
     runs-on: ubuntu-latest

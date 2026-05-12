@@ -3,6 +3,10 @@ name: 💹 Mutual Fund Flows
 on:
   workflow_dispatch:
 
+concurrency:
+  group: mf-flows
+  cancel-in-progress: false
+
 jobs:
   mf-flows:
     runs-on: ubuntu-latest

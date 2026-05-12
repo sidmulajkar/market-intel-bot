@@ -3,6 +3,10 @@ name: 📅 Weekly Digest
 on:
   workflow_dispatch:
 
+concurrency:
+  group: weekly-digest
+  cancel-in-progress: false
+
 jobs:
   weekly-digest:
     runs-on: ubuntu-latest

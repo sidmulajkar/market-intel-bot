@@ -3,6 +3,10 @@ name: 🔔 Market Close Summary
 on:
   workflow_dispatch:
 
+concurrency:
+  group: market-close
+  cancel-in-progress: false
+
 jobs:
   market-close:
     runs-on: ubuntu-latest

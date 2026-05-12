@@ -3,6 +3,10 @@ name: 📊 Midday Watchlist Scan
 on:
   workflow_dispatch:
 
+concurrency:
+  group: midday-scan
+  cancel-in-progress: false
+
 jobs:
   midday-scan:
     runs-on: ubuntu-latest

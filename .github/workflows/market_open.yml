@@ -3,6 +3,10 @@ name: 📈 Market Open Alert
 on:
   workflow_dispatch:
 
+concurrency:
+  group: market-open
+  cancel-in-progress: false
+
 jobs:
   market-open:
     runs-on: ubuntu-latest
