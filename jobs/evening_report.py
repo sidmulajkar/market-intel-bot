@@ -2,11 +2,12 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data_fetcher      import fetch_global_indices
+from src.data_fetcher      import fetch_global_indices, fetch_general_news
 from src.heatmap_generator import generate_heatmap
 from src.ai_engine         import AIEngine
 from src.telegram_sender   import send_image, send_text
 from src.db                import get_watchlist
+from src.validator        import validate_articles, assess_sentiment_consensus
 
 def main():
     print("=" * 50)
@@ -30,18 +31,46 @@ def main():
         sign = "+" if d.get("change_pct", 0) >= 0 else ""
         lines.append(f"{d.get('flag','')} {country}: {sign}{d.get('change_pct',0):.2f}% [{d.get('status','?')}]")
 
+    # Fetch and validate news
+    news = fetch_general_news()
+    ai = AIEngine()
+    validated_news = validate_articles(news, min_trust=6) if news else []
+
+    # Get sentiment
+    sentiments = []
+    for article in validated_news[:5]:
+        sent = ai.sentiment(article.get("headline", ""))
+        article["sentiment"] = sent
+        if sent:
+            sentiments.append(sent)
+    consensus_sentiment = assess_sentiment_consensus(sentiments) if sentiments else "neutral"
+
+    # Format news for prompt
+    news_block = ""
+    if validated_news:
+        news_lines = []
+        for n in validated_news[:5]:
+            headline = n.get("headline", "")[:60]
+            trust = n.get("trust_score", 0)
+            source = n.get("source", "unknown")
+            news_lines.append(f"• {headline} ({source}, Trust:{trust}/10)")
+        news_block = f"\nToday's news:\n{chr(10).join(news_lines)}\n"
+
     prompt = f"""
 Evening global markets (US session just opened):
 {chr(10).join(lines)}
+{news_block}
 
-Evening report for Indian investors:
+Market sentiment: {consensus_sentiment.upper()}
+
+Evening report for Indian investors (base on actual news):
 1. 🌃 US Opening Direction + reason
 2. 🌍 Global Risk Mood: Risk-on/Risk-off/Neutral
 3. 🇮🇳 India Tomorrow Setup
-4. ⚠️ Overnight Risk Events
+4. 📊 Key levels to watch (not invented events)
 5. 💡 Tomorrow's Strategy
 
-Under 200 words.
+Under 200 words. Reference actual headlines provided.
 """
     ai = AIEngine()
     try:

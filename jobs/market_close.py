@@ -2,10 +2,11 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data_fetcher    import fetch_watchlist_data
+from src.data_fetcher    import fetch_watchlist_data, fetch_general_news
 from src.ai_engine       import AIEngine
 from src.telegram_sender import send_text, fmt_eod_report
 from src.db              import get_watchlist, was_alert_sent, log_alert_sent
+from src.validator      import validate_articles, assess_sentiment_consensus
 
 def main():
     print("=" * 50)
@@ -27,8 +28,32 @@ def main():
                        key=lambda x: x[1]["day_change"])[:3]
     vol_alerts = [s for s, d in ok_stocks.items() if d.get("volume_spike")]
 
-    ai     = AIEngine()
-    prompt = AIEngine.eod_summary_prompt(data)
+    # Fetch and validate news
+    news = fetch_general_news()
+    ai = AIEngine()
+    validated_news = validate_articles(news, min_trust=6) if news else []
+
+    # Get sentiment
+    sentiments = []
+    for article in validated_news[:5]:
+        sent = ai.sentiment(article.get("headline", ""))
+        article["sentiment"] = sent
+        if sent:
+            sentiments.append(sent)
+    consensus_sentiment = assess_sentiment_consensus(sentiments) if sentiments else "neutral"
+
+    # Format news for prompt
+    news_text = ""
+    if validated_news:
+        news_lines = []
+        for n in validated_news[:5]:
+            headline = n.get("headline", "")[:70]
+            trust = n.get("trust_score", 0)
+            source = n.get("source", "unknown")
+            news_lines.append(f"• {headline} ({source}, Trust:{trust}/10)")
+        news_text = f"\nToday's top news:\n{chr(10).join(news_lines)}\n"
+
+    prompt = AIEngine.eod_summary_prompt(data, validated_news, consensus_sentiment)
     try:
         summary = ai.analyze("volume", prompt)
     except Exception as e:

@@ -247,7 +247,7 @@ Use trust scores to weight news reliability. Consider technicals in your trend a
 """
 
     @staticmethod
-    def eod_summary_prompt(watchlist_data: dict) -> str:
+    def eod_summary_prompt(watchlist_data: dict, news_items: list = None, consensus_sentiment: str = "neutral") -> str:
         lines = []
         for sym, d in watchlist_data.items():
             if d.get("ok"):
@@ -255,18 +255,33 @@ Use trust scores to weight news reliability. Consider technicals in your trend a
                 lines.append(
                     f"{sym}: {d.get('day_change',0):+.2f}%{spike}"
                 )
+
+        # Format validated news
+        news_block = ""
+        if news_items:
+            news_lines = []
+            for n in news_items[:5]:
+                headline = n.get("headline", "")[:70]
+                trust = n.get("trust_score", 0)
+                source = n.get("source", "unknown")
+                news_lines.append(f"• {headline} ({source}, Trust:{trust}/10)")
+            if news_lines:
+                news_block = f"\nToday's validated news:\n{chr(10).join(news_lines)}\n"
+
         return f"""
 End-of-day watchlist:
 {chr(10).join(lines) if lines else 'No data'}
+{news_block}
 
-Provide:
+Market sentiment: {consensus_sentiment.upper()}
+
+Provide (base on actual news, not speculation):
 1. Top winner and loser today
-2. Overall market mood
-3. What to watch overnight
-4. Key events tomorrow
-5. One trade idea for tomorrow
+2. Overall market mood (reference news sentiment)
+3. What patterns/levels to watch (not "overnight events")
+4. One trade idea for tomorrow with rationale
 
-Under 200 words.
+Under 200 words. Do NOT invent events. Use the news provided.
 """
 
     @staticmethod
