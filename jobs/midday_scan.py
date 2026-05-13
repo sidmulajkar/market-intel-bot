@@ -47,9 +47,25 @@ def main():
         if was_alert_sent(sym, key):
             continue
         try:
-            news     = fetch_news_finnhub(sym)
-            valid_n  = validate_articles(news)
-            prompt   = AIEngine.stock_analysis_prompt(sym, d, valid_n)
+            news    = fetch_news_finnhub(sym)
+            valid_n = validate_articles(news, min_trust=6)
+            # Add sentiment to each validated article
+            for article in valid_n:
+                sent = ai.sentiment(article.get("headline", ""))
+                article["sentiment"] = sent
+
+            # Compute simple technicals from close_series
+            tech_context = {}
+            if d.get("close_series") and len(d["close_series"]) >= 5:
+                prices = d["close_series"]
+                tech_context = {
+                    "price": d.get("price", 0),
+                    "ma20": sum(prices[-20:])/20 if len(prices) >= 20 else 0,
+                    "momentum_5d": "Up" if prices[-1] > prices[-5] else ("Down" if prices[-1] < prices[-5] else "Flat"),
+                    "monthly_return": round(((prices[-1] - prices[0]) / prices[0]) * 100, 2) if prices[0] > 0 else 0,
+                }
+
+            prompt   = AIEngine.stock_analysis_prompt(sym, d, valid_n, tech_context)
             analysis = ai.analyze("fast", prompt)
             send_text(f"🔍 *{sym} — Midday Alert*\n\n{analysis}")
             log_alert_sent(sym, key)

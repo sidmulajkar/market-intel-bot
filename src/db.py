@@ -424,3 +424,47 @@ def get_yesterday_snapshot() -> Optional[Dict]:
     except Exception as e:
         print(f"⚠️  get_yesterday_snapshot error: {e}")
     return None
+
+# ══════════════════════════════════════════════════════════════
+# DATA PURGE (cleanup old data to prevent DB bloat)
+# ══════════════════════════════════════════════════════════════
+
+def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
+    """
+    Delete old data from tables to prevent unbounded growth.
+    Called once per trading day from morning_brief.py
+    Returns: {"sent_alerts": X, "snapshots": Y, "errors": []}
+    """
+    from datetime import timedelta
+
+    db = get_client()
+    if not db:
+        return {"sent_alerts": 0, "snapshots": 0, "errors": ["DB unavailable"]}
+
+    results = {"sent_alerts": 0, "snapshots": 0, "analysis_cache": 0, "errors": []}
+    cutoff_alert = (datetime.now() - timedelta(days=days_alert)).strftime("%Y-%m-%d")
+    cutoff_snapshot = (datetime.now() - timedelta(days=days_snapshot)).strftime("%Y-%m-%d")
+
+    # Delete old sent_alerts
+    try:
+        resp = db.table("sent_alerts").delete().lt("date", cutoff_alert).execute()
+        results["sent_alerts"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"sent_alerts: {e}")
+
+    # Delete old market_snapshots
+    try:
+        resp = db.table("market_snapshots").delete().lt("date", cutoff_snapshot).execute()
+        results["snapshots"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"snapshots: {e}")
+
+    # Delete expired analysis_cache
+    try:
+        resp = db.table("analysis_cache").delete().lt("expires_at", datetime.now().isoformat()).execute()
+        results["analysis_cache"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"analysis_cache: {e}")
+
+    print(f"🧹 Purged: {results['sent_alerts']} alerts, {results['snapshots']} snapshots, {results['analysis_cache']} cache")
+    return results

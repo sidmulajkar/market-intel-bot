@@ -6,6 +6,7 @@ from src.data_fetcher    import fetch_watchlist_data, fetch_general_news
 from src.ai_engine       import AIEngine
 from src.telegram_sender import send_text
 from src.db              import get_watchlist
+from src.validator      import validate_articles, assess_sentiment_consensus
 
 def main():
     print("=" * 50)
@@ -37,18 +38,41 @@ def main():
         elif change <= -2.0:
             gap_downs.append(f"*{sym}* {change:.2f}%")
 
+    # Fetch and validate news
     news   = fetch_general_news()
     ai     = AIEngine()
+
+    # Validate news and add sentiment
+    validated_news = validate_articles(news, min_trust=6) if news else []
+    sentiments = []
+    for article in validated_news[:3]:
+        sent = ai.sentiment(article.get("headline", ""))
+        article["sentiment"] = sent
+        if sent:
+            sentiments.append(sent)
+
+    # Format news with trust scores for prompt
+    news_text = ""
+    if validated_news:
+        news_lines = []
+        for n in validated_news[:3]:
+            trust = n.get("trust_score", 0)
+            source = n.get("source", "unknown")
+            headline = n.get("headline", "")[:60]
+            news_lines.append(f"• {headline} ({source}, Trust:{trust}/10)")
+        news_text = f"\nValidated news:\n{chr(10).join(news_lines)}"
+
     prompt = f"""
 Indian market just opened at 9:15 AM IST.
 Watchlist snapshot:
 {chr(10).join(lines)}
-Recent news: {chr(10).join([n['headline'] for n in news[:3]])}
+{news_text}
+
 Give a sharp 3-point opening briefing:
-1. Opening Mood + reason
+1. Opening Mood + reason (weight high-trust sources)
 2. 2-3 stocks to watch today
 3. Key Nifty level to watch
-Under 100 words.
+Under 100 words. Reference trust scores when analyzing news.
 """
     try:
         analysis = ai.analyze("fast", prompt)

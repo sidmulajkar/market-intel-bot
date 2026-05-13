@@ -154,7 +154,7 @@ class AIEngine:
         return {"neutral": 1.0}
 
     @staticmethod
-    def morning_brief_prompt(index_data: dict) -> str:
+    def morning_brief_prompt(index_data: dict, news_items: list = None, consensus_sentiment: str = "neutral") -> str:
         lines = []
         for country, d in index_data.items():
             if d.get("ok"):
@@ -163,26 +163,68 @@ class AIEngine:
                     f"{d.get('flag','')} {country}: "
                     f"{sign}{d.get('change_pct',0):.2f}% [{d.get('status','?')}]"
                 )
+
+        # Format validated news with trust scores
+        news_block = ""
+        if news_items:
+            news_lines = []
+            for n in news_items[:5]:
+                trust = n.get("trust_score", 0)
+                source = n.get("source", "unknown")
+                headline = n.get("headline", "")[:80]
+                news_lines.append(f"• {headline} (Source: {source}, Trust: {trust}/10)")
+            if news_lines:
+                news_block = f"\nTop headlines (filtered by trust score):\n{chr(10).join(news_lines)}\n"
+
         return f"""
 Today's global equity snapshot:
 {chr(10).join(lines)}
+{news_block}
+
+Market sentiment consensus: {consensus_sentiment.upper()}
 
 Morning brief required:
-1. 🌍 Global Sentiment: [Bullish/Bearish/Mixed] + one-line reason
-2. 🔥 Top 3 Movers: What moved + why
+1. 🌍 Global Sentiment: Based on headlines above + index moves
+2. 🔥 Top 3 Movers: What moved (reference actual news where possible)
 3. 🇮🇳 India Impact: What this means for Nifty/Sensex today
 4. ⚠️ Key Risk: Top 2 things to watch
 5. 🎯 Trade Idea: One actionable opportunity today
 
-Under 200 words. Sharp. No disclaimers.
+Under 200 words. Sharp. No disclaimers. Reference actual news headlines in your analysis.
 """
 
     @staticmethod
-    def stock_analysis_prompt(symbol: str, data: dict, news: list) -> str:
-        news_text = "\n".join(
-            [f"• {n['headline']}" for n in news[:5]]
-        ) if news else "No recent news."
-        vol_note  = "🚨 VOLUME SPIKE" if data.get("volume_spike") else "Normal"
+    def stock_analysis_prompt(symbol: str, data: dict, news: list, tech_context: dict = None) -> str:
+        # Format news with trust scores and sentiment
+        if news:
+            news_lines = []
+            for n in news[:5]:
+                headline = n.get("headline", "")[:60]
+                trust = n.get("trust_score", 0)
+                source = n.get("source", "unknown")
+                sent = n.get("sentiment", {})
+                sent_label = max(sent, key=sent.get) if sent else "neutral"
+                news_lines.append(f"• {headline} ({source}, Trust:{trust}/10, {sent_label})")
+            news_text = "\n".join(news_lines)
+        else:
+            news_text = "No recent news."
+
+        vol_note = "🚨 VOLUME SPIKE" if data.get("volume_spike") else "Normal"
+
+        # Format technical context
+        tech_block = ""
+        if tech_context:
+            ma20 = tech_context.get("ma20", 0)
+            price = tech_context.get("price", 0)
+            ma_diff = ((price - ma20) / ma20 * 100) if ma20 > 0 else 0
+            ma_status = "Above" if ma_diff > 0 else "Below"
+            tech_block = f"""
+Technical context (from 1-month data):
+• Price vs 20D SMA: {ma_status} ({ma_diff:+.1f}%)
+• 5-day momentum: {tech_context.get('momentum_5d', 'N/A')}
+• Monthly return: {tech_context.get('monthly_return', 0):+.2f}%
+"""
+
         return f"""
 Analyze {symbol}:
 Price: {data.get('price','N/A')}
@@ -190,14 +232,18 @@ Day Change: {data.get('day_change',0):+.2f}%
 Volume: {data.get('volume',0):,} vs Avg {data.get('avg_volume',0):,} → {vol_note}
 7D Range: {data.get('week_low')} to {data.get('week_high')}
 1M Range: {data.get('month_low')} to {data.get('month_high')}
-News: {news_text}
+{tech_block}
+News (weighted by trust score):
+{news_text}
 
 5 bullets:
-1. Trend: Bullish/Bearish/Neutral + reason
+1. Trend: Bullish/Bearish/Neutral + reason (consider technicals)
 2. Key Levels: Support and Resistance
-3. News Impact: Positive/Negative/Neutral
+3. News Impact: Positive/Negative/Neutral (weight high-trust sources)
 4. Signal: BUY / SELL / HOLD / WATCH
 5. Risk: Low/Medium/High + main risk
+
+Use trust scores to weight news reliability. Consider technicals in your trend assessment.
 """
 
     @staticmethod

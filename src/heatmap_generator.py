@@ -70,12 +70,13 @@ def _draw_cards_plain(img, draw, F, countries, y, CARD_W, CARD_H, CARD_PAD, IMG_
         x0    = (IMG_W - tot_w) // 2
 
         for col_i, (country, data) in enumerate(row):
-            x      = x0 + col_i * (CARD_W + CARD_PAD)
-            pct    = data.get("change_pct", 0.0)
-            status = data.get("status",     "CLOSED")
-            iso    = data.get("iso",         "")
-            bg     = _cell_bg(pct)
-            tc     = _text_color(pct)
+            x        = x0 + col_i * (CARD_W + CARD_PAD)
+            pct      = data.get("change_pct", 0.0)
+            status   = data.get("status",     "CLOSED")
+            iso      = data.get("iso",         "")
+            index_nm = data.get("index_name", "")
+            bg       = _cell_bg(pct)
+            tc       = _text_color(pct)
 
             draw.rounded_rectangle(
                 [(x, y), (x + CARD_W, y + CARD_H)],
@@ -86,8 +87,11 @@ def _draw_cards_plain(img, draw, F, countries, y, CARD_W, CARD_H, CARD_PAD, IMG_
                       fill=tc, font=F["status"], anchor="mt")
             draw.text((x + CARD_W // 2, y + 24), country,
                       fill=tc, font=F["country"], anchor="mt")
+            if index_nm:
+                draw.text((x + CARD_W // 2, y + 40), index_nm,
+                          fill=tc, font=F["status"], anchor="mt")
             sign = "+" if pct >= 0 else ""
-            draw.text((x + CARD_W // 2, y + 44),
+            draw.text((x + CARD_W // 2, y + 56),
                       f"{sign}{pct:.2f}%",
                       fill=tc, font=F["pct"], anchor="mt")
 
@@ -180,12 +184,13 @@ def generate_heatmap(index_data: dict) -> BytesIO:
                         x0    = (IMG_W - tot_w) // 2
 
                         for col_i, (country, data) in enumerate(row):
-                            x      = x0 + col_i * (CARD_W + CARD_PAD)
-                            pct    = data.get("change_pct", 0.0)
-                            status = data.get("status",     "CLOSED")
-                            flag   = data.get("flag",        "")
-                            bg     = _cell_bg(pct)
-                            tc     = _text_color(pct)
+                            x         = x0 + col_i * (CARD_W + CARD_PAD)
+                            pct       = data.get("change_pct", 0.0)
+                            status    = data.get("status",     "CLOSED")
+                            flag      = data.get("flag",        "")
+                            index_nm  = data.get("index_name", "")
+                            bg        = _cell_bg(pct)
+                            tc        = _text_color(pct)
 
                             draw.rounded_rectangle(
                                 [(x, y), (x + CARD_W, y + CARD_H)],
@@ -196,12 +201,17 @@ def generate_heatmap(index_data: dict) -> BytesIO:
                                 flag, fill=tc, font=F["country"],
                                 emoji_scale_factor=1.4)
 
-                            draw.text((x + CARD_W // 2, y + 32),
+                            draw.text((x + CARD_W // 2, y + 28),
                                       country, fill=tc,
                                       font=F["country"], anchor="mt")
 
+                            if index_nm:
+                                draw.text((x + CARD_W // 2, y + 44),
+                                          index_nm, fill=tc,
+                                          font=F["status"], anchor="mt")
+
                             sign = "+" if pct >= 0 else ""
-                            draw.text((x + CARD_W // 2, y + 52),
+                            draw.text((x + CARD_W // 2, y + 62),
                                       f"{sign}{pct:.2f}%",
                                       fill=tc, font=F["pct"], anchor="mt")
 
