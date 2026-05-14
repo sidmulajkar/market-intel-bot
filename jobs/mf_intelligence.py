@@ -8,7 +8,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.db       import save_mf_flows, get_mf_flows
+from src.db       import save_mf_flows, get_mf_flows_dict
 from src.telegram_sender import send_text
 
 
@@ -122,9 +122,18 @@ def compute_category_flows(df: pd.DataFrame) -> dict:
 
     # Get previous month's stored data
     prev_month = (today - timedelta(days=35)).replace(day=1).strftime("%Y-%m-01")
-    prior_rows = get_mf_flows(months=3)
-    prior_df = pd.DataFrame(prior_rows)
-    prior_df["month"] = pd.to_datetime(prior_df["month"]).dt.strftime("%Y-%m-01")
+    prior_data = get_mf_flows_dict(months=3)
+
+    # Build prior_df safely
+    prior_rows = []
+    for month, rows in prior_data.items():
+        for r in rows:
+            prior_rows.append({"month": month, "category": r.get("category"), "amount_cr": r.get("amount_cr", 0)})
+
+    if prior_rows:
+        prior_df = pd.DataFrame(prior_rows)
+    else:
+        prior_df = pd.DataFrame(columns=["month", "category", "amount_cr"])
 
     # Build current-month AUM snapshot by category
     df["cat_inferred"] = df["scheme_name"].apply(_infer_category)
@@ -190,6 +199,13 @@ def main():
     if not data["categories"]:
         print("⚠️ No category aggregates")
         return
+
+    saved = 0
+    for cat in data["categories"]:
+        sip = data["sip_cr"]  # AMFI NAVAll doesn't include SIP — leave None
+        result = save_mf_flows(data["month"], cat["name"], cat["amount_cr"], sip_amount_cr=sip)
+        if result:
+            saved += 1
 
     saved = 0
     for cat in data["categories"]:

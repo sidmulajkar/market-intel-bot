@@ -11,33 +11,32 @@ Analyze ONLY the data provided in the blocks below.
 OUTPUT CONSTRAINT: Write a concise market analysis in ≤ 450 words. Prioritize: (1) synthesis across blocks, (2) actionable regime call (risk-on/risk-off/neutral), (3) 2–3 highest-signal drivers with citations (include numbers). Avoid verbose background, disclaimers, or repeating raw tables verbatim.
 
 [BLOCK 1: GLOBAL INDICES]
-{block_1_data}
+{block_1}
 
 [BLOCK 2: MACRO ANCHORS (USDINR, BRENT, GOLD)]
-{block_2_data}
+{block_2}
 
 [BLOCK 3: SECTOR PERFORMANCE]
-{block_3_data}
+{block_3}
 
 [BLOCK 4: FLOW INTELLIGENCE (FII/DII)]
-{block_4_data}
+{block_4}
 
 [BLOCK 5: DERIVATIVES (PCR + MAX PAIN)]
-{block_5_data}
+{block_5}
 
 [BLOCK 6: NEWS INTELLIGENCE — USE ONLY TRUST ≥ 6]
-{block_6_data}
-(If none: NO VALIDATED NEWS AVAILABLE.)
+{block_6}
 
 [BLOCK 7: INSIDER ACTIVITY]
-{block_7_data}
+{block_7}
 
 [BLOCK 8: WATCHLIST — price, day_change%, volume_spike, MA20, 5D momentum, 1M return]
-{block_8_data}
+{block_8}
 
 [BLOCK 9: MACRO CALENDAR (NEXT 7 DAYS)]
-{block_9_data}
+{block_9}
 
 [BLOCK 10: MF FLOW INTELLIGENCE — category flows, anomaly vs 3M avg, thematic, top 5 gainers/losers, SIP trend]
-{block_10_data}
+{block_10}
 (Do NOT compute anomalies/percentages yourself. Use only provided numbers/labels.)

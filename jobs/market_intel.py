@@ -127,26 +127,58 @@ def main():
     # ── Assemble prompt ───────────────────────────────────────────
     print("🔄 Assembling prompt...")
 
-    # Replace placeholders
+    # Replace placeholders properly
     prompt = master_template
+    block_headers = {
+        "block_1": "[BLOCK 1: GLOBAL INDICES]",
+        "block_2": "[BLOCK 2: MACRO ANCHORS (USDINR, BRENT, GOLD)]",
+        "block_3": "[BLOCK 3: SECTOR PERFORMANCE]",
+        "block_4": "[BLOCK 4: FLOW INTELLIGENCE (FII/DII)]",
+        "block_5": "[BLOCK 5: DERIVATIVES (PCR + MAX PAIN)]",
+        "block_6": "[BLOCK 6: NEWS INTELLIGENCE — USE ONLY TRUST ≥ 6]",
+        "block_7": "[BLOCK 7: INSIDER ACTIVITY]",
+        "block_8": "[BLOCK 8: WATCHLIST — price, day_change%, volume_spike, MA20, 5D momentum, 1M return]",
+        "block_9": "[BLOCK 9: MACRO CALENDAR (NEXT 7 DAYS)]",
+        "block_10": "[BLOCK 10: MF FLOW INTELLIGENCE — category flows, anomaly vs 3M avg, thematic, top 5 gainers/losers, SIP trend]",
+    }
+
     for key, content in blocks.items():
         placeholder = f"{{{key}}}"
+        header = block_headers.get(key, f"[{key.upper()}]")
+
         if content.strip():
             prompt = prompt.replace(placeholder, content)
         else:
-            # Remove the block header and placeholder
-            # This is a simple approach - remove the placeholder line
-            prompt = prompt.replace(f"[{key.upper().replace('_',' ')}]\n{placeholder}", "")
-            prompt = prompt.replace(placeholder, "(No data available)")
+            # Remove both the header line AND the placeholder when empty
+            # Need to remove: [BLOCK X: ...]\n{placeholder}
+            import re
+            prompt = re.sub(rf'{re.escape(header)}\n\s*{re.escape(placeholder)}', '', prompt)
 
     # Count non-empty blocks
     non_empty = sum(1 for v in blocks.values() if v.strip())
     print(f"   → {non_empty} blocks with data")
 
-    # Total failure check
+    # Count remaining placeholders
+    remaining = prompt.count("{block_")
+    print(f"   → {remaining} unfilled placeholders")
+
+    # Total failure check - more lenient
     if non_empty == 0:
         print("⚠️ All blocks empty — sending fallback")
-        send_text("🚨 *Market Intel Unavailable*\n\nAll data sources failed.")
+        # Try to send a simple message anyway using available data
+        try:
+            # Last resort: use global indices or watchlist if available
+            from src.data_fetcher import fetch_global_indices
+            idx = fetch_global_indices()
+            if idx:
+                lines = [f"{d.get('flag','')} {c}: {d.get('change_pct',0):+.2f}%"
+                         for c, d in idx.items() if d.get("ok")][:8]
+                send_text(f"🌅 *MARKET SNAPSHOT*\n━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                          "\n".join(lines) + "\n\n━━━━━━━━━━━━━━━━━━━━━━━━")
+                return
+        except:
+            pass
+        send_text("🚨 *Market Intel Unavailable*\n\nNo data from any source.")
         return
 
     # ── AI Analysis ───────────────────────────────────────────────
