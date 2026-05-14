@@ -1,0 +1,33 @@
+name: 💹 MF Intelligence
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: mf-intelligence
+  cancel-in-progress: false
+
+jobs:
+  mf-intelligence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: pip install -r requirements.txt --quiet
+
+      - name: 💹 Run MF Intelligence
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python jobs/mf_intelligence.py

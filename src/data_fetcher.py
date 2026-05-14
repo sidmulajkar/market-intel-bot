@@ -279,6 +279,73 @@ def fetch_watchlist_data(symbols: List[str]) -> Dict:
 
     return results
 
+def fetch_macro_anchors() -> list:
+    """
+    Fetch USD/INR, Brent Crude, Gold — 24/5 instruments.
+    Always fetches fresh data (no caching).
+    Returns list of 3 dicts: name, symbol, price, change_pct, weekly_change_pct, status, ok
+    """
+    print("📡 Fetching macro anchors (USDINR, Brent, Gold)...")
+    anchors = [
+        {"name": "USD/INR",      "symbol": "USDINR=X"},
+        {"name": "Brent Crude",  "symbol": "BZ=F"},
+        {"name": "Gold",         "symbol": "GC=F"},
+    ]
+    results = []
+    for anchor in anchors:
+        sym  = anchor["symbol"]
+        name = anchor["name"]
+        try:
+            raw = yf.download(sym, period="5d", interval="1d",
+                             auto_adjust=True, progress=False)
+            close_s = _safe_series(raw, sym, [sym], "Close")
+
+            if len(close_s) >= 2:
+                prev    = float(close_s.iloc[-2])
+                current = float(close_s.iloc[-1])
+                change  = round(((current - prev) / prev) * 100, 3) if prev else 0.0
+
+                # Weekly change: first to last close in 5d range
+                week_ago   = float(close_s.iloc[0])
+                weekly_chg = round(((current - week_ago) / week_ago) * 100, 3) if week_ago else None
+
+                # Status: pure change_pct direction (24/5 instruments — no market-hours check)
+                if change > 0.05:
+                    status = "up"
+                elif change < -0.05:
+                    status = "down"
+                else:
+                    status = "flat"
+
+                results.append({
+                    "name":               name,
+                    "symbol":             sym,
+                    "price":              round(current, 2),
+                    "change_pct":         round(change, 2),
+                    "weekly_change_pct":  weekly_chg,
+                    "status":             status,
+                    "ok":                 True,
+                })
+            else:
+                raise ValueError("Insufficient close data")
+
+        except Exception as e:
+            print(f"⚠️  Macro anchor {name} ({sym}): {e}")
+            results.append({
+                "name":               name,
+                "symbol":             sym,
+                "price":              None,
+                "change_pct":         None,
+                "weekly_change_pct":  None,
+                "status":             None,
+                "ok":                 False,
+            })
+
+    ok_count = sum(1 for r in results if r["ok"])
+    print(f"✅ Macro anchors: {ok_count}/3 fetched")
+    return results
+
+
 def fetch_news_finnhub(symbol: str, days: int = 7) -> List[Dict]:
     if not FINNHUB_KEY:
         return []

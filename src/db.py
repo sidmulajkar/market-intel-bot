@@ -426,6 +426,112 @@ def get_yesterday_snapshot() -> Optional[Dict]:
     return None
 
 # ══════════════════════════════════════════════════════════════
+# FII/DII FLOWS (Daily NSE data)
+# ══════════════════════════════════════════════════════════════
+
+def save_fii_dii_flow(date: str, fiinet_cr: float, diinet_cr: float, source: str = "NSE") -> bool:
+    """
+    Save daily FII/DII flow data.
+    date: YYYY-MM-DD (trading day)
+    """
+    db = get_client()
+    if not db:
+        return False
+    try:
+        net_cr = fiinet_cr + diinet_cr
+        # Upsert by date (replace if exists)
+        db.table("fii_dii_flows").upsert({
+            "date":       date,
+            "fiinet_cr":  fiinet_cr,
+            "diinet_cr":  diinet_cr,
+            "net_cr":     net_cr,
+            "source":     source,
+            "created_at": datetime.now().isoformat(),
+            "expires_at": (datetime.now() + timedelta(days=90)).isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_fii_dii_flow error: {e}")
+        return False
+
+
+def get_fii_dii_flows(days: int = 45) -> list:
+    """
+    Get recent FII/DII flows for formatter.
+    Returns list of dicts with date, fiinet_cr, diinet_cr, net_cr.
+    """
+    db = get_client()
+    if not db:
+        return []
+    try:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        result = (
+            db.table("fii_dii_flows")
+            .select("date, fiinet_cr, diinet_cr, net_cr")
+            .gte("date", cutoff)
+            .order("date")
+            .execute()
+        )
+        return result.data if result.data else []
+    except Exception as e:
+        print(f"⚠️ get_fii_dii_flows error: {e}")
+        return []
+
+
+# ══════════════════════════════════════════════════════════════
+# MF FLOWS (Monthly AMFI category data)
+# ══════════════════════════════════════════════════════════════
+
+def save_mf_flows(month: str, category: str, amount_cr: float, sip_amount_cr: float = None) -> bool:
+    """
+    Save monthly MF category flow data.
+    month: YYYY-MM-01 (first day of month)
+    """
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("mf_flows").upsert({
+            "month":         month,
+            "category":      category,
+            "amount_cr":     amount_cr,
+            "sip_amount_cr": sip_amount_cr,
+            "source":        "AMFI",
+            "created_at":    datetime.now().isoformat(),
+            "expires_at":    (datetime.now() + timedelta(days=70)).isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_mf_flows error: {e}")
+        return False
+
+
+def get_mf_flows(months: int = 4) -> list:
+    """
+    Get recent MF flows for formatter.
+    Returns list of dicts with month, category, amount_cr, sip_amount_cr.
+    """
+    db = get_client()
+    if not db:
+        return []
+    try:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=months * 35)).strftime("%Y-%m-%d")
+        result = (
+            db.table("mf_flows")
+            .select("month, category, amount_cr, sip_amount_cr")
+            .gte("month", cutoff)
+            .order("month")
+            .execute()
+        )
+        return result.data if result.data else []
+    except Exception as e:
+        print(f"⚠️ get_mf_flows error: {e}")
+        return []
+
+
+# ══════════════════════════════════════════════════════════════
 # DATA PURGE (cleanup old data to prevent DB bloat)
 # ══════════════════════════════════════════════════════════════
 
@@ -433,17 +539,23 @@ def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
     """
     Delete old data from tables to prevent unbounded growth.
     Called once per trading day from morning_brief.py
-    Returns: {"sent_alerts": X, "snapshots": Y, "errors": []}
+    Returns: {"sent_alerts": X, "snapshots": Y, "analysis_cache": Z, "fii_dii": A, "mf_flows": B, "errors": []}
     """
     from datetime import timedelta
+    import pandas as pd
 
     db = get_client()
     if not db:
-        return {"sent_alerts": 0, "snapshots": 0, "errors": ["DB unavailable"]}
+        return {"sent_alerts": 0, "snapshots": 0, "analysis_cache": 0,
+                "fii_dii": 0, "mf_flows": 0, "errors": ["DB unavailable"]}
 
-    results = {"sent_alerts": 0, "snapshots": 0, "analysis_cache": 0, "errors": []}
-    cutoff_alert = (datetime.now() - timedelta(days=days_alert)).strftime("%Y-%m-%d")
+    results = {
+        "sent_alerts": 0, "snapshots": 0, "analysis_cache": 0,
+        "fii_dii": 0, "mf_flows": 0, "errors": []
+    }
+    cutoff_alert    = (datetime.now() - timedelta(days=days_alert)).strftime("%Y-%m-%d")
     cutoff_snapshot = (datetime.now() - timedelta(days=days_snapshot)).strftime("%Y-%m-%d")
+    cutoff_mf       = (datetime.now() - timedelta(days=62)).strftime("%Y-%m-%d")  # 2 months
 
     # Delete old sent_alerts
     try:
@@ -466,5 +578,28 @@ def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
     except Exception as e:
         results["errors"].append(f"analysis_cache: {e}")
 
-    print(f"🧹 Purged: {results['sent_alerts']} alerts, {results['snapshots']} snapshots, {results['analysis_cache']} cache")
+    # ── FII/DII flows: trading-day-aware purge (61 trading days) ──
+    try:
+        if datetime.now().weekday() >= 5:
+            pass  # Weekend — skip purge
+        else:
+            # Get all dates in fii_dii_flows sorted ascending
+            result = db.table("fii_dii_flows").select("date").order("date").execute()
+            if result.data and len(result.data) >= 62:
+                dates = [r["date"] for r in result.data]
+                cutoff_date = dates[-61]  # 61st trading day from oldest
+                resp = db.table("fii_dii_flows").delete().lt("date", cutoff_date).execute()
+                results["fii_dii"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"fii_dii_flows: {e}")
+
+    # ── MF flows: 2 months rolling ──
+    try:
+        resp = db.table("mf_flows").delete().lt("month", cutoff_mf).execute()
+        results["mf_flows"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"mf_flows: {e}")
+
+    print(f"🧹 Purged: {results['sent_alerts']} alerts, {results['snapshots']} snapshots, "
+          f"{results['analysis_cache']} cache, {results['fii_dii']} fii_dii, {results['mf_flows']} mf_flows")
     return results
