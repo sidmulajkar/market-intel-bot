@@ -9,6 +9,39 @@ from src.telegram_sender   import send_image, send_text
 from src.db                import get_watchlist
 from src.validator        import validate_articles, assess_sentiment_consensus
 
+
+def validate_ai_response(response: str, min_words: int = 50) -> bool:
+    if not response or not isinstance(response, str):
+        return False
+    word_count = len(response.split())
+    return word_count >= min_words
+
+
+def get_fallback_evening(index_data: dict, validated_news: list, sentiment: str) -> str:
+    lines = ["🌃 *Evening Global Report*", "_US Session Now Live_", "━━━━━━━━━━━━━━━━━━━━━━━━"]
+    
+    if index_data:
+        lines.append("\n🌍 *Global Indices:*")
+        for country, d in list(index_data.items())[:5]:
+            if d.get("ok"):
+                change = d.get("change_pct", 0)
+                sign = "+" if change >= 0 else ""
+                lines.append(f"  • {country}: {sign}{change:.2f}%")
+    
+    if validated_news:
+        lines.append("\n📰 *Top Headlines:*")
+        for article in validated_news[:3]:
+            headline = article.get("headline", "")[:60]
+            if headline:
+                lines.append(f"  • {headline}...")
+    
+    if sentiment:
+        lines.append(f"\n💭 *Sentiment:* {sentiment.title()}")
+    
+    lines.append("\n━━━━━━━━━━━━━━━━━━━━━━━━\n_India outlook for tomorrow ↑_")
+    return "\n".join(lines)
+
+
 def main():
     print("=" * 50)
     print("🌃 EVENING REPORT STARTING")
@@ -78,10 +111,26 @@ Under 200 words. Reference actual headlines provided.
     except Exception as e:
         analysis = f"AI unavailable: {e}"
 
+    # Build closing summary from global indices
+    closing_lines = []
+    nifty_close = None
+    for country, d in valid_index.items():
+        if country == "India" and d.get("price"):
+            nifty_close = d.get("price")
+            nifty_change = d.get("change_pct", 0)
+            sign = "+" if nifty_change >= 0 else ""
+            closing_lines.append(f"Nifty closed at {nifty_close:,.0f} ({sign}{nifty_change:.2f}%)")
+            break
+    
+    closing_summary = ""
+    if closing_lines:
+        closing_summary = "\n\n📊 *EOD Summary:*\n" + "\n".join(closing_lines)
+    
     send_text(
         "🌃 *EVENING GLOBAL REPORT*\n_US Session Now Live_\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         + analysis
+        + closing_summary
         + "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_India outlook for tomorrow ↑_"
     )
     print("✅ EVENING REPORT COMPLETE")

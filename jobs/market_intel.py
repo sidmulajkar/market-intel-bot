@@ -17,11 +17,45 @@ if _spec is None:
     sys.exit(1)
 
 from src.data_fetcher   import fetch_global_indices, fetch_macro_anchors, fetch_watchlist_data, fetch_general_news
-from src.formatters     import format_global_indices, format_macro_anchors, format_flows, format_news, format_watchlist, format_mf_flows
+from src.formatters     import format_global_indices, format_macro_anchors, format_flows, format_news, format_watchlist, format_mf_flows, format_context_block, format_options_block
+from src.context_engine import run_contextualization
 from src.ai_engine      import AIEngine
 from src.telegram_sender import send_text
 from src.db             import get_client
 from src.validator      import validate_articles
+
+
+
+# AI Response Validation
+def validate_ai_response(response: str, min_words: int = 50) -> bool:
+    if not response or not isinstance(response, str):
+        return False
+    return len(response.split()) >= min_words
+
+
+def get_market_intel_fallback(blocks: dict) -> str:
+    lines = ["📊 *Market Intel (Fallback)*", "━━━━━━━━━━━━━━━━━━━━━━━━"]
+    
+    if blocks.get("block_1"):
+        lines.append("\n🌍 *Global:*")
+        for line in blocks["block_1"].split("\n")[:3]:
+            if line.strip():
+                lines.append(f"  {line}")
+    
+    if blocks.get("block_4"):
+        lines.append("\n📈 *Flows:*")
+        for line in blocks["block_4"].split("\n")[:3]:
+            if line.strip():
+                lines.append(f"  {line}")
+    
+    if blocks.get("block_6"):
+        lines.append("\n📰 *News:*")
+        for line in blocks["block_6"].split("\n")[:3]:
+            if line.strip():
+                lines.append(f"  {line}")
+    
+    lines.append("\n━━━━━━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines)
 
 
 # ── CLI ────────────────────────────────────────────────────────────
@@ -64,7 +98,34 @@ def main():
         print(f"   → {len(blocks['block_2'])} chars")
     except Exception as e:
         print(f"   ⚠️ {e}")
+        anchor_data = None
         blocks["block_2"] = ""
+
+    # ── CONTEXT BLOCK: Bull/Bear Score ─────────────────────────────
+    print("🔄 CONTEXT: Bull/Bear Score")
+    try:
+        if anchor_data:
+            context_output = format_context_block(anchor_data)
+            blocks["block_0"] = context_output  # Block 0 for MARKET POSTURE
+            blocks["block_context"] = context_output  # Keep for reference
+            print(f"   → {len(context_output)} chars (Bull/Bear context)")
+        else:
+            blocks["block_0"] = ""
+            blocks["block_context"] = ""
+    except Exception as e:
+        print(f"   ⚠️ Context engine: {e}")
+        blocks["block_0"] = ""
+        blocks["block_context"] = ""
+
+    # ── OPTIONS BLOCK: PCR, Max Pain, OI Zones ────────────────────
+    print("🔄 OPTIONS: PCR, Max Pain, OI Zones")
+    try:
+        options_output = format_options_block(symbol="NIFTY", run_label=mode)
+        blocks["block_options"] = options_output
+        print(f"   → {len(options_output)} chars")
+    except Exception as e:
+        print(f"   ⚠️ Options engine: {e}")
+        blocks["block_options"] = ""
 
     # ── BLOCK 4: FII/DII Flows ───────────────────────────────────
     print("🔄 BLOCK 4: Flow Intelligence")
@@ -130,8 +191,11 @@ def main():
     # Replace placeholders properly
     prompt = master_template
     block_headers = {
+        "block_0": "[BLOCK 0: MARKET POSTURE — READ FIRST]",
         "block_1": "[BLOCK 1: GLOBAL INDICES]",
         "block_2": "[BLOCK 2: MACRO ANCHORS (USDINR, BRENT, GOLD)]",
+        "block_context": "[CONTEXT: BULL/BEAR SCORE + MARKET NARRATIVE]",
+        "block_options": "[OPTIONS: PCR, MAX PAIN, OI ZONES]",
         "block_3": "[BLOCK 3: SECTOR PERFORMANCE]",
         "block_4": "[BLOCK 4: FLOW INTELLIGENCE (FII/DII)]",
         "block_5": "[BLOCK 5: DERIVATIVES (PCR + MAX PAIN)]",
@@ -193,11 +257,19 @@ def main():
         return
 
     # ── Send Telegram ───────────────────────────────────────────
-    ist_time = "🌅" if mode == "morning" else "🌃"
-    header = f"{ist_time} *MARKET INTEL ({mode.upper()})*"
-
-    send_text(f"{header}\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n{analysis}\n\n━━━━━━━━━━━━━━━━━━━━━━━━")
-    print("✅ Market Intel sent")
+    # Validate AI response - never send blank
+    if validate_ai_response(analysis, min_words=50):
+        ist_time = "🌅" if mode == "morning" else "🌃"
+        header = f"{ist_time} *MARKET INTEL ({mode.upper()})*"
+        send_text(f"{header}\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n{analysis}\n\n━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("✅ Market Intel sent")
+    else:
+        # Fallback to raw formatted data
+        fallback = get_market_intel_fallback(blocks)
+        ist_time = "🌅" if mode == "morning" else "🌃"
+        header = f"{ist_time} *MARKET INTEL ({mode.upper()})*"
+        send_text(f"{header}\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n{fallback}\n\n━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("⚠️ AI response too short - sent fallback")
 
 
 if __name__ == "__main__":

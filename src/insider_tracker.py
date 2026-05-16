@@ -1,232 +1,290 @@
 """
-Insider Trading Tracker
-Sources:
-  1. NSE insider trading filings API (free public data)
-  2. yfinance insider_transactions (for US/global stocks)
-  3. NSE corporate action announcements filtered for SAST/SEBI filings
-
-Tracks: Director/Promoter buy & sell transactions
+Insider Activity Tracker
+Primary: NSE Bulk & Block Deals API (no auth required)
+Secondary: NSE PIT (SAST) filings (requires session)
+Data: market-wide, no watchlist dependency
 """
-import time
 import requests
-import yfinance as yf
-import pandas as pd
 from datetime import datetime, timedelta
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 NSE_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Referer": "https://www.nseindia.com/",
-    "Accept": "*/*",
+    "User-Agent":  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Referer":      "https://www.nseindia.com/report-detail/display-bulk-and-block-deals",
+    "Accept":       "application/json, text/plain, */*",
 }
 
-def _nse_session() -> requests.Session:
-    """Create NSE session with cookie"""
-    s = requests.Session()
-    s.headers.update(NSE_HEADERS)
+
+# ── Fetch Bulk Deals ─────────────────────────────────────────────
+def fetch_bulk_deals(days: int = 10) -> List[Dict]:
+    """
+    Fetch NSE bulk deals — large client trades ≥ 0.5% equity.
+    Public API, no session/cookie needed.
+    Returns: [{date, symbol, company, client, side, qty, price, value_cr}, ...]
+    """
+    from_d = (datetime.now() - timedelta(days=days)).strftime("%d-%m-%Y")
+    to_d   = datetime.now().strftime("%d-%m-%Y")
+    url    = (
+        f"https://www.nseindia.com/api/historicalOR/bulk-block-short-deals"
+        f"?optionType=bulk_deals&segment=NSE&from={from_d}&to={to_d}"
+    )
     try:
-        s.get("https://www.nseindia.com", timeout=15)
-        time.sleep(1)
+        resp = requests.get(url, headers=NSE_HEADERS, timeout=20)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        rows = data if isinstance(data, list) else data.get("data", [])
+        if not rows:
+            return []
+
+        results = []
+        for r in rows:
+            qty   = int(r.get("BD_QTY_TRD", 0) or 0)
+            price = float(r.get("BD_TP_WATP", 0) or 0)
+            val_rs = qty * price
+            results.append({
+                "date":        r.get("BD_DT_DATE", ""),
+                "symbol":      r.get("BD_SYMBOL", ""),
+                "company":     r.get("BD_SCRIP_NAME", ""),
+                "client":      r.get("BD_CLIENT_NAME", ""),
+                "side":        r.get("BD_BUY_SELL", ""),
+                "qty":         qty,
+                "price":       price,
+                "value_rs":    val_rs,
+                "value_cr":    round(val_rs / 1e7, 2),
+                "remarks":     r.get("BD_REMARKS", ""),
+                "deal_type":   "bulk",
+            })
+        return results
+    except Exception as e:
+        print(f"⚠️  bulk_deals fetch: {e}")
+        return []
+
+
+# ── Fetch Block Deals ────────────────────────────────────────────
+def fetch_block_deals(days: int = 10) -> List[Dict]:
+    """
+    Fetch NSE block deals — single price, single buyer/seller, higher value.
+    Same endpoint as bulk deals, different optionType.
+    """
+    from_d = (datetime.now() - timedelta(days=days)).strftime("%d-%m-%Y")
+    to_d   = datetime.now().strftime("%d-%m-%Y")
+    url    = (
+        f"https://www.nseindia.com/api/historicalOR/bulk-block-short-deals"
+        f"?optionType=block_deals&segment=NSE&from={from_d}&to={to_d}"
+    )
+    try:
+        resp = requests.get(url, headers=NSE_HEADERS, timeout=20)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        rows = data if isinstance(data, list) else data.get("data", [])
+        if not rows:
+            return []
+
+        results = []
+        for r in rows:
+            qty   = int(r.get("BD_QTY_TRD", 0) or 0)
+            price = float(r.get("BD_TP_WATP", 0) or 0)
+            val_rs = qty * price
+            results.append({
+                "date":        r.get("BD_DT_DATE", ""),
+                "symbol":      r.get("BD_SYMBOL", ""),
+                "company":     r.get("BD_SCRIP_NAME", ""),
+                "client":      r.get("BD_CLIENT_NAME", ""),
+                "side":        r.get("BD_BUY_SELL", ""),
+                "qty":         qty,
+                "price":       price,
+                "value_rs":    val_rs,
+                "value_cr":    round(val_rs / 1e7, 2),
+                "remarks":     r.get("BD_REMARKS", ""),
+                "deal_type":   "block",
+            })
+        return results
+    except Exception as e:
+        print(f"⚠️  block_deals fetch: {e}")
+        return []
+
+
+# ── Fetch PIT (SAST Filings) for a symbol ───────────────────────
+def fetch_pit_for_symbol(symbol: str, days: int = 14) -> List[Dict]:
+    """
+    Fetch PIT (SAST) insider filings for a specific symbol.
+    Requires NSE session. Used for recent director/promoter activity.
+    """
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer":    "https://www.nseindia.com/",
+    })
+    try:
+        session.get("https://www.nseindia.com", timeout=10)
     except Exception:
         pass
-    return s
 
-def fetch_nse_insider_trades(
-    symbol: str = None,
-    days_back: int = 30,
-) -> List[Dict]:
-    """
-    Fetch insider trades from NSE.
-    If symbol is None, fetches all recent insider trades (market-wide).
-    NSE endpoint: /api/corporates-pit
-    """
-    s     = _nse_session()
-    to_d  = datetime.now().strftime("%d-%m-%Y")
-    from_d = (datetime.now() - timedelta(days=days_back)).strftime("%d-%m-%Y")
+    from_d = (datetime.now() - timedelta(days=days)).strftime("%d-%m-%Y")
+    to_d   = datetime.now().strftime("%d-%m-%Y")
+    sym    = symbol.replace(".NS", "").replace(".BO", "").upper()
+    url    = f"https://www.nseindia.com/api/corporates-pit?symbol={sym}&from={from_d}&to={to_d}"
 
-    if symbol:
-        sym_clean = symbol.replace(".NS", "").replace(".BO", "").upper()
-        url = (
-            f"https://www.nseindia.com/api/corporates-pit"
-            f"?symbol={sym_clean}&from={from_d}&to={to_d}"
-        )
-    else:
-        url = (
-            f"https://www.nseindia.com/api/corporates-pit"
-            f"?from={from_d}&to={to_d}"
-        )
-
-    results = []
     try:
-        resp = s.get(url, timeout=15)
+        resp = session.get(url, timeout=15)
         if resp.status_code != 200:
-            print(f"⚠️  NSE insider API returned {resp.status_code}")
+            return []
+        d = resp.json()
+        rows = d.get("data", [])
+        if not rows:
             return []
 
-        data  = resp.json()
-        items = data if isinstance(data, list) else data.get("data", [])
-
-        for item in items:
-            try:
-                txn_type = str(item.get("acqMode", "")).upper()
-                qty      = int(str(item.get("secAcq",  "0")).replace(",", ""))
-                val      = float(str(item.get("val", "0")).replace(",", ""))
-                after_pct = float(str(item.get("afterAcqSharesPerc", "0")))
-                before_pct = float(str(item.get("beforeAcqSharesPerc", "0")))
-                delta_pct  = round(after_pct - before_pct, 4)
-
-                results.append({
-                    "symbol":       item.get("symbol", ""),
-                    "company":      item.get("company", ""),
-                    "insider":      item.get("acqName", ""),
-                    "designation":  item.get("personCategory", ""),
-                    "transaction":  txn_type,
-                    "quantity":     qty,
-                    "value_cr":     round(val / 1e7, 2),
-                    "before_pct":   before_pct,
-                    "after_pct":    after_pct,
-                    "delta_pct":    delta_pct,
-                    "date":         item.get("intimDt", ""),
-                    "is_buy":       "BUY" in txn_type or delta_pct > 0,
-                })
-            except Exception:
-                continue
-
+        results = []
+        for r in rows:
+            sec_val = float(r.get("secVal", 0) or 0)
+            results.append({
+                "date":     r.get("intimDt", ""),
+                "symbol":   r.get("symbol", ""),
+                "person":   r.get("acqName", ""),
+                "category": r.get("personCategory", ""),
+                "txn_type": r.get("tdpTransactionType", ""),
+                "acq_mode": r.get("acqMode", ""),
+                "qty":      int(r.get("secAcq", 0) or 0),
+                "value_rs": sec_val,
+                "value_cr": round(sec_val / 1e7, 2),
+                "before_pct": float(r.get("befAcqSharesPer", 0) or 0),
+                "after_pct":  float(r.get("afterAcqSharesPer", 0) or 0),
+            })
+        return results
     except Exception as e:
-        print(f"⚠️  NSE insider fetch error: {e}")
+        print(f"⚠️  PIT fetch ({symbol}): {e}")
+        return []
 
-    return results
 
-def fetch_yfinance_insider(symbol: str) -> List[Dict]:
+# ── Combine all sources ─────────────────────────────────────────
+def get_market_insider_activity(days: int = 10) -> Dict:
     """
-    Fetch insider transactions from yfinance (works for US stocks,
-    and some NSE stocks with good coverage).
+    Fetch all market-wide insider/bulk activity.
+    Returns aggregated summary with bulk, block, and PIT signals.
     """
-    results = []
-    try:
-        t     = yf.Ticker(symbol)
-        txns  = t.insider_transactions
+    print("🕵️  Fetching market insider activity...")
 
-        if txns is None or txns.empty:
-            return []
+    # Fetch bulk + block deals (no session needed)
+    bulk_deals = fetch_bulk_deals(days=days)
+    block_deals = fetch_block_deals(days=days)
 
-        for _, row in txns.iterrows():
-            try:
-                results.append({
-                    "symbol":      symbol,
-                    "company":     "",
-                    "insider":     str(row.get("Insider", "")),
-                    "designation": str(row.get("Relationship", "")),
-                    "transaction": str(row.get("Transaction", "")),
-                    "quantity":    int(row.get("#Shares", 0)),
-                    "value_cr":    round(float(row.get("Value", 0)) / 1e7, 4),
-                    "before_pct":  0.0,
-                    "after_pct":   0.0,
-                    "delta_pct":   0.0,
-                    "date":        str(row.get("Date", "")),
-                    "is_buy":      "Purchase" in str(row.get("Transaction", "")),
-                })
-            except Exception:
-                continue
+    all_deals = bulk_deals + block_deals
+    if not all_deals:
+        return {"ok": False, "message": "No bulk/block deals data available"}
 
-    except Exception as e:
-        print(f"⚠️  yfinance insider error ({symbol}): {e}")
+    # Deduplicate: one entry per (symbol, client, side, date, deal_type)
+    seen = set()
+    unique = []
+    for d in all_deals:
+        key = (d["symbol"], d["client"], d["side"], d["date"], d["deal_type"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(d)
 
-    return results
+    # Sort by value descending
+    unique.sort(key=lambda x: x["value_rs"], reverse=True)
 
-def get_insider_summary(
-    symbols: List[str],
-    top_n: int = 20,
-) -> Dict:
-    """
-    Get insider activity for watchlist + market-wide top movers.
-    Returns sorted by value — biggest transactions first.
-    """
-    print("🕵️  Fetching insider trades (NSE market-wide)...")
-    market_wide = fetch_nse_insider_trades(symbol=None, days_back=14)
+    # Aggregate: group by symbol
+    symbol_agg = {}
+    for d in unique:
+        sym = d["symbol"]
+        if sym not in symbol_agg:
+            symbol_agg[sym] = {"symbol": sym, "company": d["company"],
+                                 "total_buy_val": 0, "total_sell_val": 0,
+                                 "buy_count": 0, "sell_count": 0,
+                                 "top_deal": None}
+        agg = symbol_agg[sym]
+        if d["side"] == "BUY":
+            agg["total_buy_val"] += d["value_rs"]
+            agg["buy_count"] += 1
+        else:
+            agg["total_sell_val"] += d["value_rs"]
+            agg["sell_count"] += 1
+        if agg["top_deal"] is None or d["value_rs"] > agg["top_deal"]["value_rs"]:
+            agg["top_deal"] = d
 
-    # Filter to watchlist symbols if they appear
-    wl_clean = {s.replace(".NS", "").replace(".BO", "").upper()
-                for s in symbols}
-    watchlist_trades = [t for t in market_wide
-                        if t["symbol"].upper() in wl_clean]
+    # Get date range
+    dates = sorted(set(d["date"] for d in unique))
+    date_range = f"{dates[0]} to {dates[-1]}" if dates else "unknown"
 
-    # Also fetch yfinance for US stocks in watchlist
-    us_stocks = [s for s in symbols
-                 if not s.endswith(".NS") and not s.endswith(".BO")]
-    yf_trades = []
-    for sym in us_stocks[:3]:  # Max 3 US stocks
-        yf_trades.extend(fetch_yfinance_insider(sym))
-        time.sleep(1)
+    # Top deals by value
+    top_deals = unique[:20]
 
-    all_trades = market_wide + yf_trades
-    all_trades.sort(
-        key=lambda x: x.get("value_cr", 0),
-        reverse=True
-    )
-
-    buys  = [t for t in all_trades if t["is_buy"]][:top_n]
-    sells = [t for t in all_trades if not t["is_buy"]][:top_n]
+    # Top symbols by net flow
+    symbol_flows = []
+    for sym, agg in symbol_agg.items():
+        net = agg["total_buy_val"] - agg["total_sell_val"]
+        symbol_flows.append({
+            "symbol":       sym,
+            "company":      agg["company"],
+            "net_val_rs":   net,
+            "net_val_cr":   round(net / 1e7, 2),
+            "buy_val_cr":   round(agg["total_buy_val"] / 1e7, 2),
+            "sell_val_cr":  round(agg["total_sell_val"] / 1e7, 2),
+            "buy_count":    agg["buy_count"],
+            "sell_count":   agg["sell_count"],
+        })
+    symbol_flows.sort(key=lambda x: abs(x["net_val_rs"]), reverse=True)
 
     return {
-        "all":             all_trades[:top_n],
-        "top_buys":        buys[:10],
-        "top_sells":       sells[:10],
-        "watchlist_trades": watchlist_trades,
-        "total_count":     len(all_trades),
-        "buy_count":       len(buys),
-        "sell_count":      len(sells),
-        "date_range":      "Last 14 days",
+        "ok":           True,
+        "date_range":   date_range,
+        "total_deals":  len(unique),
+        "bulk_count":   len(bulk_deals),
+        "block_count":  len(block_deals),
+        "symbols":      list(symbol_agg.keys()),
+        "top_deals":    top_deals,
+        "symbol_flows": symbol_flows[:15],
     }
 
-def format_insider_message(summary: Dict) -> str:
-    """Format insider trading summary for Telegram"""
-    msg = "🕵️ *INSIDER TRADING TRACKER*\n"
-    msg += f"_{summary.get('date_range', 'Recent')}_\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-    # Watchlist alerts first
-    wl = summary.get("watchlist_trades", [])
-    if wl:
-        msg += "⚡ *YOUR WATCHLIST ACTIVITY:*\n"
-        for t in wl[:5]:
-            emoji = "🟢" if t["is_buy"] else "🔴"
-            msg += (
-                f"{emoji} *{t['symbol']}* — {t['insider'][:25]}\n"
-                f"   {t['transaction']} | {t['quantity']:,} shares"
-                f" | ₹{t['value_cr']}Cr\n"
-                f"   Before: {t['before_pct']}% → After: {t['after_pct']}%\n\n"
+# ── Format for Telegram ─────────────────────────────────────────
+def format_insider_summary(data: Dict) -> str:
+    """Format market insider activity for Telegram."""
+    if not data.get("ok"):
+        return ""
+
+    lines = []
+    lines.append(f"📊 *BULK & BLOCK DEAL ACTIVITY*\n_{data['date_range']}_")
+    lines.append(f"Bulk: {data['bulk_count']} | Block: {data['block_count']} | Symbols: {len(data['symbols'])}\n")
+
+    # Top net flows
+    if data.get("symbol_flows"):
+        lines.append("🔄 *Top Flows by Symbol:*")
+        for sf in data["symbol_flows"][:8]:
+            net = sf["net_val_cr"]
+            sign = "+" if net >= 0 else ""
+            emoji = "🟢" if net > 0 else ("🔴" if net < 0 else "⚪")
+            lines.append(
+                f"{emoji} {sf['symbol']}: {sf['buy_val_cr']:.0f} Cr in | "
+                f"{sf['sell_val_cr']:.0f} Cr out | Net: {sign}{net:.0f} Cr"
             )
 
-    # Top buys
-    if summary["top_buys"]:
-        msg += "🟢 *TOP INSIDER BUYS (by value):*\n"
-        for t in summary["top_buys"][:5]:
-            msg += (
-                f"  • *{t['symbol']}* — {t['insider'][:20]}\n"
-                f"    {t['quantity']:,} shares | ₹{t['value_cr']}Cr | "
-                f"{t['delta_pct']:+.3f}%\n"
-            )
+    # Top deals by value
+    if data.get("top_deals"):
+        lines.append("\n💰 *Top Deals by Value:*")
+        buys  = [d for d in data["top_deals"] if d["side"] == "BUY"][:5]
+        sells = [d for d in data["top_deals"] if d["side"] == "SELL"][:5]
 
-    msg += "\n"
+        if buys:
+            lines.append("🟢 *Top Buys:*")
+            for d in buys:
+                client_short = d["client"][:30] if len(d["client"]) > 30 else d["client"]
+                lines.append(
+                    f"  • {d['symbol']}: {d['qty']:,} shares @ ₹{d['price']:,.2f}"
+                    f" | ₹{d['value_cr']} Cr | {client_short}"
+                )
 
-    # Top sells
-    if summary["top_sells"]:
-        msg += "🔴 *TOP INSIDER SELLS (by value):*\n"
-        for t in summary["top_sells"][:5]:
-            msg += (
-                f"  • *{t['symbol']}* — {t['insider'][:20]}\n"
-                f"    {t['quantity']:,} shares | ₹{t['value_cr']}Cr | "
-                f"{t['delta_pct']:+.3f}%\n"
-            )
+        if sells:
+            lines.append("🔴 *Top Sells:*")
+            for d in sells:
+                client_short = d["client"][:30] if len(d["client"]) > 30 else d["client"]
+                lines.append(
+                    f"  • {d['symbol']}: {d['qty']:,} shares @ ₹{d['price']:,.2f}"
+                    f" | ₹{d['value_cr']} Cr | {client_short}"
+                )
 
-    msg += (
-        f"\n📊 Total: {summary['buy_count']} buys | "
-        f"{summary['sell_count']} sells in last 14 days"
-    )
-
-    return msg
+    lines.append(f"\n_Source: NSE Bulk/Block Deals (SEBI data)_")
+    return "\n".join(lines)

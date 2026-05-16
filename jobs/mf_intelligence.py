@@ -100,42 +100,79 @@ def fetch_nav_all() -> pd.DataFrame:
         return pd.DataFrame()
 
 
+# ── Nifty monthly return (for flow vs market adjustment) ───────────
+def _nifty_monthly_return() -> float:
+    """
+    Get Nifty 50 return for current month (first to last close).
+    Returns: float (e.g. 0.045 for +4.5%), 0 on failure.
+    """
+    try:
+        import yfinance as yf
+        from datetime import datetime
+        today    = datetime.now()
+        start    = today.replace(day=1)
+        data     = yf.download("^NSEI", start=start, end=today, progress=False)
+        closes   = data["Close"]
+        # Handle both old and new yfinance formats
+        if hasattr(closes, 'iloc'):
+            closes = closes.iloc[:, 0] if closes.ndim > 1 else closes
+        closes = closes.dropna()
+        if len(closes) >= 2:
+            ret = (closes.iloc[-1] - closes.iloc[0]) / closes.iloc[0]
+            # Extract scalar if needed
+            if hasattr(ret, 'item'):
+                ret = ret.item()
+            return round(ret, 4)
+    except Exception as e:
+        print(f"   ⚠️ Nifty fetch error: {e}")
+        pass
+    return 0.0
+
+
 # ── Compute Category Flows ─────────────────────────────────────────
 def compute_category_flows(df: pd.DataFrame) -> dict:
     """
     Compute category-level AUM snapshots and MoM changes.
-    Flow = (this_month_total - prior_month_total) per category.
-    Requires stored prior-month data in mf_flows table.
+    AUM change = market component + flow component.
+    Flow component = AUM change - Nifty monthly return.
 
     Returns dict:
       {
         "month": "2026-05-01",
         "categories": [
-          {"name": "Large Cap", "amount_cr": 620, "flow_cr": 45, "direction": "inflow"},
+          {"name": "Large Cap", "amount_cr": 620, "flow_cr": 45,
+           "direction": "inflow", "scheme_count": 12},
           ...
         ],
-        "sip_cr": None
+        "nifty_return": 0.045
       }
     """
     today = datetime.now()
     current_month_str = today.strftime("%Y-%m-01")
 
-    # Get previous month's stored data
-    prev_month = (today - timedelta(days=35)).replace(day=1).strftime("%Y-%m-01")
-    prior_data = get_mf_flows_dict(months=3)
+    # ── Prior month from DB ──
+    prior_data = get_mf_flows_dict(months=4)
 
-    # Build prior_df safely
+    # Build prior_df
     prior_rows = []
     for month, rows in prior_data.items():
         for r in rows:
-            prior_rows.append({"month": month, "category": r.get("category"), "amount_cr": r.get("amount_cr", 0)})
+            prior_rows.append({"month": month, "category": r.get("category"),
+                                "amount_cr": r.get("amount_cr", 0)})
 
-    if prior_rows:
-        prior_df = pd.DataFrame(prior_rows)
-    else:
-        prior_df = pd.DataFrame(columns=["month", "category", "amount_cr"])
+    prior_df = pd.DataFrame(prior_rows) if prior_rows else pd.DataFrame(columns=["month", "category", "amount_cr"])
 
-    # Build current-month AUM snapshot by category
+    # Find the single most recent prior month
+    prior_month_key = None
+    if not prior_df.empty:
+        sorted_months = sorted(prior_df["month"].unique())
+        current_month_dt = pd.to_datetime(current_month_str)
+        for m in reversed(sorted_months):
+            if pd.to_datetime(m) < current_month_dt:
+                prior_month_key = m
+                break
+
+    # ── Current AUM from AMFI ──
     df["cat_inferred"] = df["scheme_name"].apply(_infer_category)
     current_aum = (
         df.groupby("cat_inferred")
@@ -143,39 +180,50 @@ def compute_category_flows(df: pd.DataFrame) -> dict:
         .reset_index()
     )
     current_aum.columns = ["category", "total_aum", "scheme_count"]
-
-    # Convert to Cr (NAV is per unit, so this is AUM proxy in Cr)
     current_aum["amount_cr"] = (current_aum["total_aum"] / 1_00_000).round(1)
 
-    # Compute flow vs prior month
+    # ── Nifty monthly return ──
+    nifty_ret = _nifty_monthly_return()
+    print(f"  📊 Nifty monthly return: {nifty_ret:+.2%}")
+
+    # ── Compute flow vs prior month ──
     results = []
     for _, row in current_aum.iterrows():
         cat  = row["category"]
         amt  = row["amount_cr"]
 
-        if not prior_df.empty:
-            prior_cat = prior_df[prior_df["category"] == cat]
+        if prior_month_key and not prior_df.empty:
+            prior_cat = prior_df[
+                (prior_df["category"] == cat) &
+                (prior_df["month"] == prior_month_key)
+            ]
             if not prior_cat.empty:
-                prev_amt = float(prior_cat.iloc[0].get("amount_cr", 0))
-                flow = amt - prev_amt
+                prev_amt = float(prior_cat.iloc[0]["amount_cr"])
+                raw_flow = amt - prev_amt
+                # Isolate flow component (remove market effect)
+                flow    = round(raw_flow - (prev_amt * nifty_ret), 1)
                 direction = "inflow" if flow > 0 else ("outflow" if flow < 0 else "flat")
             else:
-                flow = None
+                flow     = None
                 direction = "new"
         else:
-            flow = None
+            flow     = None
             direction = "new"
 
         results.append({
-            "name":       cat,
-            "amount_cr":  amt,
-            "flow_cr":    flow,
-            "direction":  direction,
-            "scheme_count": row["scheme_count"],
+            "name":          cat,
+            "amount_cr":     amt,
+            "flow_cr":       flow,
+            "direction":     direction,
+            "scheme_count":  row["scheme_count"],
         })
 
     results.sort(key=lambda x: x["amount_cr"], reverse=True)
-    return {"month": current_month_str, "categories": results, "sip_cr": None}
+    return {
+        "month":        current_month_str,
+        "categories":   results,
+        "nifty_return": nifty_ret,
+    }
 
 
 # ── Main ───────────────────────────────────────────────────────────
@@ -190,30 +238,24 @@ def main():
 
     df = fetch_nav_all()
     if df.empty:
-        print("⚠️ No AMFI data")
-        send_text("⚠️ *MF Intelligence Failed*\nNo data from AMFI.")
+        print("⚠️  No AMFI data")
+        send_text("⚠️  *MF Intelligence Failed*\nNo data from AMFI.")
         return
 
     data = compute_category_flows(df)
 
     if not data["categories"]:
-        print("⚠️ No category aggregates")
+        print("⚠️  No category aggregates")
         return
 
     saved = 0
     for cat in data["categories"]:
-        sip = data["sip_cr"]  # AMFI NAVAll doesn't include SIP — leave None
-        result = save_mf_flows(data["month"], cat["name"], cat["amount_cr"], sip_amount_cr=sip)
-        if result:
-            saved += 1
-
-    saved = 0
-    for cat in data["categories"]:
-        sip = data["sip_cr"]  # AMFI NAVAll doesn't include SIP — leave None
+        sip = data.get("sip_cr")  # AMFI NAVAll doesn't include SIP
         if save_mf_flows(data["month"], cat["name"], cat["amount_cr"], sip_amount_cr=sip):
             saved += 1
 
-    print(f"✅ MF Intelligence: {saved}/{len(data['categories'])} categories saved")
+    print(f"✅  MF Intelligence: {saved}/{len(data['categories'])} categories saved")
+    print(f"   Nifty return: {data['nifty_return']:+.2%}")
     print("=" * 50)
 
 

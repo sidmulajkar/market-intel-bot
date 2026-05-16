@@ -281,15 +281,16 @@ def fetch_watchlist_data(symbols: List[str]) -> Dict:
 
 def fetch_macro_anchors() -> list:
     """
-    Fetch USD/INR, Brent Crude, Gold — 24/5 instruments.
-    Always fetches fresh data (no caching).
-    Returns list of 3 dicts: name, symbol, price, change_pct, weekly_change_pct, status, ok
+    Fetch USD/INR, Brent Crude, Gold, India VIX, Dollar Index.
+    Returns list of 5 dicts with: name, symbol, price, change_pct, weekly_change_pct, status, ok
     """
-    print("📡 Fetching macro anchors (USDINR, Brent, Gold)...")
+    print("📡 Fetching macro anchors (USDINR, Brent, Gold, VIX, DXY)...")
     anchors = [
         {"name": "USD/INR",      "symbol": "USDINR=X"},
         {"name": "Brent Crude",  "symbol": "BZ=F"},
         {"name": "Gold",         "symbol": "GC=F"},
+        {"name": "India VIX",   "symbol": "^INDIAVIX"},
+        {"name": "Dollar Index", "symbol": "DX-Y.NYB"},
     ]
     results = []
     for anchor in anchors:

@@ -2,9 +2,39 @@
 Formatters — Data to Prompt Block conversion
 Each formatter returns a string (or "" on failure) for master_prompt.txt
 Phase 1: Blocks 1, 2, 4, 6, 8, 10
+Intelligence Layer: context_engine + options_engine integrated
 """
 from typing import Optional
 
+
+# ═══════════════════════════════════════════════════════════════════════
+# CATASTROPHIC FALLBACK — Ensures no blank output
+# ═══════════════════════════════════════════════════════════════════════
+
+def check_all_blocks_empty(*blocks: str) -> bool:
+    """
+    Check if all formatter blocks returned empty strings.
+    If all empty, return True to trigger fallback message.
+    """
+    return all(not block.strip() for block in blocks)
+
+
+def get_fallback_message() -> str:
+    """
+    Fallback message when all data sources fail.
+    NEVER returns empty string — this prevents blank Telegram messages.
+    """
+    return (
+        "🚨 *Market Intel Unavailable*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "All data sources temporarily unavailable.\n"
+        "Please try again in the next update cycle."
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# BLOCK 1: GLOBAL INDICES
+# ═══════════════════════════════════════════════════════════════════════
 
 # ─────────────────────────────────────────────────────────────────────
 # BLOCK 1: GLOBAL INDICES
@@ -207,6 +237,43 @@ def format_news(validated_articles: list) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# BLOCK 7: INSIDER / BULK DEAL ACTIVITY
+# ─────────────────────────────────────────────────────────────────────
+def format_insider_activity() -> str:
+    """
+    Fetch and format NSE bulk + block deal activity for Block 7.
+    Data is ~10 days old (SEBI publication lag).
+    Returns BLOCK 7 string.
+    """
+    try:
+        from src.insider_tracker import get_market_insider_activity
+        data = get_market_insider_activity(days=10)
+        if not data.get("ok"):
+            return ""
+
+        lines = []
+        lines.append(f"[Insider / Bulk Activity — {data['date_range']}]")
+        lines.append(f"Bulk: {data['bulk_count']} deals | Block: {data['block_count']} deals | {len(data['symbols'])} symbols\n")
+
+        # Top 5 symbols by net flow
+        for sf in data["symbol_flows"][:5]:
+            net = sf["net_val_cr"]
+            sign = "+" if net >= 0 else ""
+            emoji = "🟢" if net > 0 else "🔴"
+            lines.append(
+                f"{emoji} {sf['symbol']}: In ₹{sf['buy_val_cr']:.0f}Cr | "
+                f"Out ₹{sf['sell_val_cr']:.0f}Cr | Net {sign}{net:.0f}Cr"
+            )
+
+        if not lines:
+            return ""
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"⚠️ format_insider_activity: {e}")
+        return ""
+
+
+# ─────────────────────────────────────────────────────────────────────
 # BLOCK 8: WATCHLIST
 # ─────────────────────────────────────────────────────────────────────
 def format_watchlist(watchlist_data: dict) -> str:
@@ -307,7 +374,9 @@ def format_mf_flows() -> str:
 
         # ── Category flows ──
         cat_parts = [f"{r['category']}: {r['amount_cr']:+.0f} Cr" for _, r in current_df.iterrows()]
-        category_block = f"[Category Flows — {current_month.strftime('%b %Y')}]\n" + " | ".join(cat_parts)
+        # Data freshness indicator
+        data_date = current_month.strftime('%Y-%m-%d')
+        category_block = f"[Category Flows — {current_month.strftime('%b %Y')} | Data: {data_date}]\n" + " | ".join(cat_parts)
 
         # ── Anomaly vs 3M avg ──
         anomaly_lines = []
@@ -519,3 +588,110 @@ def format_mf_flows() -> str:
     except Exception as e:
         print(f"⚠️ format_mf_flows: {e}")
         return ""
+
+# ═══════════════════════════════════════════════════════════════════════
+# BLOCK: MARKET CONTEXT (Intelligence Layer)
+# ═══════════════════════════════════════════════════════════════════════
+
+def format_context_block(anchor_data: list = None) -> str:
+    """
+    Format Bull/Bear score + market narrative from context_engine.
+    Returns pre-computed conclusions for AI prompt injection.
+    """
+    try:
+        from src.context_engine import run_contextualization, format_context_for_ai
+
+        if not anchor_data:
+            return ""
+
+        # Run full contextualization pipeline
+        ctx = run_contextualization(anchor_data)
+
+        if not ctx.get("fii_context", {}).get("ok"):
+            return ""
+
+        # Format for AI injection
+        return format_context_for_ai(
+            ctx["fii_context"],
+            ctx["macro_context"],
+            ctx["bull_bear"]
+        )
+
+    except Exception as e:
+        print(f"⚠️ format_context_block: {e}")
+        return ""
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# BLOCK: OPTIONS INTELLIGENCE (Intelligence Layer)
+# ═══════════════════════════════════════════════════════════════════════
+
+def format_options_block(symbol: str = "NIFTY", run_label: str = "morning") -> str:
+    """
+    Format options analysis: max pain, PCR, OI zones.
+    Morning: uses computed values directly.
+    Evening: compares to morning snapshot for OI shifts.
+    """
+    try:
+        from src.options_engine import run_options_analysis, fetch_nse_options_chain, compute_oi_shifts
+
+        # Run options analysis for this execution
+        analysis = run_options_analysis(symbol=symbol, store=True, run_label=run_label)
+
+        if not analysis.get("ok"):
+            return ""
+
+        # Format output
+        lines = []
+        lines.append("📊 *OPTIONS INTELLIGENCE*\n")
+
+        # Max Pain
+        mp = analysis.get("max_pain", {})
+        lines.append(f"┌─ Max Pain ────────────────────")
+        lines.append(f"│ Strike: {mp.get('max_pain', 'N/A')}")
+        lines.append(f"│ Distance: {mp.get('max_pain_distance', 0):+.2f}% from spot")
+
+        # PCR (with contrarian interpretation)
+        pcr = analysis.get("pcr", {})
+        pcr_val = pcr.get("pcr", 0)
+        if pcr_val > 1.4:
+            pcr_label = "CONTRARIAN BULL (crowded bear)"
+        elif pcr_val > 1.0:
+            pcr_label = "BEARISH lean"
+        elif pcr_val > 0.7:
+            pcr_label = "NEUTRAL"
+        else:
+            pcr_label = "CONTRARIAN BEAR (crowded bull)"
+
+        lines.append(f"┌─ Put-Call Ratio ───────────────")
+        lines.append(f"│ PCR: {pcr_val} → {pcr_label}")
+
+        # OI Zones
+        zones = analysis.get("zones", {})
+        support = zones.get("support_zone", [])
+        resistance = zones.get("resistance_zone", [])
+
+        lines.append(f"┌─ OI Zones ─────────────────────")
+        if support:
+            lines.append(f"│ Support: {', '.join(map(str, support))}")
+        if resistance:
+            lines.append(f"│ Resistance: {', '.join(map(str, resistance))}")
+
+        # Evening only: compute OI shifts vs morning snapshot
+        if run_label == "evening":
+            try:
+                evening_data = fetch_nse_options_chain(symbol)
+                if evening_data:
+                    shifts = compute_oi_shifts(evening_data, symbol)
+                    if shifts.get("ok") and shifts.get("shifts"):
+                        lines.append("\n" + shifts.get("signal_text", ""))
+            except Exception as e:
+                print(f"   ⚠️ OI shift detection: {e}")
+
+        lines.append("└" + "─" * 30)
+        return "\n".join(lines)
+
+    except Exception as e:
+        print(f"⚠️ format_options_block: {e}")
+        return ""
+

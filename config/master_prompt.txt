@@ -10,6 +10,10 @@ Analyze ONLY the data provided in the blocks below.
 
 OUTPUT CONSTRAINT: Write a concise market analysis in ≤ 450 words. Prioritize: (1) synthesis across blocks, (2) actionable regime call (risk-on/risk-off/neutral), (3) 2–3 highest-signal drivers with citations (include numbers). Avoid verbose background, disclaimers, or repeating raw tables verbatim.
 
+[BLOCK 0: MARKET POSTURE — READ FIRST]
+This block contains the pre-computed market posture. Read this first — it frames your interpretation of all subsequent blocks.
+{block_0}
+
 [BLOCK 1: GLOBAL INDICES]
 {block_1}
 

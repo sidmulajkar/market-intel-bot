@@ -434,6 +434,8 @@ def save_fii_dii_flow(date: str, fiinet_cr: float, diinet_cr: float, source: str
     Save daily FII/DII flow data.
     date: YYYY-MM-DD (trading day)
     """
+    from datetime import timedelta
+    
     db = get_client()
     if not db:
         return False
@@ -488,6 +490,8 @@ def save_mf_flows(month: str, category: str, amount_cr: float, sip_amount_cr: fl
     Save monthly MF category flow data.
     month: YYYY-MM-01 (first day of month)
     """
+    from datetime import timedelta
+    
     db = get_client()
     if not db:
         return False
@@ -529,6 +533,20 @@ def get_mf_flows(months: int = 4) -> list:
     except Exception as e:
         print(f"⚠️ get_mf_flows error: {e}")
         return []
+
+
+def get_mf_flows_dict(months: int = 4) -> dict:
+    """
+    Get MF flows grouped by month.
+    Returns: {"2026-04-01": [{category, amount_cr}, ...], ...}
+    """
+    rows = get_mf_flows(months=months)
+    grouped = {}
+    for row in rows:
+        month = row.get("month", "")[:10]
+        if month:
+            grouped.setdefault(month, []).append(row)
+    return grouped
 
 
 # ══════════════════════════════════════════════════════════════

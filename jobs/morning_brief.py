@@ -24,7 +24,50 @@ from src.sector_heatmap    import generate_sector_heatmap, generate_watchlist_he
 from src.ai_engine         import AIEngine
 from src.telegram_sender   import send_image, send_text, fmt_morning_report
 from src.db                import save_daily_snapshot, get_watchlist, purge_old_data
+
 from src.validator         import validate_articles, assess_sentiment_consensus
+
+
+def validate_ai_response(response: str, min_words: int = 50) -> bool:
+    """
+    Validate AI response before sending.
+    Returns True if response is valid (not None, not empty, word count >= min_words).
+    """
+    if not response or not isinstance(response, str):
+        return False
+    word_count = len(response.split())
+    return word_count >= min_words
+
+
+def get_fallback_brief(index_data: dict, validated_news: list, sentiment: str) -> str:
+    """
+    Fallback when AI fails - format raw data as structured text.
+    """
+    lines = []
+    lines.append("📊 *Morning Market Snapshot*\n")
+
+    # Global indices summary
+    if index_data:
+        lines.append("🌍 *Global Indices:*")
+        for country, d in list(index_data.items())[:5]:
+            if d.get("ok"):
+                change = d.get("change_pct", 0)
+                sign = "+" if change >= 0 else ""
+                lines.append(f"  • {country}: {sign}{change:.2f}%")
+
+    # News summary
+    if validated_news:
+        lines.append("\n📰 *Top Headlines:*")
+        for article in validated_news[:3]:
+            headline = article.get("headline", "")[:60]
+            if headline:
+                lines.append(f"  • {headline}...")
+
+    # Sentiment
+    if sentiment:
+        lines.append(f"\n💭 *Market Sentiment:* {sentiment.title()}")
+
+    return "\n".join(lines)
 
 
 def main():
@@ -110,11 +153,20 @@ def main():
     try:
         prompt = AIEngine.morning_brief_prompt(valid_index, validated_news, consensus_sentiment)
         brief  = ai.analyze("fast", prompt)
-        send_text(fmt_morning_report(brief))
-        print("   ✅ AI brief sent")
+
+        # Validate AI response - never send blank
+        if validate_ai_response(brief, min_words=50):
+            send_text(fmt_morning_report(brief))
+            print("   ✅ AI brief sent")
+        else:
+            # Fallback to raw data
+            fallback = get_fallback_brief(valid_index, validated_news, consensus_sentiment)
+            send_text(fallback)
+            print("   ⚠️ AI response too short - sent fallback")
     except Exception as e:
         print(f"   ⚠️ AI brief failed: {e}")
-        send_text("⚠️ AI brief temporarily unavailable")
+        fallback = get_fallback_brief(valid_index, validated_news, consensus_sentiment)
+        send_text(fallback)
 
     # ── Watchlist Alerts ──────────────────────────────────────────
     print("📈 Checking watchlist alerts...")
