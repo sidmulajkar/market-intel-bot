@@ -398,6 +398,22 @@ def main():
         send_text(f"🚨 *Market Intel*\n\n{analysis}")
         return
 
+    # ── Store Prediction for Accuracy Tracking ───────────────────
+    try:
+        from src.prediction_tracker import parse_and_store_prediction
+        nifty_close_for_pred = None
+        try:
+            import yfinance as yf
+            nifty_hist = yf.Ticker("^NSEI").history(period="2d")["Close"].dropna()
+            if len(nifty_hist) >= 1:
+                nifty_close_for_pred = float(nifty_hist.iloc[-1])
+        except Exception:
+            pass
+        if nifty_close_for_pred:
+            parse_and_store_prediction(analysis, nifty_close_for_pred, run_type=mode)
+    except Exception as e:
+        print(f"   ⚠️ Prediction tracking: {e}")
+
     # ── Send Telegram ───────────────────────────────────────────
     # Validate AI response - never send blank
     if validate_ai_response(analysis, min_words=50):

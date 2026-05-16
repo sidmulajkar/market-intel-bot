@@ -459,6 +459,125 @@ def compute_signal_consensus(signals: List[Dict]) -> Dict:
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# VIX vs REALIZED VOLATILITY SPREAD
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_vix_rv_spread(vix_current: float, nifty_closes: list, period: int = 20) -> Dict:
+    """
+    Compare implied volatility (VIX) with realized volatility.
+    Realized vol = annualized std dev of daily returns over period.
+
+    Spread > +3 = options EXPENSIVE (sellers favored)
+    Spread < -3 = options CHEAP (buyers favored)
+    """
+    import statistics
+
+    if not nifty_closes or len(nifty_closes) < period + 1:
+        return {"ok": False, "message": f"Need {period + 1} closes, have {len(nifty_closes) if nifty_closes else 0}"}
+
+    if not vix_current or vix_current <= 0:
+        return {"ok": False}
+
+    returns = [(nifty_closes[-i] / nifty_closes[-i - 1] - 1) for i in range(1, period + 1)]
+    daily_std = statistics.stdev(returns)
+    realized_vol = round(daily_std * (252 ** 0.5) * 100, 2)  # Annualized, in %
+
+    spread = round(vix_current - realized_vol, 2)
+
+    if spread > 5:
+        label = "VERY EXPENSIVE — sell premium aggressively"
+    elif spread > 3:
+        label = "EXPENSIVE — sellers favored"
+    elif spread > -3:
+        label = "FAIR — balanced pricing"
+    elif spread > -5:
+        label = "CHEAP — buyers favored"
+    else:
+        label = "VERY CHEAP — buy protection"
+
+    return {
+        "ok": True,
+        "vix": round(vix_current, 2),
+        "realized_vol": realized_vol,
+        "spread": spread,
+        "label": label,
+        "period": period,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FEAR & GREED INDEX (0-100)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_fear_greed_index(vix: float = None, pcr: float = None,
+                              breadth_ratio: float = None, fii_z_score: float = None,
+                              momentum_12m: float = None, sentiment_score: float = None) -> Dict:
+    """
+    Composite Fear & Greed Index (0-100).
+    0 = Extreme Fear, 50 = Neutral, 100 = Extreme Greed.
+
+    Each component normalized to 0-100, then averaged.
+    Missing components are excluded (not defaulted to 50).
+    """
+    components = []
+
+    # VIX: VIX > 25 = 0 (fear), VIX < 12 = 100 (greed)
+    if vix is not None and vix > 0:
+        vix_score = max(0, min(100, (25 - vix) / (25 - 12) * 100))
+        components.append(("VIX", round(vix_score, 1)))
+
+    # PCR: PCR > 1.4 = 0 (fear), PCR < 0.5 = 100 (greed)
+    if pcr is not None and pcr > 0:
+        pcr_score = max(0, min(100, (1.4 - pcr) / (1.4 - 0.5) * 100))
+        components.append(("PCR", round(pcr_score, 1)))
+
+    # Breadth: ratio < 0.5 = 0 (fear), ratio > 2.0 = 100 (greed)
+    if breadth_ratio is not None and breadth_ratio > 0:
+        breadth_score = max(0, min(100, (breadth_ratio - 0.5) / (2.0 - 0.5) * 100))
+        components.append(("Breadth", round(breadth_score, 1)))
+
+    # FII Flows: z-score < -1.5 = 0 (fear), z-score > 1.5 = 100 (greed)
+    if fii_z_score is not None:
+        fii_score = max(0, min(100, (fii_z_score + 1.5) / 3.0 * 100))
+        components.append(("FII", round(fii_score, 1)))
+
+    # Momentum: 12M return < -15% = 0 (fear), > 15% = 100 (greed)
+    if momentum_12m is not None:
+        mom_score = max(0, min(100, (momentum_12m + 15) / 30.0 * 100))
+        components.append(("Momentum", round(mom_score, 1)))
+
+    # Sentiment: > 70% negative = 0 (fear), > 70% positive = 100 (greed)
+    if sentiment_score is not None:
+        components.append(("Sentiment", round(max(0, min(100, sentiment_score)), 1)))
+
+    if not components:
+        return {"ok": False, "message": "No components available"}
+
+    # Average all available components
+    scores = [c[1] for c in components]
+    index = round(sum(scores) / len(scores), 1)
+
+    if index < 20:
+        label = "EXTREME FEAR"
+    elif index < 40:
+        label = "FEAR"
+    elif index < 60:
+        label = "NEUTRAL"
+    elif index < 80:
+        label = "GREED"
+    else:
+        label = "EXTREME GREED"
+
+    return {
+        "ok": True,
+        "index": index,
+        "label": label,
+        "components": {c[0]: c[1] for c in components},
+        "num_components": len(components),
+    }
+
+
 def format_cross_signals(signals: List[Dict]) -> str:
     """Format cross-signal analysis for AI prompt injection."""
     if not signals:

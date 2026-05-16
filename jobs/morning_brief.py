@@ -82,6 +82,16 @@ def main():
     except Exception as e:
         print(f"⚠️  DB cleanup failed: {e}")
 
+    # ── Validate Yesterday's Prediction ───────────────────────────
+    try:
+        from src.prediction_tracker import validate_yesterday_prediction
+        validation = validate_yesterday_prediction()
+        if validation.get("ok"):
+            emoji = "✅" if validation.get("regime_correct") else "❌"
+            print(f"📊 Prediction validation: {emoji} {validation.get('predicted_regime')} vs {validation.get('actual_regime')}")
+    except Exception as e:
+        print(f"⚠️  Prediction validation: {e}")
+
     stocks = get_watchlist()
     print(f"📋 Watchlist: {len(stocks)} stocks — {stocks}")
 

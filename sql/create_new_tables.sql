@@ -81,3 +81,50 @@ ON CONFLICT (date) DO NOTHING;
 -- Verify data:
 SELECT * FROM valuation_history ORDER BY date DESC LIMIT 5;
 SELECT * FROM market_breadth_history ORDER BY date DESC LIMIT 5;
+
+
+-- ============================================================
+-- 3. DAILY PREDICTIONS — Signal Accuracy Tracker
+-- Stores parsed AI predictions for validation against outcomes
+-- Written by: src/prediction_tracker.py parse_and_store_prediction()
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS daily_predictions (
+    date            DATE PRIMARY KEY,
+    run_type        TEXT NOT NULL DEFAULT 'morning',
+    regime          TEXT,
+    confidence      TEXT,
+    dominant_factor TEXT,
+    bull_pct        INTEGER,
+    base_pct        INTEGER,
+    bear_pct        INTEGER,
+    headline        TEXT,
+    nifty_close     DOUBLE PRECISION,
+    raw_output      TEXT,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================================
+-- 4. PREDICTION OUTCOMES — Accuracy Validation Results
+-- Written by: src/prediction_tracker.py validate_yesterday_prediction()
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS prediction_outcomes (
+    prediction_date     DATE PRIMARY KEY REFERENCES daily_predictions(date),
+    actual_nifty_close  DOUBLE PRECISION,
+    actual_nifty_change DOUBLE PRECISION,
+    regime_correct      BOOLEAN,
+    bull_accuracy       DOUBLE PRECISION,
+    bear_accuracy       DOUBLE PRECISION,
+    brier_score         DOUBLE PRECISION,
+    evaluated_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+
+-- ============================================================
+-- VERIFICATION: Check all 4 tables exist
+-- ============================================================
+
+SELECT table_name FROM information_schema.tables
+WHERE table_schema = 'public'
+AND table_name IN ('valuation_history', 'market_breadth_history', 'daily_predictions', 'prediction_outcomes');

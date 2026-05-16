@@ -663,6 +663,7 @@ def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
     results = {
         "sent_alerts": 0, "snapshots": 0, "analysis_cache": 0,
         "fii_dii": 0, "mf_flows": 0, "breadth": 0, "valuation": 0,
+        "predictions": 0, "outcomes": 0,
         "errors": []
     }
     cutoff_alert    = (datetime.now() - timedelta(days=days_alert)).strftime("%Y-%m-%d")
@@ -728,7 +729,24 @@ def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
     except Exception as e:
         results["errors"].append(f"valuation_history: {e}")
 
+    # ── Daily predictions: 90 days ──
+    try:
+        cutoff_predictions = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        resp = db.table("daily_predictions").delete().lt("date", cutoff_predictions).execute()
+        results["predictions"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"daily_predictions: {e}")
+
+    # ── Prediction outcomes: 90 days ──
+    try:
+        cutoff_outcomes = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        resp = db.table("prediction_outcomes").delete().lt("prediction_date", cutoff_outcomes).execute()
+        results["outcomes"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"prediction_outcomes: {e}")
+
     print(f"🧹 Purged: {results['sent_alerts']} alerts, {results['snapshots']} snapshots, "
           f"{results['analysis_cache']} cache, {results['fii_dii']} fii_dii, {results['mf_flows']} mf_flows, "
-          f"{results.get('breadth', 0)} breadth, {results.get('valuation', 0)} valuation")
+          f"{results.get('breadth', 0)} breadth, {results.get('valuation', 0)} valuation, "
+          f"{results.get('predictions', 0)} predictions, {results.get('outcomes', 0)} outcomes")
     return results

@@ -47,6 +47,16 @@ def main():
     except Exception as e:
         print(f"⚠️ Weekly digest failed: {e}")
 
+    # ── Weekly Accuracy Report ──────────────────────────────────
+    try:
+        from src.prediction_tracker import format_weekly_accuracy
+        accuracy = format_weekly_accuracy()
+        if accuracy:
+            send_text(accuracy)
+            print(f"📊 Accuracy report sent")
+    except Exception as e:
+        print(f"⚠️ Accuracy report: {e}")
+
     for symbol in list({s: d for s, d in watchlist_data.items() if d.get("ok")}.keys())[:3]:
         try:
             send_image(generate_technical_chart(symbol, period="1mo"),

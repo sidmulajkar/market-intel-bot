@@ -92,6 +92,37 @@ RBI_POLICY = {
 }
 
 
+def get_stored_cpi() -> float:
+    """Get last known CPI from Supabase bot_state, fall back to default."""
+    try:
+        from src.db import get_client
+        db = get_client()
+        if db:
+            result = db.table("bot_state").select("value").eq("key", "last_cpi").limit(1).execute()
+            if result.data:
+                return float(result.data[0]["value"])
+    except Exception:
+        pass
+    return 3.34  # Default fallback
+
+
+def store_cpi(cpi_value: float) -> bool:
+    """Store CPI value in Supabase bot_state for future use."""
+    try:
+        from src.db import get_client
+        db = get_client()
+        if db:
+            db.table("bot_state").upsert({
+                "key": "last_cpi",
+                "value": str(cpi_value),
+                "updated_at": datetime.now().isoformat(),
+            }).execute()
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def compute_real_rate(cpi_inflation: float = None) -> Dict:
     """
     Compute real interest rate = repo rate - CPI inflation.
@@ -100,8 +131,7 @@ def compute_real_rate(cpi_inflation: float = None) -> Dict:
     repo = RBI_POLICY["repo_rate"]
 
     if cpi_inflation is None:
-        # Use approximate recent CPI
-        cpi_inflation = 3.34  # Last known CPI
+        cpi_inflation = get_stored_cpi()
 
     real_rate = round(repo - cpi_inflation, 2)
 
