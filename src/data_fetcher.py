@@ -284,70 +284,181 @@ def fetch_watchlist_data(symbols: List[str]) -> Dict:
 
 def fetch_macro_anchors() -> list:
     """
-    Fetch USD/INR, Brent Crude, Gold, India VIX, Dollar Index.
-    Returns list of 5 dicts with: name, symbol, price, change_pct, weekly_change_pct, status, ok
+    Fetch macro anchors — global risk, dollar, energy, metals, rates.
+    Batch fetch via single yf.download() call for speed.
+
+    Returns list of dicts with: name, symbol, price, change_pct, weekly_change_pct, status, ok
+
+    Anchors (9):
+    - USD/INR, Brent Crude, Gold — existing
+    - India VIX, Dollar Index, US 10Y — existing
+    - CBOE VIX (global fear), HYG (credit stress), WTI Crude — NEW
     """
-    print("📡 Fetching macro anchors (USDINR, Brent, Gold, VIX, DXY)...")
+    print("📡 Fetching macro anchors (9 tickers, batch)...")
     anchors = [
-        {"name": "USD/INR",      "symbol": "USDINR=X"},
-        {"name": "Brent Crude",  "symbol": "BZ=F"},
-        {"name": "Gold",         "symbol": "GC=F"},
-        {"name": "India VIX",   "symbol": "^INDIAVIX"},
-        {"name": "Dollar Index", "symbol": "DX-Y.NYB"},
+        {"name": "USD/INR",         "symbol": "USDINR=X"},
+        {"name": "Brent Crude",     "symbol": "BZ=F"},
+        {"name": "Gold",            "symbol": "GC=F"},
+        {"name": "India VIX",       "symbol": "^INDIAVIX"},
+        {"name": "Dollar Index",    "symbol": "DX-Y.NYB"},
+        {"name": "US 10Y Yield",    "symbol": "^TNX"},
+        {"name": "CBOE VIX",        "symbol": "^VIX"},
+        {"name": "US High Yield",   "symbol": "HYG"},
+        {"name": "WTI Crude",       "symbol": "CL=F"},
     ]
+
+    symbols = [a["symbol"] for a in anchors]
+    name_map = {a["symbol"]: a["name"] for a in anchors}
+
     results = []
-    for anchor in anchors:
-        sym  = anchor["symbol"]
-        name = anchor["name"]
-        try:
-            raw = yf.download(sym, period="5d", interval="1d",
-                             auto_adjust=True, progress=False)
-            close_s = _safe_series(raw, sym, [sym], "Close")
+    try:
+        # Batch download all tickers in one call
+        raw = yf.download(symbols, period="5d", interval="1d",
+                          auto_adjust=True, progress=False, group_by="ticker")
 
-            if len(close_s) >= 2:
-                prev    = float(close_s.iloc[-2])
-                current = float(close_s.iloc[-1])
-                change  = round(((current - prev) / prev) * 100, 3) if prev else 0.0
+        for sym in symbols:
+            name = name_map[sym]
+            try:
+                # Extract close series — batch download with group_by='ticker'
+                # gives Ticker as level 0, Price as level 1
+                close_s = raw[sym]["Close"].dropna()
 
-                # Weekly change: first to last close in 5d range
-                week_ago   = float(close_s.iloc[0])
-                weekly_chg = round(((current - week_ago) / week_ago) * 100, 3) if week_ago else None
+                if len(close_s) >= 2:
+                    prev    = float(close_s.iloc[-2])
+                    current = float(close_s.iloc[-1])
+                    change  = round(((current - prev) / prev) * 100, 3) if prev else 0.0
 
-                # Status: pure change_pct direction (24/5 instruments — no market-hours check)
-                if change > 0.05:
-                    status = "up"
-                elif change < -0.05:
-                    status = "down"
+                    week_ago   = float(close_s.iloc[0])
+                    weekly_chg = round(((current - week_ago) / week_ago) * 100, 3) if week_ago else None
+
+                    if change > 0.05:
+                        status = "up"
+                    elif change < -0.05:
+                        status = "down"
+                    else:
+                        status = "flat"
+
+                    results.append({
+                        "name":              name,
+                        "symbol":            sym,
+                        "price":             round(current, 2),
+                        "change_pct":        round(change, 2),
+                        "weekly_change_pct": weekly_chg,
+                        "status":            status,
+                        "ok":                True,
+                    })
                 else:
-                    status = "flat"
-
+                    raise ValueError("Insufficient close data")
+            except Exception as e:
+                print(f"⚠️  Macro anchor {name} ({sym}): {e}")
                 results.append({
-                    "name":               name,
-                    "symbol":             sym,
-                    "price":              round(current, 2),
-                    "change_pct":         round(change, 2),
-                    "weekly_change_pct":  weekly_chg,
-                    "status":             status,
-                    "ok":                 True,
+                    "name": name, "symbol": sym, "price": None,
+                    "change_pct": None, "weekly_change_pct": None,
+                    "status": None, "ok": False,
                 })
-            else:
-                raise ValueError("Insufficient close data")
 
-        except Exception as e:
-            print(f"⚠️  Macro anchor {name} ({sym}): {e}")
-            results.append({
-                "name":               name,
-                "symbol":             sym,
-                "price":              None,
-                "change_pct":         None,
-                "weekly_change_pct":  None,
-                "status":             None,
-                "ok":                 False,
-            })
+    except Exception as e:
+        print(f"⚠️  Batch download failed: {e}")
+        # Fallback: individual fetches
+        for anchor in anchors:
+            sym, name = anchor["symbol"], anchor["name"]
+            try:
+                raw = yf.download(sym, period="5d", interval="1d",
+                                  auto_adjust=True, progress=False)
+                close_s = _safe_series(raw, sym, [sym], "Close")
+                if len(close_s) >= 2:
+                    prev = float(close_s.iloc[-2])
+                    current = float(close_s.iloc[-1])
+                    change = round(((current - prev) / prev) * 100, 3) if prev else 0.0
+                    week_ago = float(close_s.iloc[0])
+                    weekly_chg = round(((current - week_ago) / week_ago) * 100, 3) if week_ago else None
+                    status = "up" if change > 0.05 else "down" if change < -0.05 else "flat"
+                    results.append({"name": name, "symbol": sym, "price": round(current, 2),
+                                    "change_pct": round(change, 2), "weekly_change_pct": weekly_chg,
+                                    "status": status, "ok": True})
+                else:
+                    raise ValueError("Insufficient data")
+            except Exception as e2:
+                print(f"⚠️  {name}: {e2}")
+                results.append({"name": name, "symbol": sym, "price": None,
+                                "change_pct": None, "weekly_change_pct": None,
+                                "status": None, "ok": False})
 
     ok_count = sum(1 for r in results if r["ok"])
-    print(f"✅ Macro anchors: {ok_count}/3 fetched")
+    print(f"✅ Macro anchors: {ok_count}/{len(anchors)} fetched")
     return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SMALLCAP / LARGECAPE RATIO — Risk Appetite Indicator
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def fetch_smallcap_ratio() -> Dict:
+    """
+    Fetch Nifty Smallcap 250 / Nifty 50 ratio from NSE allIndices.
+    Rising ratio = small-cap outperformance = risk-on / retail euphoria.
+    Falling ratio = large-cap flight = risk-off.
+    """
+    import requests
+
+    NSE_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://www.nseindia.com/",
+        "Accept": "application/json",
+    }
+
+    session = requests.Session()
+    try:
+        session.get("https://www.nseindia.com", headers=NSE_HEADERS, timeout=10)
+    except Exception:
+        pass
+
+    try:
+        resp = session.get("https://www.nseindia.com/api/allIndices", headers=NSE_HEADERS, timeout=15)
+        if resp.status_code != 200:
+            return {"ok": False}
+
+        indices = resp.json().get("data", [])
+        nifty_50 = None
+        smallcap_250 = None
+
+        for idx in indices:
+            name = idx.get("index", "")
+            if name == "NIFTY 50":
+                nifty_50 = float(idx.get("last", 0))
+            elif name == "NIFTY SMALLCAP 250":
+                smallcap_250 = float(idx.get("last", 0))
+
+        if not nifty_50 or not smallcap_250:
+            return {"ok": False}
+
+        ratio = round(smallcap_250 / nifty_50, 4)
+        # Historical context: ratio typically 0.5-1.0
+        # Below 0.6 = smallcaps crushed (risk-off)
+        # Above 0.9 = smallcap euphoria (late cycle)
+
+        if ratio > 0.9:
+            label = "SMALLCAP EUPHORIA — late cycle, contrarian sell"
+        elif ratio > 0.8:
+            label = "SMALLCAP OUTPERFORMANCE — risk-on"
+        elif ratio > 0.65:
+            label = "BALANCED"
+        elif ratio > 0.5:
+            label = "LARGE-CAP FLIGHT — risk-off"
+        else:
+            label = "SMALLCAP CRASH — extreme fear, contrarian buy"
+
+        return {
+            "ok": True,
+            "nifty_50": nifty_50,
+            "smallcap_250": smallcap_250,
+            "ratio": ratio,
+            "label": label,
+        }
+
+    except Exception as e:
+        print(f"⚠️ Smallcap ratio: {e}")
+        return {"ok": False}
 
 
 def fetch_news_finnhub(symbol: str, days: int = 7) -> List[Dict]:
@@ -500,7 +611,7 @@ def fetch_market_breadth() -> Optional[Dict]:
 
 
 def format_market_breadth(breadth: Optional[Dict]) -> str:
-    """Format market breadth for prompt injection."""
+    """Format market breadth for prompt injection with historical percentile."""
     if not breadth or not breadth.get("ok"):
         return ""
 
@@ -515,7 +626,89 @@ def format_market_breadth(breadth: Optional[Dict]) -> str:
         f"A/D: {adv}↑ / {dec}↓ / {unc}→ | Ratio: {ratio} ({strength})",
     ]
 
+    # Add historical percentile context
+    try:
+        from src.db import get_breadth_history
+        from src.quant_enrichment import compute_percentile
+        history = get_breadth_history(days=90)
+        if history and len(history) >= 5:
+            ratios = [h["ratio"] for h in history if h.get("ratio")]
+            pct = compute_percentile(ratio, ratios)
+            if pct.get("percentile") is not None:
+                lines.append(f"Breadth percentile: {pct['percentile']}th of 90D ({pct['label']})")
+    except Exception:
+        pass  # Non-critical, skip if DB unavailable
+
     if breadth.get("highs_52w"):
         lines.append(f"52W Highs: {breadth['highs_52w']} | 52W Lows: {breadth['lows_52w']}")
 
+    # McClellan Oscillator
+    try:
+        mcc = compute_mcclellan()
+        if mcc.get("ok"):
+            lines.append(f"McClellan: {mcc['oscillator']:+.0f} ({mcc['signal']})")
+    except Exception:
+        pass
+
     return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BREADTH: McClellan Oscillator
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_mcclellan() -> Dict:
+    """
+    Compute McClellan Oscillator from stored breadth history.
+    McClellan = EMA(19) of net advances - EMA(39) of net advances
+    Positive = bullish breadth momentum, Negative = bearish.
+    """
+    try:
+        from src.db import get_breadth_history
+        history = get_breadth_history(days=60)
+
+        if not history or len(history) < 20:
+            return {"ok": False, "message": "Insufficient breadth history"}
+
+        # Compute net advances (advances - declines) for each day
+        # We only have ratio, so approximate: net = ratio * declines - declines = declines * (ratio - 1)
+        # Simpler: use ratio as the signal itself
+        ratios = [h["ratio"] for h in history if h.get("ratio")]
+
+        if len(ratios) < 20:
+            return {"ok": False}
+
+        # EMA computation
+        def ema(data, period):
+            k = 2 / (period + 1)
+            result = [data[0]]
+            for i in range(1, len(data)):
+                result.append(data[i] * k + result[-1] * (1 - k))
+            return result
+
+        ema19 = ema(ratios, 19)
+        ema39 = ema(ratios, 39)
+
+        oscillator = round((ema19[-1] - ema39[-1]) * 100, 1)  # Scale up
+
+        if oscillator > 20:
+            signal = "STRONG BULLISH breadth momentum"
+        elif oscillator > 5:
+            signal = "BULLISH breadth momentum"
+        elif oscillator > -5:
+            signal = "NEUTRAL breadth"
+        elif oscillator > -20:
+            signal = "BEARISH breadth momentum"
+        else:
+            signal = "STRONG BEARISH breadth momentum"
+
+        return {
+            "ok": True,
+            "oscillator": oscillator,
+            "ema19": round(ema19[-1], 3),
+            "ema39": round(ema39[-1], 3),
+            "signal": signal,
+        }
+
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

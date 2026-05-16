@@ -124,6 +124,80 @@ def format_macro_anchors(anchor_data: list) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# VALUATION BLOCK (appended to Block 2)
+# ─────────────────────────────────────────────────────────────────────
+def format_valuation_block() -> str:
+    """
+    Fetch and format Nifty valuation metrics with historical context.
+    Appended to Block 2 (Macro Anchors).
+    """
+    try:
+        from src.valuation_engine import fetch_nifty_valuation, format_valuation, compute_equity_risk_premium
+        from src.db import save_valuation_snapshot, get_valuation_history
+        from src.quant_enrichment import compute_percentile
+        from datetime import datetime
+
+        val = fetch_nifty_valuation()
+        if not val or not val.get("ok"):
+            return ""
+
+        # Save snapshot for historical percentile
+        today = datetime.now().strftime("%Y-%m-%d")
+        save_valuation_snapshot(
+            today, val["index"], val["pe"],
+            pb=val.get("pb"), div_yield=val.get("dividend_yield"),
+            earnings_yield=val.get("earnings_yield"),
+        )
+
+        # Get historical P/E for percentile
+        history = get_valuation_history(val["index"], days=1095)  # 3 years
+        historical_pe = [h["pe"] for h in history if h.get("pe")]
+
+        # Get G-Sec yield (approximate from macro anchors or use default)
+        # Try to extract from anchor data — if not available, use recent typical value
+        g_sec_yield = 7.1  # Approximate 10Y G-Sec yield
+        try:
+            import yfinance as yf
+            # Indian 10Y G-Sec — ticker may not always work
+            gsec = yf.Ticker("^NSEIGS").history(period="5d")
+            if not gsec.empty:
+                g_sec_yield = float(gsec["Close"].iloc[-1])
+        except Exception:
+            pass  # Use default
+
+        # Format output
+        lines = [f"\n[Valuation — {val['index']}]"]
+        lines.append(f"P/E: {val['pe']}x | Earnings Yield: {val['earnings_yield']}%")
+
+        if val.get("pb"):
+            lines.append(f"P/B: {val['pb']}x")
+        if val.get("dividend_yield"):
+            lines.append(f"Div Yield: {val['dividend_yield']}%")
+
+        # Equity Risk Premium
+        erp = compute_equity_risk_premium(val["earnings_yield"], g_sec_yield)
+        lines.append(f"Equity Risk Premium: {erp['premium']:+.2f}% ({erp['label']})")
+
+        # Reverse DCF
+        from src.valuation_engine import compute_reverse_dcf
+        rdcf = compute_reverse_dcf(val["pe"])
+        if rdcf.get("ok"):
+            lines.append(f"Reverse DCF: {rdcf['implied_growth_pct']}% implied growth — {rdcf['assessment']}")
+
+        # Historical percentile
+        if historical_pe and len(historical_pe) >= 5:
+            pct = compute_percentile(val["pe"], historical_pe)
+            if pct.get("percentile") is not None:
+                lines.append(f"P/E: {pct['percentile']}th percentile of 3Y ({pct['label']})")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        print(f"⚠️ format_valuation_block: {e}")
+        return ""
+
+
+# ─────────────────────────────────────────────────────────────────────
 # BLOCK 4: FLOW INTELLIGENCE (FII/DII)
 # ─────────────────────────────────────────────────────────────────────
 def format_flows() -> str:
@@ -337,7 +411,21 @@ def format_news(global_articles: list, indian_articles: list = None) -> str:
         if not sections:
             return ""
 
-        return "News Intelligence (trust >= 6, sorted by impact):\n\n" + "\n\n".join(sections)
+        result = "News Intelligence (trust >= 6, sorted by impact):\n\n" + "\n\n".join(sections)
+
+        # Contrarian sentiment extreme detection
+        try:
+            from src.quant_enrichment import compute_sentiment_extreme
+            all_articles = (global_articles or []) + (indian_articles or [])
+            sent_extreme = compute_sentiment_extreme(all_articles)
+            if sent_extreme.get("ok"):
+                result += f"\n\n[Sentiment Signal]\n{sent_extreme['signal']}"
+                if sent_extreme["direction"] != "neutral":
+                    result += f"\n({sent_extreme['pct_very_negative']:.0f}% very negative, {sent_extreme['pct_very_positive']:.0f}% very positive)"
+        except Exception:
+            pass  # Non-critical
+
+        return result
     except Exception as e:
         print(f"⚠️ format_news: {e}")
         return ""
@@ -625,10 +713,11 @@ def format_mf_flows() -> str:
 # BLOCK: MARKET CONTEXT (Intelligence Layer)
 # ═══════════════════════════════════════════════════════════════════════
 
-def format_context_block(anchor_data: list = None) -> str:
+def format_context_block(anchor_data: list = None, extra_signals: dict = None) -> str:
     """
     Format Bull/Bear score + market narrative from context_engine.
     Returns pre-computed conclusions for AI prompt injection.
+    extra_signals: optional dict with breadth_ratio, nifty_vs_ma200_pct, pcr, fii_fno_net
     """
     try:
         from src.context_engine import run_contextualization, format_context_for_ai
@@ -636,18 +725,16 @@ def format_context_block(anchor_data: list = None) -> str:
         if not anchor_data:
             return ""
 
-        # Run full contextualization pipeline
-        ctx = run_contextualization(anchor_data)
+        # Run full contextualization pipeline with extra signals
+        ctx = run_contextualization(anchor_data, extra_signals=extra_signals)
 
         if not ctx.get("fii_context", {}).get("ok"):
             return ""
 
-        # Format for AI injection
-        return format_context_for_ai(
-            ctx["fii_context"],
-            ctx["macro_context"],
-            ctx["bull_bear"]
-        )
+        # Format for AI injection (includes yield spread and momentum)
+        from src.context_engine import format_context_for_ai_full
+        ctx["extra_signals"] = extra_signals
+        return format_context_for_ai_full(ctx)
 
     except Exception as e:
         print(f"⚠️ format_context_block: {e}")
@@ -660,12 +747,12 @@ def format_context_block(anchor_data: list = None) -> str:
 
 def format_options_block(symbol: str = "NIFTY", run_label: str = "morning") -> str:
     """
-    Format options analysis: max pain, PCR, OI zones.
+    Format options analysis: max pain, PCR, OI zones, GEX, skew, advanced OI.
     Morning: uses computed values directly.
     Evening: compares to morning snapshot for OI shifts.
     """
     try:
-        from src.options_engine import run_options_analysis, fetch_nse_options_chain, compute_oi_shifts
+        from src.options_engine import run_options_analysis, fetch_nse_options_chain, compute_oi_shifts, format_derivatives_intel
 
         # Run options analysis for this execution
         analysis = run_options_analysis(symbol=symbol, store=True, run_label=run_label)
@@ -675,7 +762,7 @@ def format_options_block(symbol: str = "NIFTY", run_label: str = "morning") -> s
 
         # Format output
         lines = []
-        lines.append("📊 *OPTIONS INTELLIGENCE*\n")
+        lines.append("📊 *OPTIONS & DERIVATIVES INTELLIGENCE*\n")
 
         # Max Pain
         mp = analysis.get("max_pain", {})
@@ -708,6 +795,13 @@ def format_options_block(symbol: str = "NIFTY", run_label: str = "morning") -> s
             lines.append(f"│ Support: {', '.join(map(str, support))}")
         if resistance:
             lines.append(f"│ Resistance: {', '.join(map(str, resistance))}")
+
+        # GEX, Skew, Advanced OI
+        deriv_intel = format_derivatives_intel(analysis)
+        if deriv_intel:
+            lines.append(f"┌─ Gamma & Skew ─────────────────")
+            for dl in deriv_intel.split("\n"):
+                lines.append(f"│ {dl}")
 
         # Evening only: compute OI shifts vs morning snapshot
         if run_label == "evening":

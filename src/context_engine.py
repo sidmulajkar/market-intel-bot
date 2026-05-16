@@ -164,13 +164,21 @@ def get_macro_context(anchor_data: List[Dict]) -> Dict:
 # LAYER 5: SYNTHESIS — Bull/Bear Composite Score
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def compute_bull_bear_score(fii_context: Dict, macro_context: Dict) -> Dict:
+def compute_bull_bear_score(fii_context: Dict, macro_context: Dict,
+                             extra_signals: Dict = None) -> Dict:
     """
     Compute weighted Bull/Bear composite score (-40 to +40 range).
     All computed in Python — zero API calls.
+
+    extra_signals: optional dict with additional signal inputs:
+        - breadth_ratio: float (A/D ratio, >1 = more advances)
+        - nifty_vs_ma200_pct: float (% above/below 200-DMA)
+        - pcr: float (put-call ratio)
+        - fii_fno_net: float (FII F&O net position, positive = long)
     """
     score = 0
     signals = []
+    extra = extra_signals or {}
 
     # BEAR SIGNALS (weight: 60%)
     # FII outflow streak (heavy weight)
@@ -197,8 +205,29 @@ def compute_bull_bear_score(fii_context: Dict, macro_context: Dict) -> Dict:
         score -= 10
         signals.append(f"DXY rising → FII selling pressure")
 
-    # Global risk-off (would need global indices data)
-    # Placeholder — can add later with global indices comparison
+    # Market breadth bearish (weak breadth)
+    breadth = extra.get("breadth_ratio")
+    if breadth is not None and breadth < 0.7:
+        score -= 5
+        signals.append(f"Weak breadth: A/D ratio {breadth:.2f}")
+
+    # Nifty below 200-DMA (bearish trend)
+    ma200_dist = extra.get("nifty_vs_ma200_pct")
+    if ma200_dist is not None and ma200_dist < -3:
+        score -= 5
+        signals.append(f"Nifty {abs(ma200_dist):.1f}% below 200-DMA (bearish trend)")
+
+    # PCR > 1.3 (contrarian bear — call building)
+    pcr = extra.get("pcr")
+    if pcr is not None and pcr > 1.3:
+        score -= 5
+        signals.append(f"PCR {pcr:.2f} — CALL building (resistance)")
+
+    # FII net short in F&O
+    fii_fno = extra.get("fii_fno_net")
+    if fii_fno is not None and fii_fno < -50000:
+        score -= 5
+        signals.append(f"FII F&O net short: {fii_fno:+,.0f}")
 
     # BULL SIGNALS (weight: 40%)
     # DII high absorption
@@ -215,6 +244,26 @@ def compute_bull_bear_score(fii_context: Dict, macro_context: Dict) -> Dict:
     if dxy_dir == "FALLING":
         score += 10
         signals.append(f"DXY falling → FII buying opportunity")
+
+    # Market breadth bullish (strong breadth)
+    if breadth is not None and breadth > 1.5:
+        score += 5
+        signals.append(f"Strong breadth: A/D ratio {breadth:.2f}")
+
+    # Nifty above 200-DMA (bullish trend)
+    if ma200_dist is not None and ma200_dist > 3:
+        score += 5
+        signals.append(f"Nifty {ma200_dist:.1f}% above 200-DMA (bullish trend)")
+
+    # PCR < 0.7 (contrarian bull — put building / support)
+    if pcr is not None and pcr < 0.7:
+        score += 5
+        signals.append(f"PCR {pcr:.2f} — PUT building (support)")
+
+    # FII net long in F&O
+    if fii_fno is not None and fii_fno > 50000:
+        score += 5
+        signals.append(f"FII F&O net long: {fii_fno:+,.0f}")
 
     # Normalize to 0-100 scale
     normalized_score = (score + 40) * 1.25  # -40 → 0, +40 → 100
@@ -405,7 +454,8 @@ def get_market_narrative(fii_context: Dict = None, macro_context: Dict = None, b
         )
 
 
-def format_context_for_ai(fii_context: Dict, macro_context: Dict, bull_bear: Dict) -> str:
+def format_context_for_ai(fii_context: Dict, macro_context: Dict, bull_bear: Dict,
+                           extra_signals: Dict = None) -> str:
     """
     Pre-format all computed conclusions for AI prompt.
     AI receives scored conclusions only — writes narrative.
@@ -440,6 +490,22 @@ def format_context_for_ai(fii_context: Dict, macro_context: Dict, bull_bear: Dic
         lines.append(f"│ Confidence: {bull_bear.get('confidence', 'N/A')} ({bull_bear.get('active_signal_count', 0)} signals)")
         lines.append(f"│ Dominant: {bull_bear.get('dominant_factor', 'N/A')}")
         lines.append(f"│ Key: {' | '.join(bull_bear.get('key_drivers', ['N/A']))}")
+
+    # Extra signals (breadth, 200-DMA, PCR, F&O)
+    if extra_signals:
+        parts = []
+        if "breadth_ratio" in extra_signals:
+            parts.append(f"A/D: {extra_signals['breadth_ratio']:.2f}")
+        if "nifty_vs_ma200_pct" in extra_signals:
+            d = extra_signals["nifty_vs_ma200_pct"]
+            parts.append(f"vs 200-DMA: {d:+.1f}%")
+        if "pcr" in extra_signals:
+            parts.append(f"PCR: {extra_signals['pcr']:.2f}")
+        if "fii_fno_net" in extra_signals:
+            parts.append(f"FII F&O: {extra_signals['fii_fno_net']:+,.0f}")
+        if parts:
+            lines.append("┌─ Technical/Positioning ──────────────")
+            lines.append(f"│ {' | '.join(parts)}")
     
     # Cross-signal narrative
     if fii_context.get("ok") and macro_context:
@@ -451,14 +517,370 @@ def format_context_for_ai(fii_context: Dict, macro_context: Dict, bull_bear: Dic
     return "\n".join(lines)
 
 
+def format_context_for_ai_full(ctx: Dict) -> str:
+    """
+    Format full context including global risk, yield spread, momentum.
+    Called from formatters.py with the complete run_contextualization output.
+    """
+    base = format_context_for_ai(
+        ctx.get("fii_context", {}),
+        ctx.get("macro_context", {}),
+        ctx.get("bull_bear", {}),
+        extra_signals=ctx.get("extra_signals"),
+    )
+
+    lines = [base]
+
+    # Global Risk Composite
+    gr = ctx.get("global_risk", {})
+    if gr.get("ok"):
+        lines.append(f"┌─ Global Risk ──────────────────────")
+        lines.append(f"│ {gr['composite']} (score: {gr['score']:+d})")
+        for sig in gr.get("signals", []):
+            lines.append(f"│ • {sig}")
+
+    # VIX Spread
+    vs = ctx.get("vix_spread", {})
+    if vs.get("ok"):
+        lines.append(f"┌─ VIX Spread ───────────────────────")
+        lines.append(f"│ CBOE: {vs['cboe_vix']:.1f} | India: {vs['india_vix']:.1f} | Spread: {vs['spread']:+.1f}")
+        lines.append(f"│ {vs['label']}")
+
+    # Credit Stress
+    cs = ctx.get("credit_stress", {})
+    if cs.get("ok"):
+        lines.append(f"┌─ Credit Stress ────────────────────")
+        lines.append(f"│ HYG: ${cs['hyg_price']:.2f} ({cs['hyg_weekly_change']:+.1f}% weekly) → {cs['level']}")
+
+    # Yield Spread
+    ys = ctx.get("yield_spread", {})
+    if ys.get("ok"):
+        lines.append(f"┌─ Yield Spread ─────────────────────")
+        lines.append(f"│ India-US: {ys['spread']:+.2f}% (US10Y: {ys['us_10y']:.2f}%)")
+        lines.append(f"│ {ys['label']}")
+
+    # India Structural
+    ind = ctx.get("india_structural", {})
+    if ind.get("ok"):
+        rr = ind.get("real_rate", {})
+        if rr.get("ok"):
+            lines.append(f"┌─ India Structural ─────────────────")
+            lines.append(f"│ Real Rate: {rr['real_rate']:+.2f}% (repo {rr['repo_rate']}% - CPI {rr['cpi']}%)")
+            lines.append(f"│ Oil+INR: {ind['oil_inr_signal']}")
+            sc = ind.get("smallcap_ratio", {})
+            if sc.get("ok"):
+                lines.append(f"│ Smallcap/Largecap: {sc['ratio']:.3f} — {sc['label']}")
+
+    # Momentum Regime
+    mom = ctx.get("momentum", {})
+    if mom.get("ok"):
+        lines.append(f"┌─ Momentum (12M) ───────────────────")
+        lines.append(f"│ 12M Return: {mom['momentum_12m']:+.1f}% → {mom['regime']}")
+
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MOMENTUM REGIME: 12-month trend filter
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_momentum_regime(nifty_closes: list) -> Dict:
+    """
+    12-month (252 trading days) momentum regime filter.
+    Positive return = bull regime, Negative = bear regime.
+    The most robust and simplest regime filter in quantitative finance.
+    """
+    if not nifty_closes or len(nifty_closes) < 252:
+        return {"ok": False, "message": f"Need 252 days, have {len(nifty_closes) if nifty_closes else 0}"}
+
+    current = nifty_closes[-1]
+    year_ago = nifty_closes[-252]
+    momentum = (current / year_ago - 1) * 100
+
+    if momentum > 15:
+        regime = "STRONG BULL"
+    elif momentum > 5:
+        regime = "BULL"
+    elif momentum > -5:
+        regime = "NEUTRAL"
+    elif momentum > -15:
+        regime = "BEAR"
+    else:
+        regime = "STRONG BEAR"
+
+    return {
+        "ok": True,
+        "momentum_12m": round(momentum, 2),
+        "regime": regime,
+        "current": round(current, 2),
+        "year_ago": round(year_ago, 2),
+    }
+
+
+def compute_yield_spread(anchor_data: list) -> Dict:
+    """
+    Compute India-US yield spread from macro anchors.
+    Spread = India G-Sec yield - US 10Y yield
+    Widening spread = FII inflow incentive
+    Narrowing spread = FII outflow risk
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    us_10y = None
+    for a in anchor_data:
+        if a.get("name") == "US 10Y Yield" and a.get("ok"):
+            us_10y = a["price"]
+            break
+
+    if us_10y is None:
+        return {"ok": False, "message": "US 10Y not available"}
+
+    # India G-Sec approximate (use typical value or try to fetch)
+    india_gsec = 7.1  # Approximate — will be replaced with live data when available
+
+    spread = round(india_gsec - us_10y, 2)
+
+    if spread > 3.5:
+        label = "WIDE spread — strong FII carry trade incentive"
+    elif spread > 2.5:
+        label = "NORMAL spread"
+    elif spread > 1.5:
+        label = "NARROWING — FII outflow risk"
+    else:
+        label = "TIGHT — FII outflows likely"
+
+    return {
+        "ok": True,
+        "spread": spread,
+        "us_10y": us_10y,
+        "india_gsec": india_gsec,
+        "label": label,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GLOBAL RISK SIGNALS — Multipolar World Framework
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_vix_spread(anchor_data: List[Dict]) -> Dict:
+    """
+    CBOE VIX vs India VIX spread.
+    Positive spread (CBOE > India) = global fear > local fear → FII selling risk
+    Negative spread (India > CBOE) = local event risk (elections, RBI, geopolitics)
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    cboe_vix = None
+    india_vix = None
+
+    for a in anchor_data:
+        if a.get("name") == "CBOE VIX" and a.get("ok"):
+            cboe_vix = a["price"]
+        elif a.get("name") == "India VIX" and a.get("ok"):
+            india_vix = a["price"]
+
+    if cboe_vix is None or india_vix is None:
+        return {"ok": False}
+
+    spread = round(cboe_vix - india_vix, 2)
+
+    if spread > 5:
+        label = "GLOBAL FEAR DOMINANT — FII selling risk high"
+    elif spread > 2:
+        label = "ELEVATED GLOBAL FEAR"
+    elif spread > -2:
+        label = "BALANCED — local and global fear aligned"
+    elif spread > -5:
+        label = "LOCAL FEAR DOMINANT — event-driven risk"
+    else:
+        label = "EXTREME LOCAL FEAR — domestic crisis signal"
+
+    return {
+        "ok": True,
+        "cboe_vix": cboe_vix,
+        "india_vix": india_vix,
+        "spread": spread,
+        "label": label,
+    }
+
+
+def compute_credit_stress(anchor_data: List[Dict]) -> Dict:
+    """
+    US High Yield ETF (HYG) as credit stress indicator.
+    HYG falling = credit spreads widening = liquidity stress → EM outflows.
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    hyg = None
+    hyg_weekly = None
+
+    for a in anchor_data:
+        if a.get("name") == "US High Yield" and a.get("ok"):
+            hyg = a["price"]
+            hyg_weekly = a.get("weekly_change_pct")
+
+    if hyg is None:
+        return {"ok": False}
+
+    weekly_change = hyg_weekly or 0
+
+    if weekly_change < -5:
+        label = "CREDIT CRISIS — severe stress, expect EM outflows"
+        level = "CRISIS"
+    elif weekly_change < -2:
+        label = "CREDIT STRESS RISING — risk-off spreading"
+        level = "STRESS"
+    elif weekly_change < -1:
+        label = "MILD CREDIT WEAKNESS"
+        level = "MILD"
+    elif weekly_change < 1:
+        label = "STABLE credit conditions"
+        level = "STABLE"
+    else:
+        label = "CREDIT RISK-ON — spreads tightening"
+        level = "RISK_ON"
+
+    return {
+        "ok": True,
+        "hyg_price": hyg,
+        "hyg_weekly_change": weekly_change,
+        "level": level,
+        "label": label,
+    }
+
+
+def compute_global_risk_composite(anchor_data: List[Dict]) -> Dict:
+    """
+    Combine CBOE VIX, S&P 500 trend, HYG credit stress, DXY into
+    a single GLOBAL RISK-ON / RISK-OFF / MIXED signal.
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    signals = []
+    score = 0  # Positive = risk-on, negative = risk-off
+
+    # CBOE VIX
+    for a in anchor_data:
+        if a.get("name") == "CBOE VIX" and a.get("ok"):
+            vix = a["price"]
+            if vix > 25:
+                score -= 2
+                signals.append(f"CBOE VIX {vix:.0f} (HIGH FEAR)")
+            elif vix > 20:
+                score -= 1
+                signals.append(f"CBOE VIX {vix:.0f} (elevated)")
+            elif vix < 15:
+                score += 1
+                signals.append(f"CBOE VIX {vix:.0f} (complacent)")
+            else:
+                signals.append(f"CBOE VIX {vix:.0f} (normal)")
+
+    # S&P 500 (from global indices, not in anchor_data — use DXY as proxy)
+    for a in anchor_data:
+        if a.get("name") == "Dollar Index" and a.get("ok"):
+            dxy_chg = a.get("change_pct", 0) or 0
+            if dxy_chg > 1:
+                score -= 1
+                signals.append(f"DXY +{dxy_chg:.1f}% (dollar strength = EM headwind)")
+            elif dxy_chg < -1:
+                score += 1
+                signals.append(f"DXY {dxy_chg:.1f}% (dollar weakness = EM tailwind)")
+
+    # HYG credit stress
+    credit = compute_credit_stress(anchor_data)
+    if credit.get("ok"):
+        if credit["level"] == "CRISIS":
+            score -= 2
+        elif credit["level"] == "STRESS":
+            score -= 1
+        elif credit["level"] == "RISK_ON":
+            score += 1
+        signals.append(f"HYG {credit['hyg_weekly_change']:+.1f}% ({credit['level']})")
+
+    # Composite
+    if score >= 2:
+        composite = "GLOBAL RISK-ON"
+    elif score >= 1:
+        composite = "MILDLY RISK-ON"
+    elif score <= -2:
+        composite = "GLOBAL RISK-OFF"
+    elif score <= -1:
+        composite = "MILDLY RISK-OFF"
+    else:
+        composite = "MIXED"
+
+    return {
+        "ok": True,
+        "score": score,
+        "composite": composite,
+        "signals": signals,
+    }
+
+
+def compute_india_structural(anchor_data: List[Dict]) -> Dict:
+    """
+    India domestic structural indicators:
+    - Real rate (repo - CPI)
+    - Oil impact (Brent + INR)
+    - Credit conditions proxy
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    # Real rate (from macro_fetcher)
+    from src.macro_fetcher import compute_real_rate
+    real = compute_real_rate()
+
+    # Oil + INR composite
+    brent = None
+    inr = None
+    for a in anchor_data:
+        if a.get("name") == "Brent Crude" and a.get("ok"):
+            brent = a["price"]
+        elif a.get("name") == "USD/INR" and a.get("ok"):
+            inr = a["price"]
+
+    oil_inr_signal = "NEUTRAL"
+    if brent and inr:
+        if brent > 90 and inr > 85:
+            oil_inr_signal = "STRESS — high oil + weak INR = current account risk"
+        elif brent > 80 and inr > 83:
+            oil_inr_signal = "ELEVATED — watch for INR defense by RBI"
+        elif brent < 70:
+            oil_inr_signal = "FAVORABLE — low oil supports INR and inflation"
+
+    # Smallcap/Largecap ratio (risk appetite)
+    smallcap = {"ok": False}
+    try:
+        from src.data_fetcher import fetch_smallcap_ratio
+        smallcap = fetch_smallcap_ratio()
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "real_rate": real,
+        "brent": brent,
+        "inr": inr,
+        "oil_inr_signal": oil_inr_signal,
+        "smallcap_ratio": smallcap,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN: Run all contextualization for a job execution
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_contextualization(anchor_data: List[Dict]) -> Dict:
+def run_contextualization(anchor_data: List[Dict], extra_signals: Dict = None) -> Dict:
     """
     Full contextualization pipeline — runs inside single job execution.
     Returns all computed context for prompt injection.
+
+    extra_signals: optional dict with breadth_ratio, nifty_vs_ma200_pct, pcr, fii_fno_net
     """
     # Get FII/DII context from DB
     fii_context = get_fii_dii_context(days=30)
@@ -466,13 +888,34 @@ def run_contextualization(anchor_data: List[Dict]) -> Dict:
     # Get macro context (VIX, DXY) from fetched anchors
     macro_context = get_macro_context(anchor_data)
 
-    # Compute Bull/Bear score
-    bull_bear = compute_bull_bear_score(fii_context, macro_context)
+    # Compute Bull/Bear score with extra signals
+    bull_bear = compute_bull_bear_score(fii_context, macro_context, extra_signals=extra_signals)
+
+    # Compute yield spread from anchors
+    yield_spread = compute_yield_spread(anchor_data)
+
+    # Compute momentum regime (if Nifty closes available from extra_signals)
+    momentum = {"ok": False}
+    nifty_closes = (extra_signals or {}).get("nifty_closes")
+    if nifty_closes:
+        momentum = compute_momentum_regime(nifty_closes)
+
+    # Global risk signals (multipolar world framework)
+    vix_spread = compute_vix_spread(anchor_data)
+    credit_stress = compute_credit_stress(anchor_data)
+    global_risk = compute_global_risk_composite(anchor_data)
+    india_structural = compute_india_structural(anchor_data)
 
     return {
         "fii_context": fii_context,
         "macro_context": macro_context,
         "bull_bear": bull_bear,
+        "yield_spread": yield_spread,
+        "momentum": momentum,
+        "vix_spread": vix_spread,
+        "credit_stress": credit_stress,
+        "global_risk": global_risk,
+        "india_structural": india_structural,
     }
 
 

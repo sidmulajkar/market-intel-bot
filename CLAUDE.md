@@ -2,37 +2,71 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+---
 
-AI-powered market intelligence bot that sends Telegram messages (text + heatmap images) on a daily schedule. Two execution paths:
+## High-Level Overview
 
-- **Path A (Visual)**: `fetch → heatmap_generator → send_image → Telegram` — no AI model involved
-- **Path B (AI)**: `fetch → formatters.py → master_prompt.txt → ai_engine.analyze() → send_text → Telegram`
+**What:** AI-powered Indian market intelligence bot — sends daily Telegram analysis (text + heatmaps).
+
+**Stack:** Python, Supabase, Telegram Bot, Groq/Google AI, NSE/AMFI/SEBI data, FinBERT sentiment.
+
+**How it works:**
+1. **5 AM** — Fetch FII/DII data from NSE → store in Supabase
+2. **7 AM** — Morning analysis: fetch 9 macro anchors + global indices + news → format 11 blocks → AI generates quant brief → send to Telegram
+3. **6 PM** — Evening analysis: full 11 blocks including derivatives, shareholding QoQ, MF flows → AI brief → Telegram
+
+**The 11 Blocks:**
+| Block | Content | Key Signals |
+|-------|---------|-------------|
+| 0 | Market Posture | Bull/Bear score (8 signals), global risk composite, VIX spread, credit stress |
+| 1 | Global Indices + Breadth | 18 indices, A/D ratio, McClellan Oscillator, Nifty vs 200-DMA |
+| 2 | Macro + Valuation | 9 anchors (USDINR, Brent, Gold, VIX, DXY, US10Y, CBOE VIX, HYG, WTI), P/E, risk premium, reverse DCF |
+| 3 | Sector FPI | FPI sector-wise flows, rotation signals |
+| 4 | FII/DII Flows | Cash market + F&O participant positioning |
+| 5 | Derivatives | PCR, Max Pain, OI zones, GEX, 25D skew, advanced OI (6 signals) |
+| 6 | News | Global + Indian, FinBERT sentiment, impact scoring, contrarian extremes |
+| 7 | Insider | NSE bulk/block deals, Indian stocks only |
+| 8 | Watchlist + TA | Technical analysis (RSI, MACD, Bollinger), shareholding QoQ changes |
+| 9 | Macro Calendar | Upcoming events (CPI, RBI MPC, IIP), RBI policy, real rate |
+| 10 | MF Flows | Industry-wide AMFI category flows, SIP trends |
+
+**Intelligence Layers:**
+- **Valuation** — Nifty P/E, P/B, earnings yield, equity risk premium, reverse DCF, 3Y percentile
+- **Derivatives** — GEX (gamma exposure), 25D risk reversal (skew), 6 advanced OI signals
+- **Macro** — 9 anchors batch-fetched, VIX spread (CBOE vs India), credit stress (HYG), yield spread, real rate
+- **Regime** — Bull/Bear score (8 signals), 12M momentum, global risk composite
+- **Contrarian** — Sentiment extremes, SIP concentration (HHI), PCR contrarian readings
+- **Quant** — Percentiles, cross-signal patterns (7), backtest function, regime transitions
+
+---
 
 ## Architecture
 
 ```
 src/                       # Library modules (shared)
-├── data_fetcher.py        # yfinance, Finnhub, NSE, AMFI, RSS data fetching
+├── data_fetcher.py        # yfinance, Finnhub, NSE, AMFI, RSS, smallcap ratio, McClellan
 ├── ai_engine.py           # AI routing (Groq ↔ Google fallback), FinBERT sentiment
 ├── formatters.py          # Data → block string (Path B), quant enrichment calls
-├── quant_enrichment.py    # Percentiles, cross-signal correlations, regime detection, news impact scoring
+├── quant_enrichment.py    # Percentiles, cross-signals, backtest, contrarian, consensus
 ├── technical_analysis.py  # RSI, 200-DMA, S/R, MACD, Bollinger Bands from OHLCV
+├── valuation_engine.py    # Nifty P/E, P/B, earnings yield, risk premium, reverse DCF
+├── macro_fetcher.py       # Macro calendar, RBI policy tracker, real rate
+├── context_engine.py      # Bull/Bear (8 signals), global risk, VIX spread, credit stress, momentum, yield spread
+├── options_engine.py      # NSE options chain, max pain, PCR, GEX, skew, advanced OI
 ├── fii_derivatives.py     # F&O participant OI data (FII/DII/Client long/short)
 ├── fii_sector.py          # FPI sector-wise data (SEBI/NSE), sector rotation
-├── context_engine.py      # Bull/Bear scoring, z-scores, streaks, DII absorption, narratives
-├── options_engine.py      # NSE options chain, max pain, PCR, OI zones, OI shifts
 ├── insider_tracker.py     # NSE bulk/block deals, Indian stock filtering
+├── shareholding_tracker.py # Promoter/FII/DII/Public % with QoQ comparison
+├── nse_session.py         # Unified NSE session manager with TTL, ErrorBudget
 ├── db.py                  # Supabase CRUD + purge logic
 ├── validator.py           # News trust scoring
 ├── telegram_sender.py     # Telegram delivery
 ├── heatmap_generator.py   # World equity heatmap
 ├── sector_heatmap.py      # India sector heatmap
-├── commodity_heatmap.py   # USDINR/Brent/Gold heatmap
-└── ...
+└── commodity_heatmap.py   # USDINR/Brent/Gold heatmap
 
 jobs/                      # Entry points (triggered by GitHub Actions)
-├── market_intel.py        # 7:00 AM / 6:00 PM: full 10-block AI analysis (Path B)
+├── market_intel.py        # 7:00 AM / 6:00 PM: full 10-block AI analysis
 ├── morning_brief.py       # 8:00 AM: heatmaps + short AI brief
 ├── evening_report.py      # 8:00 PM: US session heatmap
 ├── fii_dii_fetch.py       # 5:00 AM: NSE FII/DII → Supabase
@@ -42,94 +76,92 @@ jobs/                      # Entry points (triggered by GitHub Actions)
 ├── insider_tracker.py     # Bulk/block deals with AI interpretation
 └── ...
 
+config/
+├── master_prompt.txt      # AI prompt template with interpretation rules
+├── macro_calendar.json    # Indian macro events (CPI, RBI MPC, IIP dates)
+├── settings.json          # Basic settings (timezone, market, AI provider)
+├── watchlist.json         # Default stock watchlist (fallback)
+└── mf_watchlist.json      # Default MF scheme codes (fallback)
+
+sql/
+└── create_new_tables.sql  # Supabase table creation (valuation_history, market_breadth_history)
+
 .github/workflows/         # GitHub Actions (workflow_dispatch only)
 cron-job.org/              # Triggers workflows at specific IST times
 ```
+
+---
 
 ## AI Routing
 
 `src/ai_engine.py` handles all AI calls:
 
-- `ai.analyze(task="fast", prompt)` → Groq (llama-3.3-70b) → Google (gemini-1.5-flash)
-- `ai.analyze(task="volume", prompt)` → Google (gemini-1.5-flash) → Groq
+- `ai.analyze(task="fast", prompt)` → Groq (llama-3.3-70b) → Google (gemini-2.0-flash)
+- `ai.analyze(task="volume", prompt)` → Google (gemini-2.0-flash) → Groq
 - `ai.sentiment(text)` → FinBERT via HuggingFace API
-- Both Groq and Google now receive SYSTEM_PROMPT (quant-focused persona)
-- Max tokens: 1000 (both), Temperature: 0.3
+- Max tokens: 1000, Temperature: 0.3
 
-## Formatter Rules
+## Macro Anchors (9 tickers, batch fetched)
 
-Every function in `formatters.py` must:
-1. Return `str` — the formatted block for the prompt
-2. Return `""` (empty string) on any failure — never raise
-3. Not import or call `ai_engine`
-4. Compute trends/anomalies in the formatter (DB stores raw data only)
-5. Add quant context: percentiles, significance labels, historical comparisons
+| Anchor | Symbol | Purpose |
+|--------|--------|---------|
+| USD/INR | `USDINR=X` | INR weakness |
+| Brent Crude | `BZ=F` | Energy cost, current account |
+| Gold | `GC=F` | Safe haven |
+| India VIX | `^INDIAVIX` | Local fear gauge |
+| Dollar Index | `DX-Y.NYB` | Dollar strength = EM headwind |
+| US 10Y Yield | `^TNX` | Global rates, FII allocation |
+| CBOE VIX | `^VIX` | Global fear gauge |
+| US High Yield | `HYG` | Credit stress proxy |
+| WTI Crude | `CL=F` | Secondary oil benchmark |
 
-## Path B: market_intel.py
+## Context Engine Signals
 
-Uses `config/master_prompt.txt` with block placeholders `{block_0}` through `{block_10}`:
-- Block 0: Market Posture (Bull/Bear from context_engine)
-- Block 1: Global Indices + Market Breadth + Nifty Technical Levels
-- Block 2: Macro Anchors (USDINR, Brent, Gold, VIX, DXY)
-- Block 3: Sector FPI Activity (FPI sector-wise flows, rotation signals)
-- Block 4: FII/DII Flows + F&O Participant Positioning
-- Block 5: Derivatives (PCR, Max Pain, OI Zones from options_engine)
-- Block 6: News Intelligence (Global + Indian, FinBERT sentiment, impact scoring)
-- Block 7: Insider Activity (NSE bulk/block deals, Indian stocks only)
-- Block 8: Watchlist + Technical Analysis (RSI, S/R, MACD, Bollinger)
-- Block 9: Macro Calendar (Phase 2 — not yet implemented)
-- Block 10: MF Flow Intelligence (industry-wide AMFI category data)
+| Signal | Source | What It Tells You |
+|--------|--------|-------------------|
+| Bull/Bear Score | 8 inputs | Overall market direction (0-100) |
+| Global Risk Composite | CBOE VIX + HYG + DXY | RISK-ON / RISK-OFF / MIXED |
+| VIX Spread | CBOE VIX - India VIX | Global vs local fear |
+| Credit Stress | HYG weekly change | Liquidity crisis indicator |
+| Yield Spread | India G-Sec - US 10Y | FII carry trade incentive |
+| Real Rate | Repo - CPI | Policy tightness |
+| Momentum (12M) | Nifty 252-day return | Bull/bear regime |
+| Smallcap/Largecap | Nifty Smallcap 250 / Nifty 50 | Risk appetite, cycle position |
+| Oil+INR | Brent + USDINR | Current account stress |
 
-Prompt assembly: replace placeholders, remove empty block headers with regex.
+## Supabase Tables
 
-## Quant Enrichment Layer (`src/quant_enrichment.py`)
+| Table | PK | Retention | Purpose |
+|-------|-----|-----------|---------|
+| `watchlist` | symbol | Permanent | User's stock watchlist |
+| `mf_watchlist` | scheme_code | Permanent | User's MF schemes |
+| `bot_state` | key | Permanent | Telegram update offset |
+| `sent_alerts` | id | 30 days | Alert deduplication |
+| `market_snapshots` | date | 90 days | Global indices snapshot |
+| `fii_dii_flows` | date | 61 trading days | Daily FII/DII data |
+| `mf_flows` | month+category | 2 months | AMFI category flows |
+| `options_snapshots` | date+run | 7 days | Derivatives snapshots |
+| `valuation_history` | date+index_name | 3 years | P/E, P/B, DY, earnings yield |
+| `market_breadth_history` | date | 90 days | A/D ratios for McClellan + percentile |
 
-Pre-computes intelligence from raw data before sending to AI:
+SQL to create new tables: `sql/create_new_tables.sql`
 
-- `compute_percentile()` — where does current value sit vs history?
-- `compute_cross_signals()` — 7 cross-signal patterns with historical win rates
-- `detect_regime_transition()` — VIX/FII regime changes
-- `score_news_impact()` — HIGH/MEDIUM/LOW impact scoring with category tags
-- `generate_scenarios()` — probability-weighted bull/bear/base scenarios
+## Key Patterns
 
-## Technical Analysis (`src/technical_analysis.py`)
+- NSE APIs require session cookies — use `src/nse_session.py` (shared session, 5-min TTL)
+- Options chain: `/api/option-chain-indices` for NIFTY/BANKNIFTY (includes IV data)
+- Valuation: `/api/allIndices` for P/E, P/B data
+- Black-Scholes: `_bs_gamma()`, `_bs_delta()` in options_engine.py for GEX/skew
+- All formatters return `""` on failure — never raise
+- NaN handling: `_safe_float()` throughout
 
-Computes from existing OHLCV data (zero API cost):
+## GitHub Actions Constraint
 
-- `compute_rsi()` — RSI(14) with overbought/oversold labels
-- `compute_moving_averages()` — 20/50/200-DMA with distance %
-- `compute_support_resistance()` — swing high/low + psychological levels
-- `compute_macd()` — MACD line, signal, histogram, crossover detection
-- `compute_bollinger_bands()` — upper/lower bands, %B position
-- `compute_full_analysis()` — runs all indicators, returns complete picture
-
-## FII/DII Intelligence
-
-### Cash Market (`context_engine.py` + `formatters.py` format_flows)
-- Z-score vs 20D avg, consecutive streak detection, DII absorption ratio
-- 5-day stats, 4-week trend with labels (deteriorating/improving/mixed)
-
-### F&O Positioning (`src/fii_derivatives.py`)
-- NSE F&O participant-wise OI (FII/DII/Client long/short)
-- FII long/short ratio, hedging vs directional detection
-- Appended to Block 4
-
-### Sector FPI (`src/fii_sector.py`)
-- SEBI/NSE FPI sector-wise investment data
-- Top inflows/outflows, rotation signals
-- Fills Block 3
-
-## News Pipeline
-
-### Sources
-- **Global**: Finnhub (general + forex + crypto categories)
-- **Indian**: RSS feeds (Economic Times, MoneyControl, Livemint)
-
-### Processing
-- Trust scoring: source-name matching (validator.py)
-- Sentiment: FinBERT via HuggingFace (ai_engine.py)
-- Impact scoring: quant_enrichment.py (HIGH/MEDIUM/LOW + category tags)
-- Format: split Global News / India News in Block 6
+Max 3-4 minutes per runner:
+- **5 AM** `fii_dii_fetch.py` — data collection only (~1 min)
+- **7 AM** `market_intel.py` morning — analysis + AI (~3 min)
+- **6 PM** `market_intel.py` evening — full analysis (~3-4 min)
+- **Monthly** `mf_intelligence.py` — AMFI processing (~2 min)
 
 ## Environment Variables
 
@@ -141,45 +173,3 @@ Computes from existing OHLCV data (zero API cost):
 | `FINNHUB_KEY` | data_fetcher.py |
 | `SUPABASE_URL`, `SUPABASE_KEY` | db.py |
 | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` | telegram_sender.py |
-
-## Supabase Tables
-
-- `watchlist`, `mf_watchlist`, `bot_state`, `sent_alerts` — existing, unchanged
-- `market_snapshots` — global indices saved by morning_brief
-- `fii_dii_flows` — daily NSE FII/DII (date PK, 61-day purge)
-- `mf_flows` — monthly AMFI category flows (month+category PK, 2-month purge)
-- `options_snapshots` — morning/evening PCR, max_pain, OI zones (7-day purge)
-
-## Cron-job.org
-
-All workflow triggers are external (cron-job.org → GitHub workflow_dispatch). No cron schedules in GitHub Actions. Jobs run Mon-Fri only.
-
-## Key Patterns
-
-- Path setup in job files: `sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))`
-- Supabase lazy init: `from supabase import create_client` inside `get_client()`
-- Image generation: PIL + Pilmoji, fonts from `/usr/share/fonts/truetype/dejavu/`
-- NSE data: requires session cookies (hit homepage first, then API)
-- AMFI data: `amfiindia.com/spages/NAVAll.txt` (public, no auth)
-- Insider filtering: `_is_valid_indian_symbol()` rejects ETFs, non-Indian instruments
-- NaN handling: `_safe_float()` throughout data pipelines
-
-## Adding a New Job
-
-1. Create `jobs/{job_name}.py` with `main()` entry point
-2. Create `.github/workflows/{job_name}.yml` with `workflow_dispatch`
-3. Add cron-job.org entry to trigger the workflow
-4. For Path B: add formatter to `formatters.py`, add block to `config/master_prompt.txt`
-
-## AI Output Format
-
-The master prompt instructs the AI to produce structured quant output:
-```
-📊 REGIME: [Risk-on/Risk-off/Neutral] (confidence: X%)
-📈 HEADLINE: [Most important number + historical context]
-🔑 KEY SIGNALS: [2-3 signals with numbers + percentiles]
-📊 CROSS-SIGNALS: [Active correlation patterns]
-⚠️ SCENARIOS: [Bull/Bear/Base with probabilities]
-```
-
-Every number must have context — no bare numbers without "since [date]", "Xth percentile", or "vs [benchmark]".

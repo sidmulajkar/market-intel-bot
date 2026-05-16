@@ -2,11 +2,14 @@
 Options Engine — NSE Options Chain Analysis
 Single fetch per job execution. Stores snapshots to Supabase for shift detection.
 
+Includes: Max Pain, PCR, OI Zones, GEX, Skew, Advanced OI, Rollover
+
 Morning job: fetch → compute → store snapshot
 Evening job: fetch → diff vs morning → compute shifts
 """
 import requests
 import os
+import math
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -20,6 +23,9 @@ NSE_HEADERS = {
     "Accept": "application/json",
 }
 
+# Index symbols use different endpoint
+INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "NIFTY BANK", "FINNIFTY", "MIDCPNIFTY"}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # FETCH: NSE Options Chain
@@ -29,101 +35,384 @@ def fetch_nse_options_chain(symbol: str = "NIFTY") -> List[Dict]:
     """
     Fetch NSE options chain for given symbol.
     Selects expiry: nearest expiry, but if <3 days to expiry → use next expiry.
-    Returns list of strike-wise OI data.
-    
+    Returns list of strike-wise OI data including IV.
+
     Note: Uses session to maintain cookies - hits homepage first.
     """
     from datetime import datetime, timedelta
     import requests
-    
-    # Create session and hit homepage first to get cookies
+
     session = requests.Session()
-    homepage = "https://www.nseindia.com/"
     try:
-        session.get(homepage, headers=NSE_HEADERS, timeout=10)
+        session.get("https://www.nseindia.com/", headers=NSE_HEADERS, timeout=10)
     except:
-        pass  # Continue even if homepage fails
-    
-    url = f"https://www.nseindia.com/api/option-chain-equities?symbol={symbol}"
+        pass
+
+    # Use correct endpoint based on symbol type
+    if symbol.upper() in INDEX_SYMBOLS:
+        url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
+    else:
+        url = f"https://www.nseindia.com/api/option-chain-equities?symbol={symbol}"
+
     try:
-        # Retry once on 403 (session cookie expired)
         resp = session.get(url, headers=NSE_HEADERS, timeout=20)
         if resp.status_code == 403:
-            # Retry with fresh session
             session = requests.Session()
             session.get("https://www.nseindia.com/", headers=NSE_HEADERS, timeout=10)
             resp = session.get(url, headers=NSE_HEADERS, timeout=20)
-        
+
         if resp.status_code != 200:
             print(f"⚠️  Options API returned {resp.status_code}")
             return []
 
         data = resp.json()
-        records = data.get("records", [])
-        if not records:
+        records = data.get("records", {})
+        underlying_value = records.get("underlyingValue", 0)
+        expiry_dates = records.get("expiryDates", [])
+        chain_data = records.get("data", [])
+
+        if not chain_data:
             return []
 
-        # Get expiries from data
-        expiries = data.get("expiryList", [])
-        if not expiries:
-            # Fallback: extract unique expiries from records
-            expiries = list(set(r.get("expiryDate", "") for r in records if r.get("expiryDate")))
-        
         # Select appropriate expiry
         selected_expiry = None
         today = datetime.now().date()
-        
-        for exp in expiries:
+
+        for exp in expiry_dates:
             try:
-                exp_date = datetime.strptime(exp, "%d %b %Y").date()
+                exp_date = datetime.strptime(exp, "%d-%b-%Y").date()
                 days_to_expiry = (exp_date - today).days
-                
-                if selected_expiry is None:
-                    selected_expiry = exp
-                    selected_days = days_to_expiry
-                elif days_to_expiry >= 0 and days_to_expiry < selected_days:
-                    # Found closer expiry
-                    if selected_days < 3 and days_to_expiry >= 3:
-                        # Current is too close (<3 days), use next
-                        selected_expiry = exp
-                        selected_days = days_to_expiry
-                    elif selected_days >= 3:
-                        selected_expiry = exp
-                        selected_days = days_to_expiry
+                if days_to_expiry < 0:
+                    continue
+                if selected_expiry is None or days_to_expiry < selected_expiry[1]:
+                    if days_to_expiry >= 3 or selected_expiry is None:
+                        selected_expiry = (exp, days_to_expiry)
             except:
                 continue
-        
-        if not selected_expiry:
-            # Fallback: use any available expiry
-            selected_expiry = expiries[0] if expiries else ""
-        
-        print(f"   📅 Using expiry: {selected_expiry}")
 
-        # Extract relevant fields from selected expiry only
+        if not selected_expiry:
+            selected_expiry = (expiry_dates[0], 0) if expiry_dates else ("", 0)
+
+        expiry_str = selected_expiry[0]
+        days_to_exp = selected_expiry[1]
+        print(f"   📅 Using expiry: {expiry_str} ({days_to_exp}d)")
+
+        # Extract relevant fields including IV
         results = []
-        for rec in records:
-            # Filter by selected expiry
-            if rec.get("expiryDate") != selected_expiry:
+        for rec in chain_data:
+            if rec.get("expiryDate") != expiry_str:
                 continue
-                
+
+            ce = rec.get("CE", {})
+            pe = rec.get("PE", {})
+
             results.append({
                 "strike": rec.get("strikePrice", 0),
-                "call_oi": rec.get("CE", {}).get("openInterest", 0) or 0,
-                "call_change_oi": rec.get("CE", {}).get("changeinOpenInterest", 0) or 0,
-                "call_volume": rec.get("CE", {}).get("totalTradedVolume", 0) or 0,
-                "put_oi": rec.get("PE", {}).get("openInterest", 0) or 0,
-                "put_change_oi": rec.get("PE", {}).get("changeinOpenInterest", 0) or 0,
-                "put_volume": rec.get("PE", {}).get("totalTradedVolume", 0) or 0,
-                "expiry": selected_expiry,
+                "call_oi": ce.get("openInterest", 0) or 0,
+                "call_change_oi": ce.get("changeinOpenInterest", 0) or 0,
+                "call_volume": ce.get("totalTradedVolume", 0) or 0,
+                "call_iv": ce.get("impliedVolatility", 0) or 0,
+                "call_last": ce.get("lastPrice", 0) or 0,
+                "put_oi": pe.get("openInterest", 0) or 0,
+                "put_change_oi": pe.get("changeinOpenInterest", 0) or 0,
+                "put_volume": pe.get("totalTradedVolume", 0) or 0,
+                "put_iv": pe.get("impliedVolatility", 0) or 0,
+                "put_last": pe.get("lastPrice", 0) or 0,
+                "expiry": expiry_str,
+                "days_to_expiry": days_to_exp,
             })
 
-        # Sort by strike price
+        # Store underlying value and metadata
+        if results:
+            results[0]["_underlying"] = underlying_value
+            results[0]["_days_to_expiry"] = days_to_exp
+
         results.sort(key=lambda x: x["strike"])
         return results
 
     except Exception as e:
         print(f"⚠️  Options fetch error: {e}")
         return []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMPUTE: Max Pain, PCR, OI Zones
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BLACK-SCHOLES HELPERS — for GEX and Skew computation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _norm_cdf(x: float) -> float:
+    """Standard normal CDF using math.erfc."""
+    return 0.5 * (1 + math.erfc(x / math.sqrt(2)))
+
+def _norm_pdf(x: float) -> float:
+    """Standard normal PDF."""
+    return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
+
+def _bs_gamma(spot: float, strike: float, iv_pct: float, days: int, r: float = 0.07) -> float:
+    """Black-Scholes gamma for a European option."""
+    if spot <= 0 or strike <= 0 or iv_pct <= 0 or days <= 0:
+        return 0
+    sigma = iv_pct / 100
+    T = days / 365
+    d1 = (math.log(spot / strike) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    return _norm_pdf(d1) / (spot * sigma * math.sqrt(T))
+
+def _bs_delta(spot: float, strike: float, iv_pct: float, days: int, r: float = 0.07, is_call: bool = True) -> float:
+    """Black-Scholes delta."""
+    if spot <= 0 or strike <= 0 or iv_pct <= 0 or days <= 0:
+        return 0
+    sigma = iv_pct / 100
+    T = days / 365
+    d1 = (math.log(spot / strike) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    if is_call:
+        return _norm_cdf(d1)
+    return _norm_cdf(d1) - 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMPUTE: Gamma Exposure (GEX)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_gex(options_data: List[Dict], spot_price: float = None, lot_size: int = 25) -> Dict:
+    """
+    Compute dealer Gamma Exposure (GEX) from options chain.
+    Convention: dealers are short options (retail buys).
+    - Call OI short by dealers → NEGATIVE gamma contribution
+    - Put OI short by dealers → POSITIVE gamma contribution
+
+    Returns: net_gex (per 1% move), gex_flip_level, regime
+    """
+    if not options_data or not spot_price:
+        return {"ok": False}
+
+    days = options_data[0].get("days_to_expiry", 7) or 7
+    net_gex = 0
+    gex_by_strike = []
+
+    for o in options_data:
+        strike = o["strike"]
+        call_oi = o.get("call_oi", 0)
+        put_oi = o.get("put_oi", 0)
+        call_iv = o.get("call_iv", 0) or 15  # Default 15% if missing
+        put_iv = o.get("put_iv", 0) or 15
+
+        # Gamma for calls and puts (same gamma for both in BS)
+        call_gamma = _bs_gamma(spot_price, strike, call_iv, days)
+        put_gamma = _bs_gamma(spot_price, strike, put_iv, days)
+
+        # GEX per strike = gamma * OI * lot_size * spot * 0.01 (per 1% move)
+        # Dealers short calls (negative gamma), short puts (positive gamma)
+        call_gex = -1 * call_gamma * call_oi * lot_size * spot_price * 0.01
+        put_gex = +1 * put_gamma * put_oi * lot_size * spot_price * 0.01
+
+        strike_gex = call_gex + put_gex
+        net_gex += strike_gex
+
+        gex_by_strike.append({
+            "strike": strike,
+            "call_gex": round(call_gex / 1e7, 2),  # In crores
+            "put_gex": round(put_gex / 1e7, 2),
+            "net_gex": round(strike_gex / 1e7, 2),
+        })
+
+    # Find GEX flip level (where cumulative GEX crosses zero)
+    cumulative = 0
+    flip_level = spot_price
+    for g in sorted(gex_by_strike, key=lambda x: x["strike"]):
+        cumulative += g["net_gex"]
+        if cumulative >= 0 and cumulative - g["net_gex"] < 0:
+            flip_level = g["strike"]
+            break
+
+    net_gex_cr = round(net_gex / 1e7, 2)
+
+    if net_gex_cr > 50:
+        regime = "LONG GAMMA (stable, mean-reverting)"
+    elif net_gex_cr < -50:
+        regime = "SHORT GAMMA (unstable, trending)"
+    else:
+        regime = "NEUTRAL GAMMA"
+
+    return {
+        "ok": True,
+        "net_gex_cr": net_gex_cr,
+        "regime": regime,
+        "flip_level": flip_level,
+        "top_strikes": sorted(gex_by_strike, key=lambda x: abs(x["net_gex"]), reverse=True)[:5],
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMPUTE: 25-Delta Risk Reversal (Volatility Skew)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_skew(options_data: List[Dict], spot_price: float = None) -> Dict:
+    """
+    Compute 25-delta risk reversal and butterfly from options chain.
+    25RR = IV(25d call) - IV(25d put)
+    25BF = [IV(25d call) + IV(25d put)] / 2 - IV(ATM)
+    """
+    if not options_data or not spot_price:
+        return {"ok": False}
+
+    days = options_data[0].get("days_to_expiry", 7) or 7
+
+    # Compute delta for each strike and find 25-delta options
+    call_deltas = []
+    put_deltas = []
+    atm_iv = None
+    closest_to_spot = None
+
+    for o in options_data:
+        strike = o["strike"]
+        call_iv = o.get("call_iv", 0)
+        put_iv = o.get("put_iv", 0)
+
+        if call_iv > 0:
+            cd = _bs_delta(spot_price, strike, call_iv, days, is_call=True)
+            call_deltas.append({"strike": strike, "delta": cd, "iv": call_iv})
+
+        if put_iv > 0:
+            pd = _bs_delta(spot_price, strike, put_iv, days, is_call=False)
+            put_deltas.append({"strike": strike, "delta": pd, "iv": put_iv})
+
+        # Track ATM IV
+        if closest_to_spot is None or abs(strike - spot_price) < abs(closest_to_spot - spot_price):
+            closest_to_spot = strike
+            atm_iv = (call_iv + put_iv) / 2 if call_iv > 0 and put_iv > 0 else (call_iv or put_iv)
+
+    # Find 25-delta call (delta ~ +0.25) and 25-delta put (delta ~ -0.25)
+    target_25d_call = min(call_deltas, key=lambda x: abs(x["delta"] - 0.25)) if call_deltas else None
+    target_25d_put = min(put_deltas, key=lambda x: abs(x["delta"] - (-0.25))) if put_deltas else None
+
+    if not target_25d_call or not target_25d_put or not atm_iv:
+        return {"ok": False, "message": "Insufficient IV data for skew"}
+
+    rr_25 = target_25d_call["iv"] - target_25d_put["iv"]
+    bf_25 = (target_25d_call["iv"] + target_25d_put["iv"]) / 2 - atm_iv
+
+    # Interpretation
+    if rr_25 > 2:
+        rr_label = "CALL SKEW (bullish breakout priced)"
+    elif rr_25 < -2:
+        rr_label = "PUT SKEW (crash protection priced)"
+    elif rr_25 < -5:
+        rr_label = "EXTREME PUT SKEW (capitulation or bottom signal)"
+    else:
+        rr_label = "BALANCED SKEW"
+
+    if bf_25 > 3:
+        bf_label = "HIGH convexity (event premium)"
+    elif bf_25 < 1:
+        bf_label = "FLAT smile (complacency)"
+    else:
+        bf_label = "NORMAL"
+
+    return {
+        "ok": True,
+        "risk_reversal_25d": round(rr_25, 2),
+        "butterfly_25d": round(bf_25, 2),
+        "rr_label": rr_label,
+        "bf_label": bf_label,
+        "atm_iv": round(atm_iv, 1),
+        "call_25d_strike": target_25d_call["strike"],
+        "put_25d_strike": target_25d_put["strike"],
+        "call_25d_iv": round(target_25d_call["iv"], 1),
+        "put_25d_iv": round(target_25d_put["iv"], 1),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMPUTE: Advanced OI Signals
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_advanced_oi(options_data: List[Dict], spot_price: float = None) -> Dict:
+    """
+    Compute 6 advanced OI-based signals beyond PCR and max pain.
+    """
+    if not options_data or not spot_price:
+        return {"ok": False}
+
+    # 1. OI Velocity — strikes with >10% OI change rate
+    oi_velocity = []
+    for o in options_data:
+        for side in ["call", "put"]:
+            oi = o.get(f"{side}_oi", 0)
+            change = o.get(f"{side}_change_oi", 0)
+            if oi > 10000 and abs(change) > 0:
+                velocity = abs(change) / oi * 100
+                if velocity > 10:
+                    oi_velocity.append({
+                        "strike": o["strike"],
+                        "side": side.upper(),
+                        "velocity": round(velocity, 1),
+                        "change": change,
+                    })
+
+    # 2. OI Concentration — top 3 strikes as % of total
+    total_oi = sum(o["call_oi"] + o["put_oi"] for o in options_data)
+    strike_totals = [(o["strike"], o["call_oi"] + o["put_oi"]) for o in options_data]
+    top3 = sorted(strike_totals, key=lambda x: x[1], reverse=True)[:3]
+    top3_oi = sum(t[1] for t in top3)
+    concentration = round(top3_oi / total_oi * 100, 1) if total_oi > 0 else 0
+
+    # 3. OI-Price Matrix — classify build-up pattern
+    near_money = [o for o in options_data if abs(o["strike"] - spot_price) / spot_price < 0.03]
+    if near_money:
+        avg_call_change = sum(o["call_change_oi"] for o in near_money) / len(near_money)
+        avg_put_change = sum(o["put_change_oi"] for o in near_money) / len(near_money)
+    else:
+        avg_call_change = avg_put_change = 0
+
+    # 4. OI Weighted Average Strike (OWAS)
+    total_weighted = sum(o["strike"] * (o["call_oi"] + o["put_oi"]) for o in options_data)
+    owas = round(total_weighted / total_oi, 0) if total_oi > 0 else spot_price
+    owas_bias = "BULLISH" if owas > spot_price * 1.01 else "BEARISH" if owas < spot_price * 0.99 else "NEUTRAL"
+
+    # 5. OI Imbalance at top strikes
+    top_imbalances = []
+    for o in options_data:
+        total = o["call_oi"] + o["put_oi"]
+        if total > 50000:  # Only significant strikes
+            imbalance = (o["call_oi"] - o["put_oi"]) / total
+            if abs(imbalance) > 0.4:
+                top_imbalances.append({
+                    "strike": o["strike"],
+                    "imbalance": round(imbalance, 2),
+                    "type": "RESISTANCE" if imbalance > 0.4 else "SUPPORT",
+                })
+    top_imbalances.sort(key=lambda x: abs(x["imbalance"]), reverse=True)
+
+    # 6. Unusual Activity — volume spikes with OI change
+    unusual = []
+    for o in options_data:
+        for side in ["call", "put"]:
+            vol = o.get(f"{side}_volume", 0)
+            oi = o.get(f"{side}_oi", 0)
+            change = o.get(f"{side}_change_oi", 0)
+            if oi > 50000 and vol > oi * 0.3 and abs(change) > 20000:
+                unusual.append({
+                    "strike": o["strike"],
+                    "side": side.upper(),
+                    "volume": vol,
+                    "oi_change": change,
+                    "signal": "INSTITUTIONAL" if abs(change) > 50000 else "ACTIVE",
+                })
+
+    return {
+        "ok": True,
+        "oi_velocity": sorted(oi_velocity, key=lambda x: x["velocity"], reverse=True)[:5],
+        "concentration": concentration,
+        "concentration_strikes": [t[0] for t in top3],
+        "owas": int(owas),
+        "owas_bias": owas_bias,
+        "owas_distance_pct": round((owas - spot_price) / spot_price * 100, 2),
+        "oi_imbalances": top_imbalances[:5],
+        "unusual_activity": unusual[:5],
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -233,19 +522,25 @@ def compute_oi_zones(options_data: List[Dict], spot_price: float = None) -> Dict
 
 def analyze_options_chain(symbol: str = "NIFTY", spot_price: float = None) -> Dict:
     """
-    Full options analysis — fetch + compute all metrics.
+    Full options analysis — fetch + compute all metrics including GEX, skew, advanced OI.
     """
     options_data = fetch_nse_options_chain(symbol)
     if not options_data:
         return {"ok": False, "message": "No options data"}
 
-    # If no spot provided, estimate from ATM strike
+    # Use underlying value from API if available, else estimate from ATM
+    underlying = options_data[0].get("_underlying", 0)
     if not spot_price:
-        spot_price = options_data[len(options_data)//2]["strike"]
+        spot_price = underlying if underlying else options_data[len(options_data)//2]["strike"]
 
     max_pain = compute_max_pain(options_data, spot_price)
     pcr = compute_pcr(options_data, spot_price)
     zones = compute_oi_zones(options_data, spot_price)
+
+    # New metrics — GEX, Skew, Advanced OI
+    gex = compute_gex(options_data, spot_price)
+    skew = compute_skew(options_data, spot_price)
+    advanced = compute_advanced_oi(options_data, spot_price)
 
     return {
         "ok": True,
@@ -254,6 +549,9 @@ def analyze_options_chain(symbol: str = "NIFTY", spot_price: float = None) -> Di
         "max_pain": max_pain,
         "pcr": pcr,
         "zones": zones,
+        "gex": gex,
+        "skew": skew,
+        "advanced_oi": advanced,
         "timestamp": datetime.now().isoformat(),
     }
 
@@ -358,36 +656,44 @@ def compute_oi_shifts(evening_data: List[Dict], symbol: str = "NIFTY") -> Dict:
     call_shifts = []
     put_shifts = []
     
+    # Get spot price from morning snapshot for dynamic thresholds
+    spot = morning.get("spot_price", 0) if morning else 0
+    if not spot and evening_data:
+        spot = evening_data[len(evening_data) // 2]["strike"]  # ATM estimate
+
+    resistance_threshold = spot * 1.02  # 2% above spot
+    support_threshold = spot * 0.98     # 2% below spot
+
     for o in evening_data:
         strike = o.get("strike", 0)
-        
+
         # Call OI changes at higher strikes (resistance area)
         call_change = o.get("call_change_oi", 0)
-        if call_change > 50000 and strike > 22000:  # Resistance area
+        if call_change > 50000 and strike > resistance_threshold:
             call_shifts.append({
                 "strike": strike,
                 "change": call_change,
                 "type": "CALL OI RISING",
                 "signal": f"Shorts building at {strike}, resistance strengthening"
             })
-        elif call_change < -50000 and strike > 22000:
+        elif call_change < -50000 and strike > resistance_threshold:
             call_shifts.append({
                 "strike": strike,
                 "change": call_change,
-                "type": "CALL OI FALLING", 
+                "type": "CALL OI FALLING",
                 "signal": f"Shorts covering, breakout watch above {strike}"
             })
-        
+
         # Put OI changes at lower strikes (support area)
         put_change = o.get("put_change_oi", 0)
-        if put_change > 50000 and strike < 23000:  # Support area
+        if put_change > 50000 and strike < support_threshold:
             put_shifts.append({
                 "strike": strike,
                 "change": put_change,
                 "type": "PUT OI RISING",
                 "signal": f"Hedges building at {strike}, support strengthening"
             })
-        elif put_change < -50000 and strike < 23000:
+        elif put_change < -50000 and strike < support_threshold:
             put_shifts.append({
                 "strike": strike,
                 "change": put_change,
@@ -435,6 +741,53 @@ def run_options_analysis(symbol: str = "NIFTY", store: bool = True, run_label: s
         store_options_snapshot(symbol, run_label, analysis)
 
     return analysis
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FORMAT: Derivatives intelligence for AI prompt
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def format_derivatives_intel(analysis: Dict) -> str:
+    """
+    Format GEX, skew, and advanced OI signals for AI prompt injection.
+    """
+    if not analysis or not analysis.get("ok"):
+        return ""
+
+    lines = []
+
+    # GEX
+    gex = analysis.get("gex", {})
+    if gex.get("ok"):
+        lines.append(f"GEX: {gex['net_gex_cr']:+.0f} Cr per 1% move — {gex['regime']}")
+        lines.append(f"GEX Flip Level: {gex['flip_level']}")
+
+    # Skew
+    skew = analysis.get("skew", {})
+    if skew.get("ok"):
+        lines.append(f"25D Risk Reversal: {skew['risk_reversal_25d']:+.1f} — {skew['rr_label']}")
+        lines.append(f"25D Butterfly: {skew['butterfly_25d']:.1f} — {skew['bf_label']}")
+        lines.append(f"ATM IV: {skew['atm_iv']}% | 25D Call IV: {skew['call_25d_iv']}% | 25D Put IV: {skew['put_25d_iv']}%")
+
+    # Advanced OI
+    adv = analysis.get("advanced_oi", {})
+    if adv.get("ok"):
+        lines.append(f"OWAS: {adv['owas']} ({adv['owas_bias']}, {adv['owas_distance_pct']:+.1f}% from spot)")
+        lines.append(f"OI Concentration: {adv['concentration']}% in top 3 strikes {adv['concentration_strikes']}")
+
+        if adv.get("oi_velocity"):
+            vel = adv["oi_velocity"][0]
+            lines.append(f"Fastest OI: {vel['side']} {vel['strike']} ({vel['velocity']}% velocity)")
+
+        if adv.get("oi_imbalances"):
+            imb = adv["oi_imbalances"][0]
+            lines.append(f"Strongest OI wall: {imb['strike']} ({imb['type']}, imbalance {imb['imbalance']:+.2f})")
+
+        if adv.get("unusual_activity"):
+            ua = adv["unusual_activity"][0]
+            lines.append(f"Unusual: {ua['side']} {ua['strike']} — {ua['signal']} (vol {ua['volume']:,}, OI chg {ua['oi_change']:+,})")
+
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

@@ -95,18 +95,19 @@ def compute_historical_context(current: float, history: List[float],
 # CROSS-ASSET SIGNAL CORRELATIONS — "What does this combination mean?"
 # ═══════════════════════════════════════════════════════════════════════
 
-# Pre-defined correlation patterns with historical win rates
-# These are based on well-documented market relationships
+# Pre-defined correlation patterns with estimated win rates
+# NOTE: Win rates are estimated from market theory, not backtested.
+# Use backtest_cross_signals() to compute actual rates from stored data.
 CROSS_SIGNAL_PATTERNS = [
     {
         "id": "fii_sell_dxy_rise",
         "name": "FII Selling + Dollar Strength",
-        "description": "FII outflows coinciding with DXY strength — historically bearish for EM",
+        "description": "FII outflows coinciding with DXY strength — bearish for EM",
         "conditions": lambda fii, macro: (
             fii.get("fii_z_score", 0) < -1.0 and
             macro.get("dxy", {}).get("direction") == "RISING"
         ),
-        "historical_nifty_decline_pct": 68,
+        "estimated_nifty_decline_pct": 68,
         "avg_nifty_decline": -1.8,
         "signal_type": "bearish",
     },
@@ -118,7 +119,7 @@ CROSS_SIGNAL_PATTERNS = [
             fii.get("fii_z_score", 0) > 1.0 and
             macro.get("vix_regime") == "LOW"
         ),
-        "historical_nifty_rally_pct": 72,
+        "estimated_nifty_rally_pct": 72,
         "avg_nifty_rally": 2.1,
         "signal_type": "bullish",
     },
@@ -130,7 +131,7 @@ CROSS_SIGNAL_PATTERNS = [
             fii.get("dii_absorbed") == "High" and
             fii.get("fii_z_score", 0) < -0.5
         ),
-        "historical_floor_pct": 78,
+        "estimated_floor_pct": 78,
         "avg_max_drawdown": -0.8,
         "signal_type": "supportive",
     },
@@ -143,7 +144,7 @@ CROSS_SIGNAL_PATTERNS = [
             fii.get("fii_streak", 0) >= 3 and
             macro.get("vix_regime") == "HIGH"
         ),
-        "historical_nifty_decline_pct": 82,
+        "estimated_nifty_decline_pct": 82,
         "avg_nifty_decline": -3.2,
         "signal_type": "critical_bear",
     },
@@ -155,7 +156,7 @@ CROSS_SIGNAL_PATTERNS = [
             macro.get("dxy", {}).get("direction") == "FALLING" and
             fii.get("dii_absorbed") == "High"
         ),
-        "historical_inflow_acceleration_pct": 65,
+        "estimated_inflow_acceleration_pct": 65,
         "avg_nifty_rally": 1.5,
         "signal_type": "bullish",
     },
@@ -178,7 +179,7 @@ CROSS_SIGNAL_PATTERNS = [
             fii.get("fii_z_score", 0) > 0.5 and
             macro.get("vix_regime") == "HIGH"
         ),
-        "historical_rally_pct": 70,
+        "estimated_rally_pct": 70,
         "avg_nifty_rally": 2.8,
         "signal_type": "contrarian_bull",
     },
@@ -201,18 +202,21 @@ def compute_cross_signals(fii_context: Dict, macro_context: Dict) -> List[Dict]:
                     "description": pattern["description"],
                     "type": pattern["signal_type"],
                 }
-                # Add historical stats if available
-                if "historical_nifty_decline_pct" in pattern:
-                    signal["hist_prob"] = pattern["historical_nifty_decline_pct"]
+                # Add estimated stats if available
+                if "estimated_nifty_decline_pct" in pattern:
+                    signal["est_prob"] = pattern["estimated_nifty_decline_pct"]
                     signal["avg_move"] = pattern["avg_nifty_decline"]
-                elif "historical_nifty_rally_pct" in pattern:
-                    signal["hist_prob"] = pattern["historical_nifty_rally_pct"]
+                elif "estimated_nifty_rally_pct" in pattern:
+                    signal["est_prob"] = pattern["estimated_nifty_rally_pct"]
                     signal["avg_move"] = pattern["avg_nifty_rally"]
-                elif "historical_floor_pct" in pattern:
-                    signal["hist_prob"] = pattern["historical_floor_pct"]
+                elif "estimated_floor_pct" in pattern:
+                    signal["est_prob"] = pattern["estimated_floor_pct"]
                     signal["avg_move"] = pattern["avg_max_drawdown"]
-                elif "historical_inflow_acceleration_pct" in pattern:
-                    signal["hist_prob"] = pattern["historical_inflow_acceleration_pct"]
+                elif "estimated_inflow_acceleration_pct" in pattern:
+                    signal["est_prob"] = pattern["estimated_inflow_acceleration_pct"]
+                    signal["avg_move"] = pattern["avg_nifty_rally"]
+                elif "estimated_rally_pct" in pattern:
+                    signal["est_prob"] = pattern["estimated_rally_pct"]
                     signal["avg_move"] = pattern["avg_nifty_rally"]
 
                 if "note" in pattern:
@@ -223,6 +227,236 @@ def compute_cross_signals(fii_context: Dict, macro_context: Dict) -> List[Dict]:
             continue
 
     return active_signals
+
+
+def backtest_cross_signals(nifty_closes: List[float], fii_flows: List[Dict],
+                            vix_history: List[float] = None) -> Dict:
+    """
+    Backtest cross-signal patterns against historical data.
+    Uses stored FII/DII flows + Nifty returns to compute actual hit rates.
+
+    Args:
+        nifty_closes: List of Nifty close prices (chronological)
+        fii_flows: List of dicts from Supabase fii_dii_flows table
+                   Each: {date, fiinet_cr, diinet_cr}
+        vix_history: Optional list of VIX values (same length as nifty_closes)
+
+    Returns:
+        {pattern_id: {"win_rate": float, "avg_move": float, "sample_size": int}}
+    """
+    import statistics
+
+    if not nifty_closes or not fii_flows or len(nifty_closes) < 20 or len(fii_flows) < 10:
+        return {"ok": False, "message": "Insufficient data for backtesting"}
+
+    # Compute FII z-scores from flow data
+    fii_values = [f.get("fiinet_cr", 0) for f in fii_flows]
+    fii_mean = statistics.mean(fii_values)
+    fii_std = statistics.stdev(fii_values) if len(fii_values) > 1 else 1
+
+    # Build date-aligned dataset
+    # Assume fii_flows and nifty_closes are roughly aligned (both daily)
+    results = {}
+    for pattern in CROSS_SIGNAL_PATTERNS:
+        pattern_id = pattern["id"]
+        wins = 0
+        total = 0
+        moves = []
+
+        for i in range(len(fii_flows) - 5):  # Need 5 days forward
+            # Build synthetic contexts for this day
+            fii_val = fii_flows[i].get("fiinet_cr", 0)
+            fii_z = (fii_val - fii_mean) / fii_std if fii_std > 0 else 0
+
+            dii_val = fii_flows[i].get("diinet_cr", 0)
+            dii_absorbed = "High" if abs(dii_val) > abs(fii_val) * 0.8 else \
+                           "Medium" if abs(dii_val) > abs(fii_val) * 0.4 else "Low"
+
+            # Compute streak
+            streak = 0
+            direction = "positive" if fii_val > 0 else "negative"
+            for j in range(i, max(i - 10, -1), -1):
+                f = fii_flows[j].get("fiinet_cr", 0)
+                if (f > 0 and direction == "positive") or (f < 0 and direction == "negative"):
+                    streak += 1
+                else:
+                    break
+
+            # VIX regime (if available)
+            vix_regime = "NORMAL"
+            if vix_history and i < len(vix_history):
+                vix = vix_history[i]
+                if vix > 20:
+                    vix_regime = "HIGH"
+                elif vix < 15:
+                    vix_regime = "LOW"
+
+            # DXY not available from stored data — use FLAT as default
+            dxy_dir = "FLAT"
+
+            fii_context = {
+                "fii_z_score": fii_z,
+                "fii_streak": streak,
+                "fii_streak_direction": direction,
+                "dii_absorbed": dii_absorbed,
+            }
+            macro_context = {
+                "vix_regime": vix_regime,
+                "dxy": {"direction": dxy_dir},
+            }
+
+            # Check if pattern conditions are met
+            try:
+                if not pattern["conditions"](fii_context, macro_context):
+                    continue
+            except Exception:
+                continue
+
+            # Pattern activated — measure forward 5-day return
+            if i + 5 < len(nifty_closes):
+                forward_return = (nifty_closes[i + 5] / nifty_closes[i] - 1) * 100
+                total += 1
+
+                # Win = move in expected direction
+                if pattern["signal_type"] in ("bearish", "critical_bear"):
+                    if forward_return < 0:
+                        wins += 1
+                elif pattern["signal_type"] in ("bullish", "contrarian_bull", "supportive"):
+                    if forward_return > 0:
+                        wins += 1
+                # neutral patterns don't have win/loss
+
+                moves.append(forward_return)
+
+        if total >= 3:
+            results[pattern_id] = {
+                "win_rate": round((wins / total) * 100, 1),
+                "avg_move": round(statistics.mean(moves), 2),
+                "sample_size": total,
+                "pattern_name": pattern["name"],
+            }
+
+    return {"ok": True, "results": results}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONTRARIAN INDICATORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_sip_concentration(mf_flows: list) -> Dict:
+    """
+    Compute Herfindahl-Hirschman Index (HHI) of MF flow concentration.
+    High HHI = flows concentrated in few sectors (contrarian sell signal).
+    Low HHI = flows diversified (healthy).
+    """
+    if not mf_flows or len(mf_flows) < 3:
+        return {"ok": False}
+
+    total = sum(abs(f.get("amount_cr", 0)) for f in mf_flows)
+    if total == 0:
+        return {"ok": False}
+
+    shares = [abs(f.get("amount_cr", 0)) / total for f in mf_flows]
+    hhi = round(sum(s ** 2 for s in shares), 4)
+
+    if hhi > 0.25:
+        label = "EXTREMELY CONCENTRATED — contrarian sell signal"
+    elif hhi > 0.15:
+        label = "CONCENTRATED — watch for crowding"
+    elif hhi > 0.10:
+        label = "MODERATELY DIVERSIFIED"
+    else:
+        label = "WELL DIVERSIFIED — healthy"
+
+    return {
+        "ok": True,
+        "hhi": hhi,
+        "label": label,
+        "num_categories": len(mf_flows),
+        "total_cr": round(total, 0),
+    }
+
+
+def compute_sentiment_extreme(articles: list) -> Dict:
+    """
+    Analyze FinBERT sentiment distribution for contrarian signals.
+    Extreme negative sentiment = contrarian buy signal.
+    Extreme positive sentiment = contrarian sell signal.
+    """
+    if not articles or len(articles) < 3:
+        return {"ok": False}
+
+    neg_scores = []
+    pos_scores = []
+
+    for a in articles:
+        sent = a.get("sentiment", {})
+        if sent:
+            neg_scores.append(sent.get("negative", 0))
+            pos_scores.append(sent.get("positive", 0))
+
+    if not neg_scores:
+        return {"ok": False}
+
+    avg_neg = sum(neg_scores) / len(neg_scores)
+    avg_pos = sum(pos_scores) / len(pos_scores)
+    pct_very_neg = sum(1 for s in neg_scores if s > 0.7) / len(neg_scores) * 100
+    pct_very_pos = sum(1 for s in pos_scores if s > 0.7) / len(pos_scores) * 100
+
+    if pct_very_neg > 70:
+        signal = "EXTREME FEAR — contrarian buy signal"
+        direction = "contrarian_bull"
+    elif pct_very_neg > 50:
+        signal = "HIGH FEAR — potential contrarian opportunity"
+        direction = "mild_bull"
+    elif pct_very_pos > 70:
+        signal = "EXTREME GREED — contrarian sell signal"
+        direction = "contrarian_bear"
+    elif pct_very_pos > 50:
+        signal = "HIGH GREED — watch for complacency"
+        direction = "mild_bear"
+    else:
+        signal = "BALANCED sentiment"
+        direction = "neutral"
+
+    return {
+        "ok": True,
+        "avg_negative": round(avg_neg, 3),
+        "avg_positive": round(avg_pos, 3),
+        "pct_very_negative": round(pct_very_neg, 1),
+        "pct_very_positive": round(pct_very_pos, 1),
+        "signal": signal,
+        "direction": direction,
+        "sample_size": len(neg_scores),
+    }
+
+
+def compute_signal_consensus(signals: List[Dict]) -> Dict:
+    """
+    How many independent signals point the same direction?
+    Returns: direction, conviction (HIGH/MEDIUM/LOW), agreement_ratio
+    """
+    if not signals:
+        return {"direction": "NEUTRAL", "conviction": "LOW", "agreement": 0}
+
+    bull_count = sum(1 for s in signals if s.get("type") in ("bullish", "contrarian_bull", "supportive"))
+    bear_count = sum(1 for s in signals if s.get("type") in ("bearish", "critical_bear"))
+    total = bull_count + bear_count
+
+    if total == 0:
+        return {"direction": "NEUTRAL", "conviction": "LOW", "agreement": 0}
+
+    agreement = max(bull_count, bear_count) / total
+    direction = "BULLISH" if bull_count > bear_count else "BEARISH" if bear_count > bull_count else "NEUTRAL"
+    conviction = "HIGH" if agreement > 0.75 else "MEDIUM" if agreement > 0.5 else "LOW"
+
+    return {
+        "direction": direction,
+        "conviction": conviction,
+        "agreement": round(agreement, 2),
+        "bull_signals": bull_count,
+        "bear_signals": bear_count,
+    }
 
 
 def format_cross_signals(signals: List[Dict]) -> str:
@@ -236,8 +470,8 @@ def format_cross_signals(signals: List[Dict]) -> str:
                  "critical_bear": "🚨", "contrarian_bull": "🔄", "neutral": "⚪"
                  }.get(s["type"], "⚪")
         line = f"{emoji} {s['name']}: {s['description']}"
-        if "hist_prob" in s:
-            line += f" (historical: {s['hist_prob']}% hit rate, avg {s['avg_move']:+.1f}%)"
+        if "est_prob" in s:
+            line += f" (estimated: {s['est_prob']}% hit rate, avg {s['avg_move']:+.1f}%)"
         if "note" in s:
             line += f" — {s['note']}"
         lines.append(line)
@@ -478,11 +712,11 @@ def enrich_formatter_block(block_type: str, raw_lines: List[str],
     # Add cross-signal summary
     if enrichment_data.get("cross_signals"):
         signals = enrichment_data["cross_signals"]
-        active = [s for s in signals if s.get("hist_prob")]
+        active = [s for s in signals if s.get("est_prob")]
         if active:
             enriched.append(f"\n[Active Cross-Signals: {len(active)}]")
             for s in active[:2]:  # Top 2 only
-                enriched.append(f"  • {s['name']}: {s['hist_prob']}% historical hit rate")
+                enriched.append(f"  • {s['name']}: {s['est_prob']}% estimated hit rate")
 
     return enriched
 

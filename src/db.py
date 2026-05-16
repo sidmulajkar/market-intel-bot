@@ -482,6 +482,99 @@ def get_fii_dii_flows(days: int = 45) -> list:
 
 
 # ══════════════════════════════════════════════════════════════
+# VALUATION HISTORY (Daily P/E, P/B, DY for percentile)
+# ══════════════════════════════════════════════════════════════
+
+def save_valuation_snapshot(date_str: str, index_name: str, pe: float,
+                             pb: float = None, div_yield: float = None,
+                             earnings_yield: float = None) -> bool:
+    """Save daily valuation snapshot to Supabase."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("valuation_history").upsert({
+            "date":           date_str,
+            "index_name":     index_name,
+            "pe":             pe,
+            "pb":             pb,
+            "div_yield":      div_yield,
+            "earnings_yield": earnings_yield,
+            "created_at":     datetime.now().isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_valuation_snapshot error: {e}")
+        return False
+
+
+def get_valuation_history(index_name: str = "NIFTY 50", days: int = 1095) -> list:
+    """Get historical valuation data for percentile computation. Default 3 years."""
+    db = get_client()
+    if not db:
+        return []
+    try:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        result = (
+            db.table("valuation_history")
+            .select("date, pe, pb, div_yield, earnings_yield")
+            .eq("index_name", index_name)
+            .gte("date", cutoff)
+            .order("date")
+            .execute()
+        )
+        return result.data if result.data else []
+    except Exception as e:
+        print(f"⚠️ get_valuation_history error: {e}")
+        return []
+
+
+# ══════════════════════════════════════════════════════════════
+# MARKET BREADTH HISTORY (Daily A/D ratios for percentile)
+# ══════════════════════════════════════════════════════════════
+
+def save_breadth_snapshot(date_str: str, advances: int, declines: int, ratio: float) -> bool:
+    """Save daily market breadth snapshot to Supabase."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("market_breadth_history").upsert({
+            "date":      date_str,
+            "advances":  advances,
+            "declines":  declines,
+            "ratio":     ratio,
+            "created_at": datetime.now().isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_breadth_snapshot error: {e}")
+        return False
+
+
+def get_breadth_history(days: int = 90) -> list:
+    """Get historical breadth ratios for percentile computation."""
+    db = get_client()
+    if not db:
+        return []
+    try:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        result = (
+            db.table("market_breadth_history")
+            .select("date, ratio")
+            .gte("date", cutoff)
+            .order("date")
+            .execute()
+        )
+        return result.data if result.data else []
+    except Exception as e:
+        print(f"⚠️ get_breadth_history error: {e}")
+        return []
+
+
+# ══════════════════════════════════════════════════════════════
 # MF FLOWS (Monthly AMFI category data)
 # ══════════════════════════════════════════════════════════════
 
@@ -569,7 +662,8 @@ def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
 
     results = {
         "sent_alerts": 0, "snapshots": 0, "analysis_cache": 0,
-        "fii_dii": 0, "mf_flows": 0, "errors": []
+        "fii_dii": 0, "mf_flows": 0, "breadth": 0, "valuation": 0,
+        "errors": []
     }
     cutoff_alert    = (datetime.now() - timedelta(days=days_alert)).strftime("%Y-%m-%d")
     cutoff_snapshot = (datetime.now() - timedelta(days=days_snapshot)).strftime("%Y-%m-%d")
@@ -618,6 +712,23 @@ def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
     except Exception as e:
         results["errors"].append(f"mf_flows: {e}")
 
+    # ── Market breadth history: 90 days ──
+    try:
+        cutoff_breadth = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        resp = db.table("market_breadth_history").delete().lt("date", cutoff_breadth).execute()
+        results["breadth"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"breadth_history: {e}")
+
+    # ── Valuation history: 3 years (1095 days) ──
+    try:
+        cutoff_valuation = (datetime.now() - timedelta(days=1095)).strftime("%Y-%m-%d")
+        resp = db.table("valuation_history").delete().lt("date", cutoff_valuation).execute()
+        results["valuation"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"valuation_history: {e}")
+
     print(f"🧹 Purged: {results['sent_alerts']} alerts, {results['snapshots']} snapshots, "
-          f"{results['analysis_cache']} cache, {results['fii_dii']} fii_dii, {results['mf_flows']} mf_flows")
+          f"{results['analysis_cache']} cache, {results['fii_dii']} fii_dii, {results['mf_flows']} mf_flows, "
+          f"{results.get('breadth', 0)} breadth, {results.get('valuation', 0)} valuation")
     return results

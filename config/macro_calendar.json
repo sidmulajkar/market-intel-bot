@@ -1,0 +1,29 @@
+{
+  "_meta": {
+    "description": "Indian macro event calendar — update monthly with actual dates",
+    "last_updated": "2026-05-16"
+  },
+  "events": [
+    {"date": "2026-05-12", "event": "CPI Inflation (Apr 2026)", "impact": "HIGH", "previous": "3.34%", "category": "inflation"},
+    {"date": "2026-05-12", "event": "IIP (Mar 2026)", "impact": "MEDIUM", "previous": "2.9%", "category": "growth"},
+    {"date": "2026-05-15", "event": "WPI Inflation (Apr 2026)", "impact": "MEDIUM", "previous": "2.05%", "category": "inflation"},
+    {"date": "2026-05-30", "event": "GDP Estimate Q4 FY26", "impact": "HIGH", "previous": "6.2%", "category": "growth"},
+    {"date": "2026-06-06", "event": "RBI MPC Decision", "impact": "HIGH", "previous": "6.00%", "category": "policy"},
+    {"date": "2026-06-12", "event": "CPI Inflation (May 2026)", "impact": "HIGH", "previous": "TBD", "category": "inflation"},
+    {"date": "2026-06-12", "event": "IIP (Apr 2026)", "impact": "MEDIUM", "previous": "TBD", "category": "growth"},
+    {"date": "2026-06-15", "event": "WPI Inflation (May 2026)", "impact": "MEDIUM", "previous": "TBD", "category": "inflation"},
+    {"date": "2026-06-30", "event": "Current Account Deficit Q4", "impact": "MEDIUM", "previous": "TBD", "category": "external"},
+    {"date": "2026-07-07", "event": "GST Collections (Jun)", "impact": "MEDIUM", "previous": "TBD", "category": "fiscal"},
+    {"date": "2026-07-08", "event": "RBI MPC Decision", "impact": "HIGH", "previous": "TBD", "category": "policy"},
+    {"date": "2026-07-12", "event": "CPI Inflation (Jun)", "impact": "HIGH", "previous": "TBD", "category": "inflation"},
+    {"date": "2026-07-31", "event": "GDP Estimate Q1 FY27", "impact": "HIGH", "previous": "TBD", "category": "growth"},
+    {"date": "2026-08-05", "event": "RBI MPC Decision", "impact": "HIGH", "previous": "TBD", "category": "policy"},
+    {"date": "2026-08-12", "event": "CPI Inflation (Jul)", "impact": "HIGH", "previous": "TBD", "category": "inflation"},
+    {"date": "2026-09-04", "event": "RBI MPC Decision", "impact": "HIGH", "previous": "TBD", "category": "policy"},
+    {"date": "2026-10-01", "event": "RBI MPC Decision", "impact": "HIGH", "previous": "TBD", "category": "policy"},
+    {"date": "2026-10-07", "event": "GST Collections (Sep)", "impact": "MEDIUM", "previous": "TBD", "category": "fiscal"},
+    {"date": "2026-10-31", "event": "GDP Estimate Q2 FY27", "impact": "HIGH", "previous": "TBD", "category": "growth"},
+    {"date": "2026-11-05", "event": "RBI MPC Decision", "impact": "HIGH", "previous": "TBD", "category": "policy"},
+    {"date": "2026-12-04", "event": "RBI MPC Decision", "impact": "HIGH", "previous": "TBD", "category": "policy"}
+  ]
+}

@@ -92,9 +92,17 @@ def main():
 
     # ── MARKET BREADTH ───────────────────────────────────────────
     print("🔄 MARKET BREADTH")
+    breadth = None
     try:
         from src.data_fetcher import fetch_market_breadth, format_market_breadth
         breadth = fetch_market_breadth()
+        # Save breadth snapshot for historical percentile
+        if breadth and breadth.get("advances") and breadth.get("declines"):
+            from src.db import save_breadth_snapshot, today_str
+            adv = breadth["advances"]
+            dec = breadth["declines"]
+            ratio = round(adv / dec, 2) if dec > 0 else 0
+            save_breadth_snapshot(today_str(), adv, dec, ratio)
         breadth_str = format_market_breadth(breadth)
         if breadth_str:
             blocks["block_1"] = blocks.get("block_1", "") + "\n\n" + breadth_str
@@ -110,11 +118,23 @@ def main():
         print(f"   → {len(blocks['block_2'])} chars")
     except Exception as e:
         print(f"   ⚠️ {e}")
+
+    # ── VALUATION METRICS (append to Block 2) ────────────────────
+    print("🔄 VALUATION (P/E, P/B, Risk Premium)")
+    try:
+        from src.formatters import format_valuation_block
+        val_str = format_valuation_block()
+        if val_str:
+            blocks["block_2"] = blocks.get("block_2", "") + "\n\n" + val_str
+            print(f"   → Valuation: {len(val_str)} chars")
+    except Exception as e:
+        print(f"   ⚠️ Valuation: {e}")
         anchor_data = None
         blocks["block_2"] = ""
 
     # ── NIFTY TECHNICAL ANALYSIS ──────────────────────────────────
     print("🔄 NIFTY TECHNICAL LEVELS")
+    nifty_closes = []
     try:
         import yfinance as yf
         from src.technical_analysis import compute_full_analysis, format_technical_analysis
@@ -124,7 +144,13 @@ def main():
             nifty_ta = compute_full_analysis(nifty_closes, "NIFTY 50")
             nifty_ta_str = format_technical_analysis(nifty_ta)
             if nifty_ta_str:
-                # Append to Block 1
+                # Promote 200-DMA distance to headline in Block 1
+                ma200_dist = nifty_ta.get("ma200_dist_pct")
+                if ma200_dist is not None:
+                    trend_label = "above" if ma200_dist > 0 else "below"
+                    headline_ta = f"📍 Nifty 50: {trend_label} 200-DMA by {abs(ma200_dist):.1f}%"
+                    blocks["block_1"] = blocks.get("block_1", "") + "\n" + headline_ta
+                # Append full TA below
                 blocks["block_1"] = blocks.get("block_1", "") + "\n\n" + nifty_ta_str
                 print(f"   → Nifty TA: {len(nifty_ta_str)} chars")
     except Exception as e:
@@ -134,9 +160,32 @@ def main():
     print("🔄 CONTEXT: Bull/Bear Score")
     try:
         if anchor_data:
-            context_output = format_context_block(anchor_data)
-            blocks["block_0"] = context_output  # Block 0 for MARKET POSTURE
-            blocks["block_context"] = context_output  # Keep for reference
+            # Gather extra signals from already-fetched data
+            extra_signals = {}
+            # Market breadth
+            if breadth and isinstance(breadth, dict):
+                adv = breadth.get("advances", 0)
+                dec = breadth.get("declines", 0)
+                if dec > 0:
+                    extra_signals["breadth_ratio"] = round(adv / dec, 2)
+            # Nifty vs 200-DMA
+            if nifty_closes and len(nifty_closes) >= 200:
+                from src.technical_analysis import compute_moving_averages
+                ma_data = compute_moving_averages(nifty_closes)
+                if ma_data.get("ma200_dist_pct") is not None:
+                    extra_signals["nifty_vs_ma200_pct"] = ma_data["ma200_dist_pct"]
+            # PCR from options engine (fetched directly, not from formatted block)
+            try:
+                from src.options_engine import run_options_analysis
+                pcr_data = run_options_analysis("NIFTY", store=False, run_label="context")
+                if pcr_data and pcr_data.get("pcr") is not None:
+                    extra_signals["pcr"] = pcr_data["pcr"]
+            except Exception:
+                pass  # Non-critical
+
+            context_output = format_context_block(anchor_data, extra_signals=extra_signals)
+            blocks["block_0"] = context_output
+            blocks["block_context"] = context_output
             print(f"   → {len(context_output)} chars (Bull/Bear context)")
         else:
             blocks["block_0"] = ""
@@ -215,6 +264,30 @@ def main():
         print(f"   ⚠️ {e}")
         blocks["block_8"] = ""
 
+    # ── SHAREHOLDING QoQ CHANGES (evening only, top 5 stocks) ────
+    if mode == "evening" and blocks.get("block_8"):
+        print("🔄 SHAREHOLDING PATTERN (QoQ)")
+        try:
+            from src.shareholding_tracker import track_all_watchlist_shareholding
+            if watchlist:
+                sh_results = track_all_watchlist_shareholding(watchlist[:5])
+                sig_changes = [r for r in sh_results if r.get("has_significant_change")]
+                if sig_changes:
+                    sh_lines = ["\n📊 *Shareholding QoQ Changes:*"]
+                    for r in sig_changes:
+                        for c in r["changes"][:2]:
+                            sig = "🚨" if c.get("significant") else "⚠️"
+                            sh_lines.append(
+                                f"{sig} {r['symbol']}: {c['category'][:25]} "
+                                f"{c['previous']:.1f}%→{c['current']:.1f}% ({c['delta']:+.1f}%)"
+                            )
+                    blocks["block_8"] += "\n" + "\n".join(sh_lines)
+                    print(f"   → {len(sig_changes)} stocks with significant QoQ changes")
+                else:
+                    print("   → No significant QoQ changes")
+        except Exception as e:
+            print(f"   ⚠️ Shareholding: {e}")
+
     # ── BLOCK 3: Sector FPI Activity ─────────────────────────────
     print("🔄 BLOCK 3: Sector FPI Activity")
     try:
@@ -234,7 +307,16 @@ def main():
         print(f"   ⚠️ {e}")
         blocks["block_7"] = ""
 
-    blocks["block_9"] = ""  # Macro Calendar (Phase 2)
+    # ── BLOCK 9: Macro Calendar ─────────────────────────────────────
+    print("🔄 BLOCK 9: Macro Calendar")
+    try:
+        from src.macro_fetcher import format_macro_block
+        blocks["block_9"] = format_macro_block()
+        if blocks["block_9"]:
+            print(f"   → Macro: {len(blocks['block_9'])} chars")
+    except Exception as e:
+        print(f"   ⚠️ Macro calendar: {e}")
+        blocks["block_9"] = ""
 
     if mode == "evening":
         # BLOCK 10: MF Flows
