@@ -4,9 +4,62 @@ Primary: NSE Bulk & Block Deals API (no auth required)
 Secondary: NSE PIT (SAST) filings (requires session)
 Data: market-wide, no watchlist dependency
 """
+import math
+import re
 import requests
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
+
+
+# ── Symbol validation ─────────────────────────────────────────────
+def _is_valid_indian_symbol(symbol: str) -> bool:
+    """
+    Filter out non-Indian instruments from NSE data.
+    Valid Indian equity symbols: 1-20 chars, alphanumeric, may contain & - .
+    Rejects: ETFs, indices, commodity tickers, short US-style tickers.
+    """
+    if not symbol or len(symbol) > 20:
+        return False
+    # Must be alphanumeric (allow &, -, ., space)
+    if not re.match(r'^[A-Z0-9&\-\. ]+$', symbol):
+        return False
+
+    symbol_upper = symbol.upper().strip()
+
+    # Reject very short all-alpha symbols (likely US tickers: AAPL, MSFT, TSLA, NVDA)
+    # Indian symbols like TCS, WIPRO, INFY are valid — but single-word US tickers
+    # are typically 4 chars. Reject 4-char all-alpha that don't look Indian.
+    # Allow 3-char (TCS, INFY) and 5+ char (WIPRO, RELIANCE) symbols.
+    if len(symbol_upper) == 4 and symbol_upper.isalpha():
+        # 4-char all-alpha: could be AAPL, MSFT, TSLA, NVDA (US) or INFY, SBIN (Indian)
+        # Check against known Indian 4-char symbols
+        known_indian_4char = {'INFY', 'SBIN', 'HCLT', 'LTIM', 'CIPL', 'DRRE', 'SUNP',
+                              'BAJA', 'MARU', 'TITN', 'ASPN', 'BHRI', 'COAL', 'NMDC',
+                              'NHPC', 'SJVN', 'IRFC', 'IREDA', 'HAL', 'BEL', 'BDL'}
+        if symbol_upper not in known_indian_4char:
+            return False
+
+    # Reject known non-equity patterns (exact match or prefix with -)
+    skip_exact = {'ETF', 'BEES', 'NIFTY', 'SENSEX', 'BANKNIFTY',
+                  'GOLD', 'SILVER', 'CRUDE', 'NIFTYBEES', 'JUNIORBEES'}
+    if symbol_upper in skip_exact:
+        return False
+
+    skip_prefixes = ['ETF-', 'BEES-', 'NIFTY-', 'GOLD-', 'SILVER-']
+    for prefix in skip_prefixes:
+        if symbol_upper.startswith(prefix):
+            return False
+
+    return True
+
+
+def _safe_float(val, default=0.0) -> float:
+    """Convert to float, return default on NaN or error."""
+    try:
+        f = float(val or 0)
+        return default if math.isnan(f) or math.isinf(f) else f
+    except (ValueError, TypeError):
+        return default
 
 NSE_HEADERS = {
     "User-Agent":  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -39,12 +92,17 @@ def fetch_bulk_deals(days: int = 10) -> List[Dict]:
 
         results = []
         for r in rows:
+            symbol = r.get("BD_SYMBOL", "")
+            if not _is_valid_indian_symbol(symbol):
+                continue
             qty   = int(r.get("BD_QTY_TRD", 0) or 0)
-            price = float(r.get("BD_TP_WATP", 0) or 0)
+            price = _safe_float(r.get("BD_TP_WATP", 0))
             val_rs = qty * price
+            if val_rs <= 0:
+                continue
             results.append({
                 "date":        r.get("BD_DT_DATE", ""),
-                "symbol":      r.get("BD_SYMBOL", ""),
+                "symbol":      symbol,
                 "company":     r.get("BD_SCRIP_NAME", ""),
                 "client":      r.get("BD_CLIENT_NAME", ""),
                 "side":        r.get("BD_BUY_SELL", ""),
@@ -84,12 +142,17 @@ def fetch_block_deals(days: int = 10) -> List[Dict]:
 
         results = []
         for r in rows:
+            symbol = r.get("BD_SYMBOL", "")
+            if not _is_valid_indian_symbol(symbol):
+                continue
             qty   = int(r.get("BD_QTY_TRD", 0) or 0)
-            price = float(r.get("BD_TP_WATP", 0) or 0)
+            price = _safe_float(r.get("BD_TP_WATP", 0))
             val_rs = qty * price
+            if val_rs <= 0:
+                continue
             results.append({
                 "date":        r.get("BD_DT_DATE", ""),
-                "symbol":      r.get("BD_SYMBOL", ""),
+                "symbol":      symbol,
                 "company":     r.get("BD_SCRIP_NAME", ""),
                 "client":      r.get("BD_CLIENT_NAME", ""),
                 "side":        r.get("BD_BUY_SELL", ""),

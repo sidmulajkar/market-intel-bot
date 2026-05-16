@@ -29,10 +29,14 @@ GOOGLE_KEY = os.environ.get('GOOGLE_AI_KEY', '')
 HF_KEY     = os.environ.get('HF_KEY',        '')
 
 SYSTEM_PROMPT = (
-    "You are a sharp, experienced financial analyst. "
-    "Give concise, actionable market insights. "
-    "No disclaimers, no padding, no fluff. "
-    "Use bullet points with emojis. Max 200 words."
+    "You are a quantitative market analyst. Your output must:\n"
+    "- Lead with the single most important number and its historical context\n"
+    "- Cite specific numbers with 'since [date]' or 'Xth percentile' context\n"
+    "- Provide probability-weighted scenarios (bull/bear/base with %)\n"
+    "- Reference cross-signal correlations when active in the data\n"
+    "- Never state a number without context (e.g., NOT 'VIX is 18' but 'VIX at 18, 65th percentile of 90D')\n"
+    "- Use emojis for visual structure: 📊 📈 🔑 ⚠️ 🟢 🔴\n"
+    "- No disclaimers, no padding, no fluff"
 )
 
 class AIEngine:
@@ -50,9 +54,8 @@ class AIEngine:
         if GOOGLE_AVAILABLE and GOOGLE_KEY:
             try:
                 genai.configure(api_key=GOOGLE_KEY)
-                # BUG FIX: Use gemini-1.5-flash — confirmed free tier model
-                # gemini-2.5-flash may not be available on all accounts
-                self.google_model = genai.GenerativeModel('gemini-1.5-flash')
+                # Updated: gemini-1.5-flash deprecated, using gemini-2.0-flash
+                self.google_model = genai.GenerativeModel('gemini-2.0-flash')
             except Exception as e:
                 print(f"⚠️  Google AI init failed: {e}")
 
@@ -81,8 +84,8 @@ class AIEngine:
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user",   "content": prompt},
                     ],
-                    max_tokens=600,
-                    temperature=0.2,
+                    max_tokens=1000,
+                    temperature=0.3,
                 )
                 return resp.choices[0].message.content
 
@@ -109,12 +112,14 @@ class AIEngine:
             return ""
         for attempt in range(3):
             try:
+                # Prepend system prompt to user prompt (older google-generativeai doesn't support system_instruction)
+                full_prompt = f"[SYSTEM INSTRUCTIONS]\n{SYSTEM_PROMPT}\n\n[USER REQUEST]\n{prompt}"
                 cfg  = genai.GenerationConfig(
-                    max_output_tokens=600,
-                    temperature=0.2
+                    max_output_tokens=1000,
+                    temperature=0.3,
                 )
                 resp = self.google_model.generate_content(
-                    prompt,
+                    full_prompt,
                     generation_config=cfg
                 )
                 return resp.text

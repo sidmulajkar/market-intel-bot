@@ -12,30 +12,38 @@ AI-powered market intelligence bot that sends Telegram messages (text + heatmap 
 ## Architecture
 
 ```
-src/                   # Library modules (shared)
-├── data_fetcher.py    # yfinance, Finnhub, NSE, AMFI data fetching
-├── ai_engine.py      # AI routing (Groq → Google fallback)
-├── formatters.py     # Data → block string (Path B)
-├── db.py             # Supabase CRUD + purge logic
-├── validator.py      # News trust scoring
-├── telegram_sender.py # Telegram delivery
-├── heatmap_generator.py # World equity heatmap
-├── sector_heatmap.py  # India sector heatmap
-├── commodity_heatmap.py # USDINR/Brent/Gold heatmap
+src/                       # Library modules (shared)
+├── data_fetcher.py        # yfinance, Finnhub, NSE, AMFI, RSS data fetching
+├── ai_engine.py           # AI routing (Groq ↔ Google fallback), FinBERT sentiment
+├── formatters.py          # Data → block string (Path B), quant enrichment calls
+├── quant_enrichment.py    # Percentiles, cross-signal correlations, regime detection, news impact scoring
+├── technical_analysis.py  # RSI, 200-DMA, S/R, MACD, Bollinger Bands from OHLCV
+├── fii_derivatives.py     # F&O participant OI data (FII/DII/Client long/short)
+├── fii_sector.py          # FPI sector-wise data (SEBI/NSE), sector rotation
+├── context_engine.py      # Bull/Bear scoring, z-scores, streaks, DII absorption, narratives
+├── options_engine.py      # NSE options chain, max pain, PCR, OI zones, OI shifts
+├── insider_tracker.py     # NSE bulk/block deals, Indian stock filtering
+├── db.py                  # Supabase CRUD + purge logic
+├── validator.py           # News trust scoring
+├── telegram_sender.py     # Telegram delivery
+├── heatmap_generator.py   # World equity heatmap
+├── sector_heatmap.py      # India sector heatmap
+├── commodity_heatmap.py   # USDINR/Brent/Gold heatmap
 └── ...
 
-jobs/                  # Entry points (triggered by GitHub Actions)
-├── morning_brief.py   # 8:00 AM: heatmaps + short AI brief
-├── market_intel.py    # 7:00 AM / 6:00 PM: full 10-block AI analysis
-├── fii_dii_fetch.py   # 5:00 AM: NSE FII/DII CSV → Supabase
-├── mf_intelligence.py # 8th monthly: AMFI category flows → Supabase
-├── mf_flows.py       # Personal MF watchlist (NAV tracking)
-├── market_close.py   # EOD summary + winners/losers
-├── evening_report.py  # 8:00 PM: US session heatmap
+jobs/                      # Entry points (triggered by GitHub Actions)
+├── market_intel.py        # 7:00 AM / 6:00 PM: full 10-block AI analysis (Path B)
+├── morning_brief.py       # 8:00 AM: heatmaps + short AI brief
+├── evening_report.py      # 8:00 PM: US session heatmap
+├── fii_dii_fetch.py       # 5:00 AM: NSE FII/DII → Supabase
+├── mf_intelligence.py     # 8th monthly: AMFI category flows → Supabase
+├── mf_flows.py            # Personal MF watchlist (NAV tracking)
+├── market_close.py        # EOD summary + winners/losers
+├── insider_tracker.py     # Bulk/block deals with AI interpretation
 └── ...
 
-.github/workflows/     # GitHub Actions (workflow_dispatch only)
-cron-job.org/          # Triggers workflows at specific IST times
+.github/workflows/         # GitHub Actions (workflow_dispatch only)
+cron-job.org/              # Triggers workflows at specific IST times
 ```
 
 ## AI Routing
@@ -45,6 +53,8 @@ cron-job.org/          # Triggers workflows at specific IST times
 - `ai.analyze(task="fast", prompt)` → Groq (llama-3.3-70b) → Google (gemini-1.5-flash)
 - `ai.analyze(task="volume", prompt)` → Google (gemini-1.5-flash) → Groq
 - `ai.sentiment(text)` → FinBERT via HuggingFace API
+- Both Groq and Google now receive SYSTEM_PROMPT (quant-focused persona)
+- Max tokens: 1000 (both), Temperature: 0.3
 
 ## Formatter Rules
 
@@ -53,16 +63,75 @@ Every function in `formatters.py` must:
 2. Return `""` (empty string) on any failure — never raise
 3. Not import or call `ai_engine`
 4. Compute trends/anomalies in the formatter (DB stores raw data only)
+5. Add quant context: percentiles, significance labels, historical comparisons
 
 ## Path B: market_intel.py
 
-Uses `config/master_prompt.txt` with block placeholders `{block_1}` through `{block_10}`:
-- Morning mode: blocks 1, 2, 4, 6, 8
-- Evening mode: all 10 blocks (Phase 2 adds 3, 5, 7, 9)
+Uses `config/master_prompt.txt` with block placeholders `{block_0}` through `{block_10}`:
+- Block 0: Market Posture (Bull/Bear from context_engine)
+- Block 1: Global Indices + Market Breadth + Nifty Technical Levels
+- Block 2: Macro Anchors (USDINR, Brent, Gold, VIX, DXY)
+- Block 3: Sector FPI Activity (FPI sector-wise flows, rotation signals)
+- Block 4: FII/DII Flows + F&O Participant Positioning
+- Block 5: Derivatives (PCR, Max Pain, OI Zones from options_engine)
+- Block 6: News Intelligence (Global + Indian, FinBERT sentiment, impact scoring)
+- Block 7: Insider Activity (NSE bulk/block deals, Indian stocks only)
+- Block 8: Watchlist + Technical Analysis (RSI, S/R, MACD, Bollinger)
+- Block 9: Macro Calendar (Phase 2 — not yet implemented)
+- Block 10: MF Flow Intelligence (industry-wide AMFI category data)
 
 Prompt assembly: replace placeholders, remove empty block headers with regex.
 
-## Environment Variables (verified names)
+## Quant Enrichment Layer (`src/quant_enrichment.py`)
+
+Pre-computes intelligence from raw data before sending to AI:
+
+- `compute_percentile()` — where does current value sit vs history?
+- `compute_cross_signals()` — 7 cross-signal patterns with historical win rates
+- `detect_regime_transition()` — VIX/FII regime changes
+- `score_news_impact()` — HIGH/MEDIUM/LOW impact scoring with category tags
+- `generate_scenarios()` — probability-weighted bull/bear/base scenarios
+
+## Technical Analysis (`src/technical_analysis.py`)
+
+Computes from existing OHLCV data (zero API cost):
+
+- `compute_rsi()` — RSI(14) with overbought/oversold labels
+- `compute_moving_averages()` — 20/50/200-DMA with distance %
+- `compute_support_resistance()` — swing high/low + psychological levels
+- `compute_macd()` — MACD line, signal, histogram, crossover detection
+- `compute_bollinger_bands()` — upper/lower bands, %B position
+- `compute_full_analysis()` — runs all indicators, returns complete picture
+
+## FII/DII Intelligence
+
+### Cash Market (`context_engine.py` + `formatters.py` format_flows)
+- Z-score vs 20D avg, consecutive streak detection, DII absorption ratio
+- 5-day stats, 4-week trend with labels (deteriorating/improving/mixed)
+
+### F&O Positioning (`src/fii_derivatives.py`)
+- NSE F&O participant-wise OI (FII/DII/Client long/short)
+- FII long/short ratio, hedging vs directional detection
+- Appended to Block 4
+
+### Sector FPI (`src/fii_sector.py`)
+- SEBI/NSE FPI sector-wise investment data
+- Top inflows/outflows, rotation signals
+- Fills Block 3
+
+## News Pipeline
+
+### Sources
+- **Global**: Finnhub (general + forex + crypto categories)
+- **Indian**: RSS feeds (Economic Times, MoneyControl, Livemint)
+
+### Processing
+- Trust scoring: source-name matching (validator.py)
+- Sentiment: FinBERT via HuggingFace (ai_engine.py)
+- Impact scoring: quant_enrichment.py (HIGH/MEDIUM/LOW + category tags)
+- Format: split Global News / India News in Block 6
+
+## Environment Variables
 
 | Variable | Used in |
 |----------|---------|
@@ -79,6 +148,7 @@ Prompt assembly: replace placeholders, remove empty block headers with regex.
 - `market_snapshots` — global indices saved by morning_brief
 - `fii_dii_flows` — daily NSE FII/DII (date PK, 61-day purge)
 - `mf_flows` — monthly AMFI category flows (month+category PK, 2-month purge)
+- `options_snapshots` — morning/evening PCR, max_pain, OI zones (7-day purge)
 
 ## Cron-job.org
 
@@ -89,8 +159,10 @@ All workflow triggers are external (cron-job.org → GitHub workflow_dispatch). 
 - Path setup in job files: `sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))`
 - Supabase lazy init: `from supabase import create_client` inside `get_client()`
 - Image generation: PIL + Pilmoji, fonts from `/usr/share/fonts/truetype/dejavu/`
-- NSE data: CSV download from `nseindia.com/archives/nsccl/fii_dii/FII_DII_CM_{date}.csv` (requires session cookies)
+- NSE data: requires session cookies (hit homepage first, then API)
 - AMFI data: `amfiindia.com/spages/NAVAll.txt` (public, no auth)
+- Insider filtering: `_is_valid_indian_symbol()` rejects ETFs, non-Indian instruments
+- NaN handling: `_safe_float()` throughout data pipelines
 
 ## Adding a New Job
 
@@ -99,40 +171,15 @@ All workflow triggers are external (cron-job.org → GitHub workflow_dispatch). 
 3. Add cron-job.org entry to trigger the workflow
 4. For Path B: add formatter to `formatters.py`, add block to `config/master_prompt.txt`
 
----
+## AI Output Format
 
-## Phase 1 Intelligence Layer (Implemented)
+The master prompt instructs the AI to produce structured quant output:
+```
+📊 REGIME: [Risk-on/Risk-off/Neutral] (confidence: X%)
+📈 HEADLINE: [Most important number + historical context]
+🔑 KEY SIGNALS: [2-3 signals with numbers + percentiles]
+📊 CROSS-SIGNALS: [Active correlation patterns]
+⚠️ SCENARIOS: [Bull/Bear/Base with probabilities]
+```
 
-**Core Principle**: Python computes conclusions. AI writes narrative only.
-
-### Context Engine (`src/context_engine.py`)
-- `run_contextualization()` — full pipeline: FII/DII context + VIX/DXY + Bull/Bear score
-- `get_fii_dii_context()` — z-score vs 4W avg, streak detection, DII absorption, sparse data guards
-- `get_vix_regime()` — HIGH/LOW/NORMAL/UNKNOWN classification
-- `get_dxy_signal()` — RISING (>0.5%) / FALLING (<-0.5%) / FLAT
-- `compute_bull_bear_score()` — weighted -40 to +40, returns confidence + dominant_factor
-- `get_market_narrative()` — cross-signal rule matrix (8 patterns: triple threat, dollar-FII, India-specific, etc.)
-- `format_context_for_ai()` — pre-formatted for Block 0 injection
-
-### Options Engine (`src/options_engine.py`)
-- `fetch_nse_options_chain()` — NSE API, selects expiry (skip if <3 days)
-- `compute_max_pain()` — strike with highest total OI
-- `compute_pcr()` — near-money only (±10% of spot), contrarian labeling (>1.4 = CONTRARIAN BULL)
-- `compute_oi_zones()` — near-money only (±5% of spot), top 3 support/resistance
-- `compute_oi_shifts()` — evening vs morning snapshot diff (Supabase)
-- `store_options_snapshot()` — stores for evening diff
-
-### Block 0: MARKET POSTURE
-- Injected BEFORE all other blocks in master_prompt.txt
-- Contains: Bull/Bear score, confidence, dominant factor, pre-written narrative
-
-### AI Response Validation
-- Minimum 50 words required, fallback to raw data if invalid, never send blank
-
-### Supabase Tables
-- `options_snapshots` — stores morning/evening PCR, max_pain, OI zones
-
-### Entry Points
-- `market_intel.py --mode morning/evening` — full analysis with context + options
-- `morning_brief.py` — heatmaps + short text
-- `evening_report.py` — US session + EOD summary
+Every number must have context — no bare numbers without "since [date]", "Xth percentile", or "vs [benchmark]".

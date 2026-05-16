@@ -16,8 +16,8 @@ if _spec is None:
     print(f"ERROR: src not found. sys.path = {sys.path}")
     sys.exit(1)
 
-from src.data_fetcher   import fetch_global_indices, fetch_macro_anchors, fetch_watchlist_data, fetch_general_news
-from src.formatters     import format_global_indices, format_macro_anchors, format_flows, format_news, format_watchlist, format_mf_flows, format_context_block, format_options_block
+from src.data_fetcher   import fetch_global_indices, fetch_macro_anchors, fetch_watchlist_data, fetch_general_news, fetch_indian_news
+from src.formatters     import format_global_indices, format_macro_anchors, format_flows, format_news, format_watchlist, format_mf_flows, format_context_block, format_options_block, format_insider_activity
 from src.context_engine import run_contextualization
 from src.ai_engine      import AIEngine
 from src.telegram_sender import send_text
@@ -90,6 +90,18 @@ def main():
         print(f"   ⚠️ {e}")
         blocks["block_1"] = ""
 
+    # ── MARKET BREADTH ───────────────────────────────────────────
+    print("🔄 MARKET BREADTH")
+    try:
+        from src.data_fetcher import fetch_market_breadth, format_market_breadth
+        breadth = fetch_market_breadth()
+        breadth_str = format_market_breadth(breadth)
+        if breadth_str:
+            blocks["block_1"] = blocks.get("block_1", "") + "\n\n" + breadth_str
+            print(f"   → Breadth: {len(breadth_str)} chars")
+    except Exception as e:
+        print(f"   ⚠️ Breadth: {e}")
+
     # ── BLOCK 2: Macro Anchors ───────────────────────────────────
     print("🔄 BLOCK 2: Macro Anchors")
     try:
@@ -100,6 +112,23 @@ def main():
         print(f"   ⚠️ {e}")
         anchor_data = None
         blocks["block_2"] = ""
+
+    # ── NIFTY TECHNICAL ANALYSIS ──────────────────────────────────
+    print("🔄 NIFTY TECHNICAL LEVELS")
+    try:
+        import yfinance as yf
+        from src.technical_analysis import compute_full_analysis, format_technical_analysis
+        nifty_hist = yf.Ticker("^NSEI").history(period="1y")["Close"].dropna()
+        if len(nifty_hist) >= 20:
+            nifty_closes = nifty_hist.tolist()
+            nifty_ta = compute_full_analysis(nifty_closes, "NIFTY 50")
+            nifty_ta_str = format_technical_analysis(nifty_ta)
+            if nifty_ta_str:
+                # Append to Block 1
+                blocks["block_1"] = blocks.get("block_1", "") + "\n\n" + nifty_ta_str
+                print(f"   → Nifty TA: {len(nifty_ta_str)} chars")
+    except Exception as e:
+        print(f"   ⚠️ Nifty TA: {e}")
 
     # ── CONTEXT BLOCK: Bull/Bear Score ─────────────────────────────
     print("🔄 CONTEXT: Bull/Bear Score")
@@ -121,33 +150,52 @@ def main():
     print("🔄 OPTIONS: PCR, Max Pain, OI Zones")
     try:
         options_output = format_options_block(symbol="NIFTY", run_label=mode)
-        blocks["block_options"] = options_output
+        blocks["block_5"] = options_output  # Wire to {block_5} in master_prompt.txt
         print(f"   → {len(options_output)} chars")
     except Exception as e:
         print(f"   ⚠️ Options engine: {e}")
-        blocks["block_options"] = ""
+        blocks["block_5"] = ""
+
+    # ── FII/DII F&O POSITIONING ──────────────────────────────────
+    print("🔄 F&O PARTICIPANT POSITIONING")
+    try:
+        from src.fii_derivatives import run_fno_analysis
+        fno_output = run_fno_analysis()
+    except Exception as e:
+        print(f"   ⚠️ F&O positioning: {e}")
+        fno_output = ""
 
     # ── BLOCK 4: FII/DII Flows ───────────────────────────────────
     print("🔄 BLOCK 4: Flow Intelligence")
     try:
         blocks["block_4"] = format_flows()
+        # Append F&O positioning to Block 4
+        if fno_output:
+            blocks["block_4"] = blocks["block_4"] + "\n\n" + fno_output
         print(f"   → {len(blocks['block_4'])} chars")
     except Exception as e:
         print(f"   ⚠️ {e}")
         blocks["block_4"] = ""
 
-    # ── BLOCK 6: News ────────────────────────────────────────────
+    # ── BLOCK 6: News (Global + Indian) ───────────────────────────
     print("🔄 BLOCK 6: News Intelligence")
     try:
-        raw_news = fetch_general_news()
-        validated = validate_articles(raw_news, min_trust=6) if raw_news else []
-        # Get sentiment
         ai = AIEngine()
-        for article in validated[:5]:
-            sent = ai.sentiment(article.get("headline", ""))
-            article["sentiment"] = sent
-        blocks["block_6"] = format_news(validated)
-        print(f"   → {len(blocks['block_6'])} chars")
+
+        # Global news (Finnhub)
+        raw_global = fetch_general_news()
+        global_validated = validate_articles(raw_global, min_trust=6) if raw_global else []
+        for article in global_validated[:5]:
+            article["sentiment"] = ai.sentiment(article.get("headline", ""))
+
+        # Indian news (RSS)
+        raw_indian = fetch_indian_news()
+        indian_validated = validate_articles(raw_indian, min_trust=4) if raw_indian else []
+        for article in indian_validated[:5]:
+            article["sentiment"] = ai.sentiment(article.get("headline", ""))
+
+        blocks["block_6"] = format_news(global_validated, indian_validated)
+        print(f"   → {len(blocks['block_6'])} chars ({len(global_validated)} global, {len(indian_validated)} indian)")
     except Exception as e:
         print(f"   ⚠️ {e}")
         blocks["block_6"] = ""
@@ -167,10 +215,25 @@ def main():
         print(f"   ⚠️ {e}")
         blocks["block_8"] = ""
 
-    # ── Evening-only blocks ──────────────────────────────────────
-    blocks["block_3"] = ""  # Sector Performance (Phase 2)
-    blocks["block_5"] = ""  # Derivatives (Phase 2)
-    blocks["block_7"] = ""  # Insider Activity (Phase 2)
+    # ── BLOCK 3: Sector FPI Activity ─────────────────────────────
+    print("🔄 BLOCK 3: Sector FPI Activity")
+    try:
+        from src.fii_sector import run_sector_fpi_analysis
+        blocks["block_3"] = run_sector_fpi_analysis()
+        print(f"   → {len(blocks['block_3'])} chars")
+    except Exception as e:
+        print(f"   ⚠️ {e}")
+        blocks["block_3"] = ""
+
+    # ── BLOCK 7: Insider Activity ────────────────────────────────
+    print("🔄 BLOCK 7: Insider Activity")
+    try:
+        blocks["block_7"] = format_insider_activity()
+        print(f"   → {len(blocks['block_7'])} chars")
+    except Exception as e:
+        print(f"   ⚠️ {e}")
+        blocks["block_7"] = ""
+
     blocks["block_9"] = ""  # Macro Calendar (Phase 2)
 
     if mode == "evening":
@@ -194,8 +257,6 @@ def main():
         "block_0": "[BLOCK 0: MARKET POSTURE — READ FIRST]",
         "block_1": "[BLOCK 1: GLOBAL INDICES]",
         "block_2": "[BLOCK 2: MACRO ANCHORS (USDINR, BRENT, GOLD)]",
-        "block_context": "[CONTEXT: BULL/BEAR SCORE + MARKET NARRATIVE]",
-        "block_options": "[OPTIONS: PCR, MAX PAIN, OI ZONES]",
         "block_3": "[BLOCK 3: SECTOR PERFORMANCE]",
         "block_4": "[BLOCK 4: FLOW INTELLIGENCE (FII/DII)]",
         "block_5": "[BLOCK 5: DERIVATIVES (PCR + MAX PAIN)]",
@@ -232,7 +293,6 @@ def main():
         # Try to send a simple message anyway using available data
         try:
             # Last resort: use global indices or watchlist if available
-            from src.data_fetcher import fetch_global_indices
             idx = fetch_global_indices()
             if idx:
                 lines = [f"{d.get('flag','')} {c}: {d.get('change_pct',0):+.2f}%"

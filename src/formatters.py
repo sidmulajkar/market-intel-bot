@@ -3,8 +3,20 @@ Formatters — Data to Prompt Block conversion
 Each formatter returns a string (or "" on failure) for master_prompt.txt
 Phase 1: Blocks 1, 2, 4, 6, 8, 10
 Intelligence Layer: context_engine + options_engine integrated
+Quant Layer: percentiles, cross-signals, significance labels
 """
 from typing import Optional
+
+
+# Index name mapping for proper labels
+INDEX_NAMES = {
+    "^GSPC": "S&P 500", "^BVSP": "Bovespa", "^GSPTSE": "S&P/TSX",
+    "^MXX": "IPC", "^IPSA": "IPSA", "^KS11": "KOSPI",
+    "^STI": "STI", "^TWII": "TWII", "^HSI": "Hang Seng",
+    "^N225": "Nikkei 225", "000001.SS": "SSE Composite",
+    "^AXJO": "ASX 200", "^NSEI": "Nifty 50", "FTSEMIB.MI": "FTSE MIB",
+    "^FTSE": "FTSE 100", "^GDAXI": "DAX", "^SSMI": "SMI", "^FCHI": "CAC 40",
+}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -32,16 +44,13 @@ def get_fallback_message() -> str:
     )
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# BLOCK 1: GLOBAL INDICES
-# ═══════════════════════════════════════════════════════════════════════
-
 # ─────────────────────────────────────────────────────────────────────
 # BLOCK 1: GLOBAL INDICES
 # ─────────────────────────────────────────────────────────────────────
 def format_global_indices(index_data: dict) -> str:
     """
     Convert 18 global indices to BLOCK 1 string.
+    Uses proper index names (S&P 500, Nifty 50, etc.) instead of just country codes.
     """
     if not index_data:
         return ""
@@ -56,7 +65,11 @@ def format_global_indices(index_data: dict) -> str:
             change = d.get("change_pct", 0)
             status = d.get("status", "")
             sign   = "+" if change >= 0 else ""
-            lines.append(f"{flag} {country}: {sign}{change:.2f}% | {price:,.0f} [{status}]")
+            sym    = d.get("symbol", "")
+            name   = INDEX_NAMES.get(sym, country)
+            # Show "Country (Index Name)" for clarity
+            label = f"{country} ({name})" if name != country else country
+            lines.append(f"{flag} {label}: {sign}{change:.2f}% | {price:,.0f} [{status}]")
 
         if not lines:
             return ""
@@ -73,7 +86,7 @@ def format_global_indices(index_data: dict) -> str:
 def format_macro_anchors(anchor_data: list) -> str:
     """
     Convert macro anchors to BLOCK 2 string.
-    anchor_data: list from fetch_macro_anchors()
+    Includes weekly change and status for each anchor.
     """
     if not anchor_data:
         return ""
@@ -97,7 +110,9 @@ def format_macro_anchors(anchor_data: list) -> str:
             weekly_s  = f" | Weekly: {sign}{weekly:.2f}%" if weekly else ""
             status_e  = "📈" if status == "up" else ("📉" if status == "down" else "➡️")
 
-            lines.append(f"{name}: ₹{price:,.2f} ({sign}{change:.2f}%){weekly_s} {status_e}")
+            # Use ₹ for INR pairs, $ for others
+            currency = "₹" if "INR" in name.upper() or "Nifty" in name else "$"
+            lines.append(f"{name}: {currency}{price:,.2f} ({sign}{change:.2f}%){weekly_s} {status_e}")
 
         if not lines:
             return ""
@@ -113,8 +128,8 @@ def format_macro_anchors(anchor_data: list) -> str:
 # ─────────────────────────────────────────────────────────────────────
 def format_flows() -> str:
     """
-    Compute weekly FII/DII net + 4-week trend from DB.
-    Returns BLOCK 4 string.
+    Compute weekly FII/DII net + 4-week trend + daily breakdown + significance.
+    Returns BLOCK 4 string with quant-level detail.
     """
     try:
         from src.db import get_fii_dii_flows
@@ -129,9 +144,48 @@ def format_flows() -> str:
         df["date"]   = pd.to_datetime(df["date"])
         df["fiinet_cr"] = df["fiinet_cr"].astype(float)
         df["diinet_cr"] = df["diinet_cr"].astype(float)
-        df["dow"]    = df["date"].dt.dayofweek
+        df = df.sort_values("date")
 
-        # Group by week
+        # ── Latest day analysis ──
+        latest = df.iloc[-1]
+        fii_latest = latest["fiinet_cr"]
+        dii_latest = latest["diinet_cr"]
+        latest_date = latest["date"].strftime("%d %b")
+
+        # ── Consecutive days streak ──
+        fii_streak = 0
+        for i in range(len(df) - 1, -1, -1):
+            if df.iloc[i]["fiinet_cr"] < 0:
+                fii_streak += 1
+            else:
+                break
+        fii_buy_streak = 0
+        for i in range(len(df) - 1, -1, -1):
+            if df.iloc[i]["fiinet_cr"] > 0:
+                fii_buy_streak += 1
+            else:
+                break
+
+        # ── 5-day FII stats ──
+        last_5 = df.tail(5)
+        fii_5d_total = last_5["fiinet_cr"].sum()
+        fii_5d_avg = last_5["fiinet_cr"].mean()
+        largest_sell_day = last_5["fiinet_cr"].min()
+        largest_buy_day = last_5["fiinet_cr"].max()
+
+        # ── 20-day rolling average (z-score context) ──
+        if len(df) >= 20:
+            fii_20d_avg = df["fiinet_cr"].tail(20).mean()
+            fii_20d_std = df["fiinet_cr"].tail(20).std()
+            if fii_20d_std > 0:
+                fii_z = (fii_latest - fii_20d_avg) / fii_20d_std
+            else:
+                fii_z = 0
+        else:
+            fii_20d_avg = df["fiinet_cr"].mean()
+            fii_z = 0
+
+        # ── Group by week ──
         df["year"] = df["date"].dt.isocalendar().year
         df["week"] = df["date"].dt.isocalendar().week
         df["yw"]   = df["year"].astype(str) + "_" + df["week"].astype(str)
@@ -166,7 +220,21 @@ def format_flows() -> str:
         dii_net = last_week["diinet_cr"]
         net     = fii_net + dii_net
 
-        # 4-week FII trend
+        # ── DII absorption ratio ──
+        if fii_net < 0 and dii_net > 0:
+            absorption = (dii_net / abs(fii_net)) * 100
+            if absorption > 80:
+                absorb_label = f"DII absorbing {absorption:.0f}% of FII sell — strong floor"
+            elif absorption > 50:
+                absorb_label = f"DII absorbing {absorption:.0f}% of FII sell — partial support"
+            else:
+                absorb_label = f"DII absorbing {absorption:.0f}% of FII sell — weak support"
+        elif fii_net > 0:
+            absorb_label = "FII buying — DII absorption not relevant"
+        else:
+            absorb_label = "Both FII/DII direction unclear"
+
+        # ── 4-week FII trend ──
         recent_yws = valid_weeks[-4:]
         fii_nets = []
         for yw in recent_yws:
@@ -181,18 +249,46 @@ def format_flows() -> str:
                 trend_label = "improving"
             else:
                 trend_label = "mixed"
-            trend_str = f"4-week trend (FII net, Cr): " + " | ".join(
+            trend_str = f"4-week FII trend: " + " | ".join(
                 [f"Wk-{4-len(fii_nets)+i+1}: {x:+.0f}" for i, x in enumerate(fii_nets)
             ]) + f" ({trend_label})"
         else:
             wks = len(fii_nets)
-            trend_str = f"4-week trend: ({wks} weeks available) " + " | ".join(
+            trend_str = f"4-week trend: ({wks} weeks) " + " | ".join(
                 [f"Wk-{i+1}: {x:+.0f}" for i, x in enumerate(reversed(fii_nets))]
-            ) + " (insufficient history)"
+            )
 
-        return (f"Flow Intelligence (FII/DII):\n"
-                f"FII (last week): {fii_net:+.0f} Cr | DII (last week): {dii_net:+.0f} Cr | "
-                f"Net (last week): {net:+.0f} Cr\n{trend_str}")
+        # ── Build output ──
+        lines = [
+            f"Flow Intelligence (FII/DII):",
+            f"Latest day ({latest_date}): FII {fii_latest:+.0f} Cr | DII {dii_latest:+.0f} Cr",
+        ]
+
+        # Streak info
+        if fii_streak >= 3:
+            lines.append(f"🔴 FII selling streak: {fii_streak} consecutive days")
+        elif fii_buy_streak >= 3:
+            lines.append(f"🟢 FII buying streak: {fii_buy_streak} consecutive days")
+
+        # Weekly summary
+        lines.append(f"Last week: FII {fii_net:+.0f} Cr | DII {dii_net:+.0f} Cr | Net {net:+.0f} Cr")
+
+        # Z-score
+        if abs(fii_z) > 1.0:
+            z_label = "sharp outflow" if fii_z < 0 else "sharp inflow"
+            lines.append(f"FII z-score: {fii_z:+.1f} ({z_label} vs 20D avg)")
+
+        # 5-day stats
+        lines.append(f"5-day FII: total {fii_5d_total:+.0f} Cr | avg {fii_5d_avg:+.0f} Cr | "
+                     f"range [{largest_sell_day:+.0f}, {largest_buy_day:+.0f}]")
+
+        # DII absorption
+        lines.append(absorb_label)
+
+        # Trend
+        lines.append(trend_str)
+
+        return "\n".join(lines)
 
     except Exception as e:
         print(f"⚠️ format_flows: {e}")
@@ -202,38 +298,80 @@ def format_flows() -> str:
 # ─────────────────────────────────────────────────────────────────────
 # BLOCK 6: NEWS INTELLIGENCE
 # ─────────────────────────────────────────────────────────────────────
-def format_news(validated_articles: list) -> str:
+def format_news(global_articles: list, indian_articles: list = None) -> str:
     """
-    Convert validated news (trust >= 6) to BLOCK 6 string.
-    Include sentiment label + score per article.
+    Convert validated news to BLOCK 6 string.
+    Splits into Global News and Indian News sections.
+    Includes sentiment, impact scoring, category tags, and extracted numbers.
     """
-    if not validated_articles:
+    if not global_articles and not indian_articles:
         return ""
 
     try:
-        lines = []
-        for article in validated_articles[:5]:  # Top 5 only
-            headline = article.get("headline", "")[:80]
-            source   = article.get("source", "unknown")
-            sent     = article.get("sentiment", {})
+        from src.quant_enrichment import enrich_news_articles
 
-            # Get dominant sentiment
-            if sent:
-                dominant = max(sent, key=sent.get)
-                score    = sent.get(dominant, 0)
-                sent_str = f"[{dominant.upper()}, {score:+.2f}]"
-            else:
-                sent_str = "[neutral]"
+        sections = []
 
-            lines.append(f"{sent_str} {headline} (source: {source})")
+        # ── Global News ──
+        if global_articles:
+            global_enriched = enrich_news_articles(global_articles[:10])
+            global_lines = []
+            for article in global_enriched[:5]:
+                line = _format_news_line(article)
+                if line:
+                    global_lines.append(line)
+            if global_lines:
+                sections.append("Global News:\n" + "\n".join(global_lines))
 
-        if not lines:
+        # ── Indian News ──
+        if indian_articles:
+            indian_enriched = enrich_news_articles(indian_articles[:10])
+            indian_lines = []
+            for article in indian_enriched[:5]:
+                line = _format_news_line(article)
+                if line:
+                    indian_lines.append(line)
+            if indian_lines:
+                sections.append("India News:\n" + "\n".join(indian_lines))
+
+        if not sections:
             return ""
 
-        return "News Intelligence (trust >= 6):\n" + "\n".join(lines)
+        return "News Intelligence (trust >= 6, sorted by impact):\n\n" + "\n\n".join(sections)
     except Exception as e:
         print(f"⚠️ format_news: {e}")
         return ""
+
+
+def _format_news_line(article: dict) -> str:
+    """Format a single news article line with sentiment and impact."""
+    headline = article.get("headline", "")[:100]
+    source   = article.get("source", "unknown")
+    sent     = article.get("sentiment", {})
+    impact   = article.get("impact", "LOW")
+    category = article.get("category", "general")
+    numbers  = article.get("extracted_numbers", "")
+
+    # Get dominant sentiment
+    if sent:
+        dominant = max(sent, key=sent.get)
+        score    = sent.get(dominant, 0)
+        sent_str = f"{dominant.upper()}"
+    else:
+        sent_str = "NEUTRAL"
+        score = 0
+
+    # Impact emoji
+    impact_e = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "⚪"}.get(impact, "⚪")
+
+    # Build line
+    parts = [f"{impact_e} [{impact}]"]
+    parts.append(f"{headline}")
+    if numbers:
+        parts.append(f"({numbers})")
+    parts.append(f"— {sent_str} {score:+.2f} | {source}")
+
+    return " ".join(parts)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -280,12 +418,17 @@ def format_watchlist(watchlist_data: dict) -> str:
     """
     Convert watchlist data to BLOCK 8 string.
     Computes MA20, 5D momentum, 1M return from close_series.
+    Adds significance labels for notable moves.
+    Appends technical analysis (RSI, S/R, MACD) for each symbol.
     """
     if not watchlist_data:
         return ""
 
     try:
+        from src.technical_analysis import compute_full_analysis, format_technical_analysis
+
         lines = []
+        ta_lines = []
         for symbol, d in watchlist_data.items():
             if not d.get("ok"):
                 continue
@@ -296,9 +439,11 @@ def format_watchlist(watchlist_data: dict) -> str:
             avg_volume   = d.get("avg_volume", 1)
             close_series = d.get("close_series", [])
 
-            # Volume spike
+            # Volume spike with significance
             vol_ratio = volume / avg_volume if avg_volume > 0 else 0
-            if vol_ratio > 2.0:
+            if vol_ratio > 3.0:
+                vol_str = f"Vol spike: {vol_ratio:.1f}x 20D avg 🔥"
+            elif vol_ratio > 2.0:
                 vol_str = f"Vol spike: {vol_ratio:.1f}x 20D avg"
             else:
                 vol_str = f"Vol: {vol_ratio:.1f}x 20D avg"
@@ -310,15 +455,21 @@ def format_watchlist(watchlist_data: dict) -> str:
                 ma20_val = sum(close_series[-20:]) / 20
                 ma20_diff = ((price - ma20_val) / ma20_val * 100) if ma20_val else 0
                 ma_status = "above" if ma20_diff > 0 else "below"
-                ma20_str = f"MA20: {ma_status} ({ma20_diff:+.1f}%)"
+                if abs(ma20_diff) > 5:
+                    ma20_str = f"MA20: {ma_status} ({ma20_diff:+.1f}%) ⚡"
+                else:
+                    ma20_str = f"MA20: {ma_status} ({ma20_diff:+.1f}%)"
             else:
                 ma20_str = "MA20: N/A"
 
-            # 5D momentum
+            # 5D momentum with significance
             if len(close_series) >= 2:
                 prev_5d = close_series[-6] if len(close_series) > 5 else close_series[0]
                 mom_5d = ((price - prev_5d) / prev_5d * 100) if prev_5d else 0
-                mom5d_str = f"5D mom: {mom_5d:+.1f}%"
+                if abs(mom_5d) > 5:
+                    mom5d_str = f"5D mom: {mom_5d:+.1f}% ⚡"
+                else:
+                    mom5d_str = f"5D mom: {mom_5d:+.1f}%"
             else:
                 mom5d_str = "5D mom: N/A"
 
@@ -333,10 +484,23 @@ def format_watchlist(watchlist_data: dict) -> str:
             sign = "+" if day_change >= 0 else ""
             lines.append(f"{symbol}: ₹{price:,.0f} ({sign}{day_change:+.1f}%) | {vol_str} | {ma20_str} | {mom5d_str} | {mom1m_str}")
 
+            # Technical analysis for this symbol
+            if len(close_series) >= 20:
+                ta = compute_full_analysis(close_series, symbol)
+                ta_str = format_technical_analysis(ta)
+                if ta_str:
+                    ta_lines.append(ta_str)
+
         if not lines:
             return ""
 
-        return "Watchlist:\n" + "\n".join(lines)
+        result = "Watchlist:\n" + "\n".join(lines)
+
+        # Append technical analysis section
+        if ta_lines:
+            result += "\n\n[Technical Analysis — Key Levels]\n" + "\n\n".join(ta_lines)
+
+        return result
     except Exception as e:
         print(f"⚠️ format_watchlist: {e}")
         return ""
@@ -446,138 +610,6 @@ def format_mf_flows() -> str:
             sip_trend = "SIP trend: NOT AVAILABLE"
         sip_block = "[SIP Trend]\n" + sip_trend
 
-        parts = [category_block, anomaly_block]
-        if thematic_block:
-            parts.append(thematic_block)
-        parts.extend([top5_block, sip_block])
-
-        return "MF Flow Intelligence:\n\n" + "\n\n".join(parts)
-
-    except Exception as e:
-        print(f"⚠️ format_mf_flows: {e}")
-        return ""
-    """
-    Query mf_flows table, compute anomaly vs 3M avg, thematic, top5.
-    Returns BLOCK 10 string.
-    """
-    if not db_client:
-        return ""
-
-    try:
-        from datetime import timedelta
-        import pandas as pd
-
-        # Get last 4 months
-        today = pd.Timestamp.now()
-        cutoff = (today - timedelta(days=120)).strftime("%Y-%m-%d")
-
-        result = (
-            db_client.table("mf_flows")
-            .select("month, category, amount_cr, sip_amount_cr")
-            .gte("month", cutoff)
-            .order("month")
-            .execute()
-        )
-
-        if not result.data:
-            return ""
-
-        rows = result.data
-        if len(rows) < 5:
-            return ""
-
-        df = pd.DataFrame(rows)
-        df["month"] = pd.to_datetime(df["month"])
-
-        # Current month (most recent)
-        current_month = df["month"].max()
-        current_df  = df[df["month"] == current_month]
-        prior_months = df[df["month"] < current_month]
-
-        if current_df.empty or len(prior_months) < 1:
-            return ""
-
-        # ── Category flows ──
-        cat_lines = [f"{r['category']}: {r['amount_cr']:+.0f} Cr" for _, r in current_df.iterrows()]
-        month_str = current_month.strftime("%b %Y")
-        category_block = f"[Category Flows — {month_str}]\n" + " | ".join(cat_lines)
-
-        # ── Anomaly vs 3M avg ──
-        anomaly_lines = []
-        for _, row in current_df.iterrows():
-            cat = row["category"]
-            curr = row["amount_cr"]
-
-            # Get prior 3 months for this category
-            prior_cat = prior_months[prior_months["category"] == cat]
-            if len(prior_cat) >= 3:
-                avg_3m = prior_cat["amount_cr"].mean()
-                delta = curr - avg_3m
-                if avg_3m != 0:
-                    pct_vs = (delta / abs(avg_3m)) * 100
-                    label = f"{cat}: {curr:+.0f} Cr (vs 3M avg {avg_3m:+.0f} Cr; {pct_vs:+.0f}% vs avg)"
-                else:
-                    label = f"{cat}: {curr:+.0f} Cr (vs 3M avg: N/A)"
-            else:
-                label = f"{cat}: {curr:+.0f} Cr (insufficient history)"
-
-            anomaly_lines.append(label)
-
-        anomaly_block = "[Anomaly vs 3M Avg]\n" + "\n".join(anomaly_lines)
-
-        # ── Thematic signals (sector categories) ──
-        sector_cats = current_df[current_df["category"].str.contains("Sector|Infra|IT|PSU|Thematic", case=False, na=False)]
-        thematic_lines = []
-
-        for _, row in sector_cats.iterrows():
-            cat = row["category"]
-            curr = row["amount_cr"]
-
-            # Check prior months for streak
-            prior_sector = prior_cat[prior_cat["category"] == cat].sort_values("month", ascending=False)
-            if len(prior_sector) >= 2:
-                # Check direction
-                if curr > 0 and all(prior_sector["amount_cr"] > 0):
-                    streak = sum(1 for x in prior_sector["amount_cr"] if x > 0) + 1
-                    thematic_lines.append(f"{cat}: +{curr:.0f} Cr ({streak}th consecutive inflow)")
-                elif curr < 0 and all(prior_sector["amount_cr"] < 0):
-                    streak = sum(1 for x in prior_sector["amount_cr"] if x < 0) + 1
-                    thematic_lines.append(f"{cat}: {curr:.0f} Cr ({streak}th consecutive outflow)")
-                else:
-                    thematic_lines.append(f"{cat}: {curr:+.0f} Cr")
-            else:
-                thematic_lines.append(f"{cat}: {curr:+.0f} Cr")
-
-        thematic_block = "[Thematic/Segment Signals]\n" + "\n".join(thematic_lines) if thematic_lines else ""
-
-        # ── Top 5 gainers/losers ──
-        sorted_df = current_df.sort_values("amount_cr", ascending=False)
-        gainers = sorted_df.head(5)
-        losers = sorted_df.tail(5).iloc[::-1]
-
-        gainer_lines = [f"{i+1}) {r['category']}: {r['amount_cr']:+.0f} Cr" for i, (_, r) in enumerate(gainers.iterrows())]
-        loser_lines  = [f"{i+1}) {r['category']}: {r['amount_cr']:+.0f} Cr" for i, (_, r) in enumerate(losers.iterrows())]
-
-        top5_block = "[Top 5 Gainers]\n" + "\n".join(gainer_lines) + "\n\n[Top 5 Losers]\n" + "\n".join(loser_lines)
-
-        # ── SIP trend ──
-        sip_current = current_df["sip_amount_cr"].sum()
-        prior_month = prior_months["month"].max()
-        prior_sip = prior_months[prior_months["month"] == prior_month]["sip_amount_cr"].sum()
-
-        if pd.notna(sip_current) and pd.notna(prior_sip):
-            if sip_current > prior_sip * 1.01:
-                sip_trend = f"SIP: {sip_current:,.0f} Cr (vs prior month {prior_sip:,.0f} Cr; rising)"
-            elif sip_current < prior_sip * 0.99:
-                sip_trend = f"SIP: {sip_current:,.0f} Cr (vs prior month {prior_sip:,.0f} Cr; falling)"
-            else:
-                sip_trend = f"SIP: {sip_current:,.0f} Cr (vs prior month {prior_sip:,.0f} Cr; flat)"
-        else:
-            sip_trend = "SIP trend: NOT AVAILABLE"
-
-        sip_block = f"[SIP Trend]\n{sip_trend}"
-
-        # Combine all blocks
         parts = [category_block, anomaly_block]
         if thematic_block:
             parts.append(thematic_block)

@@ -31,7 +31,7 @@ GLOBAL_INDICES = {
     "Italy":       {"symbol": "FTSEMIB.MI", "region": "Europe",   "flag": "🇮🇹", "iso": "IT",  "index_name": "FTSE MIB"},
     "UK":          {"symbol": "^FTSE",      "region": "Europe",   "flag": "🇬🇧", "iso": "GB",  "index_name": "FTSE 100"},
     "Germany":     {"symbol": "^GDAXI",     "region": "Europe",   "flag": "🇩🇪", "iso": "DE",  "index_name": "DAX"},
-    "Switzerland": {"symbol": "^SSMI",      "region": "Europe",   "flag": "🇨🇭", "iso": "CH",  "index_name": " SMI"},
+    "Switzerland": {"symbol": "^SSMI",      "region": "Europe",   "flag": "🇨🇭", "iso": "CH",  "index_name": "SMI"},
     "France":      {"symbol": "^FCHI",      "region": "Europe",   "flag": "🇫🇷", "iso": "FR",  "index_name": "CAC 40"},
 }
 
@@ -103,6 +103,7 @@ def _fallback_entry(country: str, info: dict, error: str) -> dict:
         "region":     info["region"],
         "flag":       info["flag"],
         "iso":        info.get("iso", ""),
+        "index_name": info.get("index_name", country),
         "price":      0.0,
         "change_pct": 0.0,
         "status":     get_market_status(country),
@@ -148,6 +149,7 @@ def fetch_global_indices() -> Dict:
                     "region":     info["region"],
                     "flag":       info["flag"],
                     "iso":        info.get("iso", ""),
+                    "index_name": info.get("index_name", country),
                     "price":      round(current, 2),
                     "change_pct": round(change,  2),
                     "status":     get_market_status(country),
@@ -187,6 +189,7 @@ def _fetch_individual_fallback() -> Dict:
                 "region":     info["region"],
                 "flag":       info["flag"],
                 "iso":        info.get("iso", ""),
+                "index_name": info.get("index_name", country),
                 "price":      round(current, 2),
                 "change_pct": round(change,  2),
                 "status":     get_market_status(country),
@@ -367,17 +370,152 @@ def fetch_news_finnhub(symbol: str, days: int = 7) -> List[Dict]:
     return []
 
 def fetch_general_news() -> List[Dict]:
+    """Fetch global financial news from Finnhub (general + forex + crypto categories)."""
     if not FINNHUB_KEY:
         return []
-    url = f"https://finnhub.io/api/v1/news?category=general&token={FINNHUB_KEY}"
+    all_articles = []
+    for category in ["general", "forex", "crypto"]:
+        url = f"https://finnhub.io/api/v1/news?category={category}&token={FINNHUB_KEY}"
+        try:
+            resp = requests.get(url, timeout=10)
+            data = resp.json()
+            if isinstance(data, list):
+                for a in data[:5]:
+                    all_articles.append({
+                        "headline": a.get("headline", ""),
+                        "source":   a.get("source",   ""),
+                        "url":      a.get("url",       ""),
+                        "category": "global",
+                    })
+        except Exception as e:
+            print(f"⚠️  {category} news: {e}")
+    return all_articles
+
+
+def fetch_indian_news() -> List[Dict]:
+    """Fetch India-specific news from RSS feeds (Economic Times, MoneyControl, Livemint)."""
+    import xml.etree.ElementTree as ET
+
+    RSS_FEEDS = {
+        "Economic Times": "https://economictimes.indiatimes.com/rssfeedstopstories.cms",
+        "MoneyControl":   "https://www.moneycontrol.com/rss/latestnews.xml",
+        "Livemint":       "https://www.livemint.com/rss/markets",
+    }
+
+    articles = []
+    for source_name, rss_url in RSS_FEEDS.items():
+        try:
+            resp = requests.get(rss_url, timeout=10, headers={
+                "User-Agent": "Mozilla/5.0 (compatible; MarketIntelBot/1.0)"
+            })
+            if resp.status_code != 200:
+                continue
+            root = ET.fromstring(resp.content)
+            # RSS 2.0 format
+            for item in root.findall(".//item")[:5]:
+                title = item.findtext("title", "").strip()
+                link = item.findtext("link", "").strip()
+                desc = item.findtext("description", "").strip()[:200]
+                if title:
+                    articles.append({
+                        "headline": title,
+                        "source":   source_name,
+                        "url":      link,
+                        "summary":  desc,
+                        "category": "india",
+                    })
+        except Exception as e:
+            print(f"⚠️  RSS {source_name}: {e}")
+
+    return articles
+
+
+def fetch_market_breadth() -> Optional[Dict]:
+    """
+    Fetch NSE market breadth data (advance/decline, 52W highs/lows).
+    Uses NSE API for market activity data.
+    """
+    url = "https://www.nseindia.com/api/marketStatus"
     try:
-        resp = requests.get(url, timeout=10)
+        session = requests.Session()
+        session.get("https://www.nseindia.com", headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+        }, timeout=10)
+        resp = session.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+        }, timeout=10)
+
+        if resp.status_code != 200:
+            return None
+
         data = resp.json()
-        if isinstance(data, list):
-            return [{"headline": a.get("headline", ""),
-                     "source":   a.get("source",   ""),
-                     "url":      a.get("url",       "")}
-                    for a in data[:8]]
+
+        # Extract breadth from market data
+        breadth = {
+            "ok": True,
+            "advances": 0,
+            "declines": 0,
+            "unchanged": 0,
+            "highs_52w": 0,
+            "lows_52w": 0,
+        }
+
+        # NSE market status endpoint may have different structures
+        # Try to extract from available data
+        if "marketState" in data:
+            for market in data["marketState"]:
+                if market.get("market") == "Capital Market - Normal":
+                    breadth["advances"] = int(market.get("advances", 0) or 0)
+                    breadth["declines"] = int(market.get("declines", 0) or 0)
+                    breadth["unchanged"] = int(market.get("unchanged", 0) or 0)
+
+        # Compute A/D ratio
+        if breadth["declines"] > 0:
+            breadth["ad_ratio"] = round(breadth["advances"] / breadth["declines"], 2)
+        elif breadth["advances"] > 0:
+            breadth["ad_ratio"] = 99.0  # All advances
+        else:
+            breadth["ad_ratio"] = 1.0
+
+        # Determine breadth strength
+        ratio = breadth["ad_ratio"]
+        if ratio > 2.0:
+            breadth["strength"] = "STRONG"
+        elif ratio > 1.2:
+            breadth["strength"] = "MODERATE"
+        elif ratio > 0.8:
+            breadth["strength"] = "NEUTRAL"
+        elif ratio > 0.5:
+            breadth["strength"] = "WEAK"
+        else:
+            breadth["strength"] = "VERY WEAK"
+
+        return breadth
+
     except Exception as e:
-        print(f"⚠️  General news: {e}")
-    return []
+        print(f"⚠️  Market breadth: {e}")
+        return None
+
+
+def format_market_breadth(breadth: Optional[Dict]) -> str:
+    """Format market breadth for prompt injection."""
+    if not breadth or not breadth.get("ok"):
+        return ""
+
+    adv = breadth["advances"]
+    dec = breadth["declines"]
+    unc = breadth.get("unchanged", 0)
+    ratio = breadth["ad_ratio"]
+    strength = breadth["strength"]
+
+    lines = [
+        f"[Market Breadth]",
+        f"A/D: {adv}↑ / {dec}↓ / {unc}→ | Ratio: {ratio} ({strength})",
+    ]
+
+    if breadth.get("highs_52w"):
+        lines.append(f"52W Highs: {breadth['highs_52w']} | 52W Lows: {breadth['lows_52w']}")
+
+    return "\n".join(lines)
