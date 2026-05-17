@@ -165,9 +165,10 @@ def get_macro_context(anchor_data: List[Dict]) -> Dict:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def compute_bull_bear_score(fii_context: Dict, macro_context: Dict,
-                             extra_signals: Dict = None) -> Dict:
+                             extra_signals: Dict = None,
+                             anchor_data: List[Dict] = None) -> Dict:
     """
-    Compute weighted Bull/Bear composite score (-40 to +40 range).
+    Compute weighted Bull/Bear composite score (-55 to +55 range).
     All computed in Python — zero API calls.
 
     extra_signals: optional dict with additional signal inputs:
@@ -175,6 +176,11 @@ def compute_bull_bear_score(fii_context: Dict, macro_context: Dict,
         - nifty_vs_ma200_pct: float (% above/below 200-DMA)
         - pcr: float (put-call ratio)
         - fii_fno_net: float (FII F&O net position, positive = long)
+        - carry_trade_regime: str (CARRY-ON, CARRY-STRESS, etc.)
+        - recession_level: str (LOW, ELEVATED, HIGH)
+        - commodity_regime: str (REFLATION, FLIGHT TO SAFETY, etc.)
+        - stagflation_regime: str (STAGFLATION RISK, FLIGHT TO SAFETY, etc.)
+        - liquidity_regime: str (MELT-UP, LIQUIDITY DRIVEN, etc.)
     """
     score = 0
     signals = []
@@ -229,6 +235,81 @@ def compute_bull_bear_score(fii_context: Dict, macro_context: Dict,
         score -= 5
         signals.append(f"FII F&O net short: {fii_fno:+,.0f}")
 
+    # Phase 8: Carry trade stress (from extra_signals or computed)
+    carry_regime = extra.get("carry_trade_regime")
+    if carry_regime == "CARRY-STRESS":
+        score -= 10
+        signals.append("Carry trade STRESSED — JPY strengthening, EM outflow risk")
+    elif carry_regime == "CARRY-ON":
+        score += 5
+        signals.append("Carry trade ON — JPY weakening, EM inflows favorable")
+
+    # Phase 8: Recession proxy
+    recession_level = extra.get("recession_level")
+    if recession_level == "HIGH":
+        score -= 5
+        signals.append("Recession risk HIGH — Copper/Gold + curve inversion")
+    elif recession_level == "LOW":
+        score += 3
+        signals.append("Recession risk LOW — growth healthy")
+
+    # Phase 8: Commodity reflation
+    commodity_regime = extra.get("commodity_regime")
+    if commodity_regime == "REFLATION":
+        score += 5
+        signals.append("Commodity reflation — Copper up, Gold down (bullish EM)")
+    elif commodity_regime == "FLIGHT TO SAFETY":
+        score -= 5
+        signals.append("Flight to safety — Gold up, Copper down (bearish)")
+
+    # Phase 9: Stagflation regime (worst outcome for equities)
+    stagflation_regime = extra.get("stagflation_regime")
+    if stagflation_regime == "STAGFLATION RISK":
+        score -= 10
+        signals.append("STAGFLATION — rising inflation + slowing growth (worst regime)")
+    elif stagflation_regime == "INFLATIONARY PRESSURE":
+        score -= 5
+        signals.append("Inflationary pressure — Gold + Oil rising with elevated CPI")
+
+    # Phase 9: Liquidity regime
+    liquidity_regime = extra.get("liquidity_regime")
+    if liquidity_regime == "MELT-UP":
+        score -= 5
+        signals.append("MELT-UP — everything rising together (late cycle, crash risk)")
+    elif liquidity_regime == "LIQUIDITY DRIVEN":
+        score += 5
+        signals.append("Liquidity driven — central bank liquidity lifting all assets")
+    elif liquidity_regime == "LIQUIDITY TIGHTENING":
+        score -= 5
+        signals.append("Liquidity tightening — rising yields + strong dollar")
+
+    # Institutional signal (SWF/pension fund activity)
+    inst_regime = extra.get("inst_regime")
+    if inst_regime == "STRONG ACCUMULATION":
+        score += 5
+        signals.append("Institutional STRONG ACCUMULATION — SWFs actively buying")
+    elif inst_regime == "ACCUMULATION":
+        score += 3
+        signals.append("Institutional accumulation — SWFs net buyers")
+    elif inst_regime == "STRONG DISTRIBUTION":
+        score -= 5
+        signals.append("Institutional STRONG DISTRIBUTION — SWFs actively selling")
+    elif inst_regime == "DISTRIBUTION":
+        score -= 3
+        signals.append("Institutional distribution — SWFs net sellers")
+
+    # US Employment recession signal
+    us_recession = extra.get("us_recession_level")
+    if us_recession == "HIGH":
+        score -= 10
+        signals.append("US employment recession signal HIGH — unemployment rising + NFP slowing")
+    elif us_recession == "ELEVATED":
+        score -= 5
+        signals.append("US employment recession signal ELEVATED — labor market weakening")
+    elif us_recession == "LOW":
+        score += 3
+        signals.append("US employment healthy — tight labor market")
+
     # BULL SIGNALS (weight: 40%)
     # DII high absorption
     if fii_context.get("dii_absorbed") == "High":
@@ -265,8 +346,8 @@ def compute_bull_bear_score(fii_context: Dict, macro_context: Dict,
         score += 5
         signals.append(f"FII F&O net long: {fii_fno:+,.0f}")
 
-    # Normalize to 0-100 scale
-    normalized_score = (score + 40) * 1.25  # -40 → 0, +40 → 100
+    # Normalize to 0-100 scale (expanded range: -55 to +55 with new signals)
+    normalized_score = (score + 55) * (100 / 110)  # -55 → 0, +55 → 100
 
     # Determine label
     if normalized_score >= 65:
@@ -577,6 +658,101 @@ def format_context_for_ai_full(ctx: Dict) -> str:
         lines.append(f"┌─ Momentum (12M) ───────────────────")
         lines.append(f"│ 12M Return: {mom['momentum_12m']:+.1f}% → {mom['regime']}")
 
+    # Phase 8: Institutional signals
+    carry = ctx.get("carry_trade", {})
+    if carry.get("ok"):
+        lines.append(f"┌─ Carry Trade Signal ───────────────")
+        lines.append(f"│ {carry['regime']} — {carry['label']}")
+        lines.append(f"│ JPY: {carry['jpy_price']:.2f} ({carry['jpy_change']:+.2f}%)")
+        for sig in carry.get("signals", []):
+            lines.append(f"│ • {sig}")
+
+    cr = ctx.get("currency_regime", {})
+    if cr.get("ok"):
+        lines.append(f"┌─ Currency Regime ──────────────────")
+        lines.append(f"│ DXY {cr['dollar_direction']} ({cr['dxy_change']:+.2f}%) — {cr['driver']}-driven")
+        lines.append(f"│ EM Impact: {cr['em_impact']}")
+        for sig in cr.get("signals", []):
+            lines.append(f"│ • {sig}")
+
+    rec = ctx.get("recession_proxy", {})
+    if rec.get("ok"):
+        lines.append(f"┌─ Recession Proxy ──────────────────")
+        lines.append(f"│ Risk: {rec['level']} — {rec['label']}")
+        if rec.get("copper_gold_ratio"):
+            lines.append(f"│ Copper/Gold: {rec['copper_gold_ratio']:.5f}")
+        if rec.get("term_spread") is not None:
+            lines.append(f"│ Term Spread: {rec['term_spread']:+.2f}%")
+        for sig in rec.get("signals", []):
+            lines.append(f"│ • {sig}")
+
+    cb = ctx.get("commodity_breadth", {})
+    if cb.get("ok"):
+        lines.append(f"┌─ Commodity Breadth ────────────────")
+        lines.append(f"│ Regime: {cb['regime']}")
+        lines.append(f"│ Inflation: {cb['inflation_signal']}")
+        for sig in cb.get("signals", []):
+            lines.append(f"│ • {sig}")
+
+    rrd = ctx.get("real_rate_diff", {})
+    if rrd.get("ok"):
+        lines.append(f"┌─ Real Rate Differential ───────────")
+        lines.append(f"│ India: {rrd['india_real_rate']:+.2f}% | US: {rrd['us_real_rate']:+.2f}%")
+        lines.append(f"│ Differential: {rrd['differential']:+.2f}% — {rrd['label']}")
+
+    cr_idx = ctx.get("carry_risk", {})
+    if cr_idx.get("ok"):
+        lines.append(f"┌─ Carry Risk Index ─────────────────")
+        lines.append(f"│ Index: {cr_idx['index']}/100 → {cr_idx['regime']}")
+
+    # Phase 9: Regime detection signals
+    ath = ctx.get("ath_regime", {})
+    if ath.get("ok"):
+        lines.append(f"┌─ ATH Regime ───────────────────────")
+        lines.append(f"│ {ath['regime']} — {ath['label']}")
+        if ath.get("strong_assets"):
+            lines.append(f"│ Near ATH: {', '.join(ath['strong_assets'])}")
+
+    stag = ctx.get("stagflation", {})
+    if stag.get("ok"):
+        lines.append(f"┌─ Stagflation Signal ───────────────")
+        lines.append(f"│ {stag['regime']} — {stag['label']}")
+        for sig in stag.get("signals", []):
+            lines.append(f"│ • {sig}")
+
+    war = ctx.get("war_premium", {})
+    if war.get("ok"):
+        lines.append(f"┌─ War Premium (Oil) ────────────────")
+        lines.append(f"│ Brent ${war['brent']:.0f} vs baseline ${war['baseline']:.0f} = +{war['premium_pct']:.0f}% premium")
+        lines.append(f"│ Level: {war['level']} — {war['label']}")
+
+    liq = ctx.get("liquidity_regime", {})
+    if liq.get("ok"):
+        lines.append(f"┌─ Liquidity Regime ─────────────────")
+        lines.append(f"│ {liq['regime']} — {liq['label']}")
+        for sig in liq.get("signals", []):
+            lines.append(f"│ • {sig}")
+
+    gd = ctx.get("gold_dollar", {})
+    if gd.get("ok"):
+        lines.append(f"┌─ Gold vs Dollar ───────────────────")
+        lines.append(f"│ {gd['regime']} — {gd['label']}")
+        lines.append(f"│ India Impact: {gd['india_impact']}")
+
+    inst = ctx.get("inst_context", {})
+    if inst.get("ok"):
+        lines.append(f"┌─ Institutional Signal ─────────────")
+        lines.append(f"│ {inst['regime']} (score: {inst['score']:+d})")
+        for s in inst.get("signals", []):
+            lines.append(f"│ • {s}")
+
+    emp = ctx.get("us_employment", {})
+    if emp.get("ok"):
+        lines.append(f"┌─ US Employment (BLS) ──────────────")
+        lines.append(f"│ Recession risk: {emp.get('recession_level', '?')} (score: {emp.get('recession_score', 0)}/10)")
+        for s in emp.get("signals", []):
+            lines.append(f"│ • {s}")
+
     return "\n".join(lines)
 
 
@@ -872,6 +1048,912 @@ def compute_india_structural(anchor_data: List[Dict]) -> Dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# INSTITUTIONAL MACRO SIGNALS — Phase 8: Pension/SWF-grade intelligence
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_carry_trade_signal(anchor_data: List[Dict]) -> Dict:
+    """
+    Carry trade signal — THE plumbing of global EM capital flows.
+    JPY (USD/JPY) is the funding currency. When JPY strengthens (USD/JPY falls),
+    carry trades unwind = EM outflows. When JPY weakens = carry expanding = EM inflows.
+
+    Also checks BOJ intervention risk (USD/JPY > 155).
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    jpy = None
+    jpy_change = None
+    us_10y = None
+    india_vix = None
+    dxy_change = None
+
+    for a in anchor_data:
+        if a.get("name") == "USD/JPY" and a.get("ok"):
+            jpy = a["price"]
+            jpy_change = a.get("change_pct", 0) or 0
+        elif a.get("name") == "US 10Y Yield" and a.get("ok"):
+            us_10y = a["price"]
+        elif a.get("name") == "India VIX" and a.get("ok"):
+            india_vix = a["price"]
+        elif a.get("name") == "Dollar Index" and a.get("ok"):
+            dxy_change = a.get("change_pct", 0) or 0
+
+    if jpy is None:
+        return {"ok": False, "message": "USD/JPY data unavailable"}
+
+    signals = []
+    score = 0  # Positive = carry-on, negative = carry-stress
+
+    # JPY direction (USD/JPY falling = JPY strengthening = carry stress)
+    if jpy_change < -0.5:
+        score -= 2
+        signals.append(f"JPY strengthening ({jpy_change:+.2f}%) — carry unwind risk")
+    elif jpy_change < -0.2:
+        score -= 1
+        signals.append(f"JPY slightly stronger ({jpy_change:+.2f}%)")
+    elif jpy_change > 0.5:
+        score += 2
+        signals.append(f"JPY weakening ({jpy_change:+.2f}%) — carry expanding")
+    elif jpy_change > 0.2:
+        score += 1
+        signals.append(f"JPY slightly weaker ({jpy_change:+.2f}%)")
+
+    # BOJ intervention risk
+    if jpy > 155:
+        score -= 1
+        signals.append(f"USD/JPY {jpy:.1f} — BOJ intervention risk zone (>155)")
+    elif jpy > 150:
+        signals.append(f"USD/JPY {jpy:.1f} — elevated but below intervention threshold")
+
+    # Yield spread context (wider = more carry incentive)
+    ys = compute_yield_spread(anchor_data)
+    if ys.get("ok"):
+        spread = ys["spread"]
+        if spread > 3.5:
+            score += 1
+            signals.append(f"Yield spread {spread:.1f}% — wide (carry attractive)")
+        elif spread < 2.0:
+            score -= 1
+            signals.append(f"Yield spread {spread:.1f}% — narrow (carry unattractive)")
+
+    # VIX impact on carry appetite
+    if india_vix and india_vix > 20:
+        score -= 1
+        signals.append(f"VIX {india_vix:.1f} — high vol reduces carry appetite")
+
+    # Composite
+    if score >= 2:
+        regime = "CARRY-ON"
+        label = "Carry trade expanding — favorable for EM inflows"
+    elif score >= 1:
+        regime = "MILDLY CARRY-ON"
+        label = "Carry trade conditions mildly favorable"
+    elif score <= -2:
+        regime = "CARRY-STRESS"
+        label = "Carry trade under stress — EM outflow risk"
+    elif score <= -1:
+        regime = "MILDLY CARRY-OFF"
+        label = "Carry conditions tightening"
+    else:
+        regime = "NEUTRAL"
+        label = "Carry trade neutral — no directional signal"
+
+    return {
+        "ok": True,
+        "regime": regime,
+        "score": score,
+        "label": label,
+        "jpy_price": jpy,
+        "jpy_change": jpy_change,
+        "signals": signals,
+    }
+
+
+def compute_currency_regime(anchor_data: List[Dict]) -> Dict:
+    """
+    Decompose DXY movement into EUR vs JPY drivers.
+    DXY is 57% EUR, 14% JPY — understanding the driver matters:
+    - EUR-driven dollar strength = ECB dovishness (less bearish for EM)
+    - JPY-driven dollar strength = carry unwind (more dangerous for EM)
+    - Broad dollar weakness = strongest EM tailwind
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    dxy = None
+    dxy_change = None
+    eur = None
+    eur_change = None
+    jpy = None
+    jpy_change = None
+
+    for a in anchor_data:
+        name = a.get("name", "")
+        if name == "Dollar Index" and a.get("ok"):
+            dxy = a["price"]
+            dxy_change = a.get("change_pct", 0) or 0
+        elif name == "EUR/USD" and a.get("ok"):
+            eur = a["price"]
+            eur_change = a.get("change_pct", 0) or 0
+        elif name == "USD/JPY" and a.get("ok"):
+            jpy = a["price"]
+            jpy_change = a.get("change_pct", 0) or 0
+
+    if dxy is None:
+        return {"ok": False, "message": "DXY data unavailable"}
+
+    signals = []
+
+    # Determine dollar direction
+    if dxy_change > 0.3:
+        dollar_dir = "RISING"
+    elif dxy_change < -0.3:
+        dollar_dir = "FALLING"
+    else:
+        dollar_dir = "FLAT"
+
+    # Decompose driver
+    eur_driver = abs(eur_change or 0) > 0.3
+    jpy_driver = abs(jpy_change or 0) > 0.3
+
+    if dollar_dir == "RISING":
+        if eur_change is not None and eur_change < -0.3:
+            driver = "EUR-DRIVEN"
+            signals.append(f"EUR weakness ({eur_change:+.2f}%) driving DXY up — ECB dovishness")
+            em_impact = "MODERATE BEARISH — EUR-driven, not EM-specific"
+        elif jpy_change is not None and jpy_change > 0.3:
+            driver = "JPY-DRIVEN"
+            signals.append(f"JPY weakness ({jpy_change:+.2f}%) driving DXY — carry expansion")
+            em_impact = "MILDLY BULLISH — JPY weakening = carry friendly"
+        else:
+            driver = "BROAD"
+            signals.append("Broad dollar strength")
+            em_impact = "BEARISH — broad dollar strength = EM headwind"
+    elif dollar_dir == "FALLING":
+        if eur_change is not None and eur_change > 0.3:
+            driver = "EUR-DRIVEN"
+            signals.append(f"EUR strength ({eur_change:+.2f}%) driving DXY down")
+            em_impact = "BULLISH — dollar weakness = EM tailwind"
+        elif jpy_change is not None and jpy_change < -0.3:
+            driver = "JPY-DRIVEN"
+            signals.append(f"JPY strength ({jpy_change:+.2f}%) driving DXY down — carry stress")
+            em_impact = "BEARISH — JPY strength = carry unwind despite DXY falling"
+        else:
+            driver = "BROAD"
+            signals.append("Broad dollar weakness")
+            em_impact = "BULLISH — broad dollar weakness = strong EM tailwind"
+    else:
+        driver = "NONE"
+        signals.append("Dollar flat — no directional signal")
+        em_impact = "NEUTRAL"
+
+    # Multipolar shift detection
+    if eur_change is not None and jpy_change is not None:
+        if eur_change > 0.3 and jpy_change < -0.3:
+            signals.append("EUR up + JPY down = mixed (EUR strength, carry tightening)")
+        elif eur_change > 0.3 and jpy_change > 0.3:
+            signals.append("EUR + JPY both up = broad dollar weakness (multipolar shift signal)")
+
+    return {
+        "ok": True,
+        "dxy": dxy,
+        "dxy_change": dxy_change,
+        "eur": eur,
+        "eur_change": eur_change,
+        "jpy": jpy,
+        "jpy_change": jpy_change,
+        "dollar_direction": dollar_dir,
+        "driver": driver,
+        "em_impact": em_impact,
+        "signals": signals,
+    }
+
+
+def compute_recession_proxy(anchor_data: List[Dict]) -> Dict:
+    """
+    Recession probability proxy using Copper/Gold ratio and term structure.
+    - Copper/Gold ratio falling = growth slowing, flight to safety
+    - Copper/Gold ratio rising = reflation, risk-on
+    - Term structure (10Y - 2Y) < 0 = yield curve inversion = recession signal
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    copper = None
+    gold = None
+    us_10y = None
+    us_2y = None
+
+    for a in anchor_data:
+        name = a.get("name", "")
+        if name == "Copper" and a.get("ok"):
+            copper = a["price"]
+        elif name == "Gold" and a.get("ok"):
+            gold = a["price"]
+        elif name == "US 10Y Yield" and a.get("ok"):
+            us_10y = a["price"]
+        elif name == "US 2Y Yield" and a.get("ok"):
+            us_2y = a["price"]
+
+    signals = []
+    score = 0  # Positive = growth, negative = recession risk
+
+    # Copper/Gold ratio
+    if copper and gold and gold > 0:
+        cg_ratio = round(copper / gold, 6)
+        # Historical context: ratio typically 0.0015-0.0025
+        # Below 0.0012 = recession territory
+        # Above 0.0020 = reflation
+        if cg_ratio < 0.0012:
+            score -= 2
+            signals.append(f"Copper/Gold {cg_ratio:.5f} — recession territory (< 0.0012)")
+        elif cg_ratio < 0.0015:
+            score -= 1
+            signals.append(f"Copper/Gold {cg_ratio:.5f} — growth slowing")
+        elif cg_ratio > 0.0020:
+            score += 2
+            signals.append(f"Copper/Gold {cg_ratio:.5f} — reflation (bullish for EM)")
+        elif cg_ratio > 0.0017:
+            score += 1
+            signals.append(f"Copper/Gold {cg_ratio:.5f} — healthy growth")
+        else:
+            signals.append(f"Copper/Gold {cg_ratio:.5f} — neutral")
+    else:
+        cg_ratio = None
+
+    # Term structure (10Y - 2Y)
+    term_spread = None
+    if us_10y is not None and us_2y is not None:
+        term_spread = round(us_10y - us_2y, 2)
+        if term_spread < 0:
+            score -= 2
+            signals.append(f"Yield curve INVERTED ({term_spread:+.2f}%) — recession signal (6-12M lead)")
+        elif term_spread < 0.5:
+            score -= 1
+            signals.append(f"Yield curve flat ({term_spread:+.2f}%) — growth slowing")
+        elif term_spread > 1.5:
+            score += 1
+            signals.append(f"Yield curve steep ({term_spread:+.2f}%) — growth expectations healthy")
+
+    # Composite
+    if score <= -3:
+        level = "HIGH"
+        label = "Recession risk ELEVATED — defensive positioning warranted"
+    elif score <= -1:
+        level = "ELEVATED"
+        label = "Growth slowing — monitor closely"
+    elif score >= 2:
+        level = "LOW"
+        label = "Growth healthy — risk-on environment"
+    else:
+        level = "NORMAL"
+        label = "No clear recession signal"
+
+    return {
+        "ok": True,
+        "copper_gold_ratio": cg_ratio,
+        "term_spread": term_spread,
+        "score": score,
+        "level": level,
+        "label": label,
+        "signals": signals,
+    }
+
+
+def compute_commodity_breadth(anchor_data: List[Dict]) -> Dict:
+    """
+    Commodity breadth — what are commodities telling us about global growth and inflation?
+    - All rising = inflationary risk-on
+    - Gold up + Copper down = flight to safety (recession signal)
+    - Oil up + Gold down = growth-driven demand (healthy)
+    - Copper up + Gold down = reflation (bullish for EM)
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    commodities = {}
+    for a in anchor_data:
+        name = a.get("name", "")
+        if name in ("Gold", "Silver", "Brent Crude", "WTI Crude", "Copper") and a.get("ok"):
+            commodities[name] = {
+                "price": a["price"],
+                "change": a.get("change_pct", 0) or 0,
+            }
+
+    if len(commodities) < 3:
+        return {"ok": False, "message": "Insufficient commodity data"}
+
+    signals = []
+    up_count = sum(1 for c in commodities.values() if c["change"] > 0.1)
+    down_count = sum(1 for c in commodities.values() if c["change"] < -0.1)
+
+    # Gold vs Copper divergence (most important signal)
+    gold_chg = commodities.get("Gold", {}).get("change", 0)
+    copper_chg = commodities.get("Copper", {}).get("change", 0)
+    oil_chg = commodities.get("Brent Crude", {}).get("change", 0)
+
+    if gold_chg > 0.5 and copper_chg < -0.5:
+        regime = "FLIGHT TO SAFETY"
+        signals.append(f"Gold up ({gold_chg:+.1f}%) + Copper down ({copper_chg:+.1f}%) — recession signal")
+        inflation_signal = "LOW — demand destruction"
+    elif copper_chg > 0.5 and gold_chg < -0.5:
+        regime = "REFLATION"
+        signals.append(f"Copper up ({copper_chg:+.1f}%) + Gold down ({gold_chg:+.1f}%) — reflation (bullish EM)")
+        inflation_signal = "MODERATE — growth-driven"
+    elif up_count >= 4:
+        regime = "INFLATIONARY RISK-ON"
+        signals.append(f"{up_count}/5 commodities rising — inflationary pressure")
+        inflation_signal = "HIGH — broad commodity rally"
+    elif down_count >= 4:
+        regime = "DEFLATIONARY RISK-OFF"
+        signals.append(f"{down_count}/5 commodities falling — demand destruction")
+        inflation_signal = "LOW — deflationary"
+    elif oil_chg > 0.5 and gold_chg < -0.3:
+        regime = "GROWTH-DRIVEN"
+        signals.append(f"Oil up ({oil_chg:+.1f}%) + Gold flat — healthy growth demand")
+        inflation_signal = "MODERATE — supply-driven"
+    else:
+        regime = "MIXED"
+        signals.append("Commodity signals mixed — no clear regime")
+        inflation_signal = "NEUTRAL"
+
+    return {
+        "ok": True,
+        "regime": regime,
+        "inflation_signal": inflation_signal,
+        "commodities": {k: v for k, v in commodities.items()},
+        "up_count": up_count,
+        "down_count": down_count,
+        "signals": signals,
+    }
+
+
+def compute_real_rate_differential(anchor_data: List[Dict]) -> Dict:
+    """
+    India-US real rate differential — what drives FII allocation decisions.
+    Real rate = nominal yield - inflation.
+    Wider differential = India more attractive for FII.
+    Narrowing = FII outflow risk.
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    # India real rate (from macro_fetcher)
+    from src.macro_fetcher import compute_real_rate
+    india_real = compute_real_rate()
+    if not india_real.get("ok"):
+        return {"ok": False, "message": "India real rate unavailable"}
+
+    india_rr = india_real["real_rate"]
+
+    # US real rate approximation: US 10Y - estimated US CPI
+    # US CPI stored in bot_state, fallback to 2.8% (approximate)
+    us_10y = None
+    for a in anchor_data:
+        if a.get("name") == "US 10Y Yield" and a.get("ok"):
+            us_10y = a["price"]
+            break
+
+    if us_10y is None:
+        return {"ok": False, "message": "US 10Y unavailable"}
+
+    # Get US CPI from bot_state or use approximate
+    us_cpi = 2.8  # Approximate — will be replaced with stored value
+    try:
+        from src.db import get_bot_state
+        stored_cpi = get_bot_state("us_cpi")
+        if stored_cpi:
+            us_cpi = float(stored_cpi)
+    except Exception:
+        pass
+
+    us_real = round(us_10y - us_cpi, 2)
+    differential = round(india_rr - us_real, 2)
+
+    if differential > 3:
+        label = "VERY ATTRACTIVE — strong FII carry incentive"
+    elif differential > 2:
+        label = "ATTRACTIVE — India yield advantage exists"
+    elif differential > 1:
+        label = "MODERATE — mild advantage"
+    elif differential > 0:
+        label = "NARROW — advantage shrinking"
+    else:
+        label = "NEGATIVE — US more attractive (FII outflow risk)"
+
+    return {
+        "ok": True,
+        "india_real_rate": india_rr,
+        "us_real_rate": us_real,
+        "us_10y": us_10y,
+        "us_cpi": us_cpi,
+        "differential": differential,
+        "label": label,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CARRY TRADE RISK INDEX — Composite institutional signal
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_carry_trade_risk(anchor_data: List[Dict]) -> Dict:
+    """
+    Composite carry trade risk index combining:
+    1. JPY momentum (USD/JPY change)
+    2. India-US yield spread
+    3. India VIX
+    4. DXY momentum
+
+    Used by pension/SWF funds to decide EM allocation.
+    """
+    carry = compute_carry_trade_signal(anchor_data)
+    if not carry.get("ok"):
+        return {"ok": False}
+
+    # The carry signal already computes a score — use it as the risk index
+    score = carry["score"]
+
+    # Add DXY momentum as a modifier
+    for a in anchor_data:
+        if a.get("name") == "Dollar Index" and a.get("ok"):
+            dxy_chg = a.get("change_pct", 0) or 0
+            if dxy_chg > 1:
+                score -= 1
+            elif dxy_chg < -1:
+                score += 1
+
+    # Normalize to 0-100 scale (raw range roughly -5 to +5)
+    normalized = round((score + 5) * 10, 1)  # -5 → 0, +5 → 100
+    normalized = max(0, min(100, normalized))
+
+    if normalized >= 70:
+        regime = "CARRY-ON"
+    elif normalized >= 40:
+        regime = "NEUTRAL"
+    else:
+        regime = "CARRY-STRESS"
+
+    return {
+        "ok": True,
+        "raw_score": score,
+        "index": normalized,
+        "regime": regime,
+        "signals": carry.get("signals", []),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 9: REGIME DETECTION — Bubble, Stagflation, War Premium, Multipolar Shift
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_ath_regime(anchor_data: List[Dict]) -> Dict:
+    """
+    Detect when multiple asset classes are simultaneously at or near all-time highs.
+    Historically rare — signals either liquidity-driven melt-up or genuine regime shift.
+    Stocks ATH + Gold ATH simultaneously is the most dangerous combination.
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    # We don't have 52-week highs in anchor_data, so we use the current prices
+    # and weekly changes as a proxy. If weekly_change is strongly positive for
+    # multiple assets, they're likely near ATH.
+    assets = {}
+    for a in anchor_data:
+        if not a.get("ok"):
+            continue
+        name = a.get("name", "")
+        weekly = a.get("weekly_change_pct", 0) or 0
+        daily = a.get("change_pct", 0) or 0
+        price = a.get("price", 0)
+
+        if name in ("Gold", "Silver", "Brent Crude", "WTI Crude", "Copper"):
+            assets[name] = {"price": price, "daily": daily, "weekly": weekly}
+        elif name == "USD/INR":
+            assets[name] = {"price": price, "daily": daily, "weekly": weekly}
+
+    signals = []
+    near_ath_count = 0
+    strong_assets = []
+
+    # Gold near ATH: if weekly change > 3% and price > 3000 (current regime)
+    gold = assets.get("Gold", {})
+    if gold.get("price", 0) > 3000 and gold.get("weekly", 0) > 2:
+        near_ath_count += 1
+        strong_assets.append("Gold")
+        signals.append(f"Gold at ATH territory: ${gold['price']:.0f} ({gold['weekly']:+.1f}% weekly)")
+
+    # Silver near ATH
+    silver = assets.get("Silver", {})
+    if silver.get("price", 0) > 50 and silver.get("weekly", 0) > 2:
+        near_ath_count += 1
+        strong_assets.append("Silver")
+        signals.append(f"Silver at ATH territory: ${silver['price']:.0f} ({silver['weekly']:+.1f}% weekly)")
+
+    # Oil elevated (not ATH but war-premium territory)
+    brent = assets.get("Brent Crude", {})
+    if brent.get("price", 0) > 90:
+        signals.append(f"Brent elevated: ${brent['price']:.0f} (above $90 threshold)")
+
+    # Dollar weak (DXY < 100)
+    for a in anchor_data:
+        if a.get("name") == "Dollar Index" and a.get("ok"):
+            dxy = a["price"]
+            dxy_weekly = a.get("weekly_change_pct", 0) or 0
+            if dxy < 100:
+                signals.append(f"Dollar weak: DXY {dxy:.1f} (< 100)")
+            if dxy_weekly < -1:
+                signals.append(f"DXY falling {dxy_weekly:+.1f}% weekly — dollar weakness accelerating")
+
+    # Determine regime
+    if near_ath_count >= 3:
+        regime = "MULTI-ASSET ATH"
+        label = "3+ asset classes at ATH — melt-up risk, tighten stops"
+    elif near_ath_count >= 2:
+        regime = "ELEVATED ACROSS ASSETS"
+        label = "2+ asset classes near ATH — late cycle signals"
+    elif near_ath_count >= 1:
+        regime = "SINGLE ASSET STRENGTH"
+        label = "1 asset class near ATH — normal dispersion"
+    else:
+        regime = "NORMAL DISPERSION"
+        label = "No unusual ATH clustering"
+
+    # Special combination: Stocks + Gold both near ATH
+    if near_ath_count >= 2:
+        signals.append("Stocks + Gold both elevated = LIQUIDITY MELT-UP signal")
+
+    return {
+        "ok": True,
+        "regime": regime,
+        "label": label,
+        "near_ath_count": near_ath_count,
+        "strong_assets": strong_assets,
+        "signals": signals,
+    }
+
+
+def compute_stagflation_signal(anchor_data: List[Dict]) -> Dict:
+    """
+    Stagflation = rising inflation + slowing growth.
+    Different from flight-to-safety (which is fear-driven, not inflation-driven).
+    Key distinction: stagflation has CPI rising, flight-to-safety has stable CPI.
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    gold_chg = None
+    copper_chg = None
+    oil_chg = None
+    gold_price = None
+    copper_price = None
+
+    for a in anchor_data:
+        if not a.get("ok"):
+            continue
+        name = a.get("name", "")
+        if name == "Gold":
+            gold_chg = a.get("weekly_change_pct", 0) or 0
+            gold_price = a["price"]
+        elif name == "Copper":
+            copper_chg = a.get("weekly_change_pct", 0) or 0
+            copper_price = a["price"]
+        elif name == "Brent Crude":
+            oil_chg = a.get("weekly_change_pct", 0) or 0
+
+    if gold_chg is None or copper_chg is None:
+        return {"ok": False, "message": "Insufficient commodity data"}
+
+    # Get CPI from macro_fetcher
+    cpi = None
+    cpi_rising = False
+    try:
+        from src.macro_fetcher import get_stored_cpi
+        cpi = get_stored_cpi()
+        # CPI > 4% = elevated, > 5% = high (India context)
+        if cpi > 5:
+            cpi_rising = True
+        elif cpi > 4:
+            cpi_rising = True
+    except Exception:
+        pass
+
+    signals = []
+
+    # Gold up + Copper down = either flight-to-safety or stagflation
+    if gold_chg > 2 and copper_chg < -2:
+        if cpi_rising:
+            regime = "STAGFLATION RISK"
+            label = "Rising inflation + slowing growth — worst regime for equities"
+            signals.append(f"Gold up {gold_chg:+.1f}% + Copper down {copper_chg:+.1f}% + CPI {cpi}% = stagflation setup")
+            signals.append("RBI may be forced to hike even as growth slows")
+        else:
+            regime = "FLIGHT TO SAFETY"
+            label = "Fear-driven — gold bid, growth assets sold"
+            signals.append(f"Gold up {gold_chg:+.1f}% + Copper down {copper_chg:+.1f}% + CPI {cpi}% = flight-to-safety")
+    elif gold_chg > 2 and oil_chg is not None and oil_chg > 2:
+        if cpi_rising:
+            regime = "INFLATIONARY PRESSURE"
+            label = "Gold + Oil both rising with elevated CPI — inflation is the threat"
+            signals.append(f"Gold up {gold_chg:+.1f}% + Oil up {oil_chg:+.1f}% + CPI {cpi}% = inflationary")
+        else:
+            regime = "COMMODITY RALLY"
+            label = "Gold + Oil rising but CPI contained — demand-driven"
+            signals.append(f"Gold up {gold_chg:+.1f}% + Oil up {oil_chg:+.1f}% + CPI {cpi}% = demand-driven")
+    elif copper_chg > 2 and gold_chg < 0:
+        regime = "REFLATION"
+        label = "Copper up, gold down — growth accelerating (bullish EM)"
+        signals.append(f"Copper up {copper_chg:+.1f}% + Gold down {gold_chg:+.1f}% = reflation")
+    elif gold_chg > 2 and copper_chg > 2:
+        regime = "INFLATIONARY RISK-ON"
+        label = "All commodities rising — inflationary, RBI may tighten"
+        signals.append(f"Gold up {gold_chg:+.1f}% + Copper up {copper_chg:+.1f}% = inflationary risk-on")
+    else:
+        regime = "NORMAL"
+        label = "No stagflation or flight-to-safety signal"
+        signals.append(f"Gold {gold_chg:+.1f}%, Copper {copper_chg:+.1f}% — normal dispersion")
+
+    return {
+        "ok": True,
+        "regime": regime,
+        "label": label,
+        "gold_chg": gold_chg,
+        "copper_chg": copper_chg,
+        "oil_chg": oil_chg,
+        "cpi": cpi,
+        "signals": signals,
+    }
+
+
+def compute_war_premium(anchor_data: List[Dict]) -> Dict:
+    """
+    Quantify the war premium in oil prices above fundamental fair value.
+    When there's an active conflict, oil includes a geopolitical premium.
+    De-escalation = oil crash (deflationary). Escalation = further spike.
+    Uses hybrid approach: auto from macro_anchor_snapshots when available,
+    hardcoded fallback (~$85) when not.
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    brent = None
+    wti = None
+    for a in anchor_data:
+        if not a.get("ok"):
+            continue
+        if a.get("name") == "Brent Crude":
+            brent = a["price"]
+        elif a.get("name") == "WTI Crude":
+            wti = a["price"]
+
+    if brent is None:
+        return {"ok": False, "message": "Brent data unavailable"}
+
+    # Try to get baseline from macro_anchor_snapshots (30-day history)
+    baseline = None
+    try:
+        from src.db import get_macro_history
+        history = get_macro_history("BZ=F", days=30)
+        if history and len(history) >= 5:
+            # Use the earliest available price as baseline
+            baseline = history[0].get("price")
+    except Exception:
+        pass
+
+    # Fallback: hardcoded pre-conflict estimate
+    if baseline is None:
+        baseline = 85.0  # Approximate pre-conflict Brent
+
+    premium_pct = round((brent - baseline) / baseline * 100, 1)
+
+    signals = []
+    if premium_pct > 30:
+        level = "EXTREME"
+        label = "Extreme war premium — crash risk on de-escalation"
+        de_escalation_risk = "HIGH"
+        signals.append(f"Brent ${brent:.0f} vs baseline ${baseline:.0f} = +{premium_pct:.0f}% premium")
+        signals.append("If conflict de-escalates, oil could crash 20-30%")
+    elif premium_pct > 15:
+        level = "SIGNIFICANT"
+        label = "Significant war premium — priced for continued conflict"
+        de_escalation_risk = "MODERATE"
+        signals.append(f"Brent ${brent:.0f} vs baseline ${baseline:.0f} = +{premium_pct:.0f}% premium")
+        signals.append("Market pricing in continued conflict. Surprise de-escalation = oil correction")
+    elif premium_pct > 5:
+        level = "MODERATE"
+        label = "Moderate premium — conflict partially priced in"
+        de_escalation_risk = "LOW"
+        signals.append(f"Brent ${brent:.0f} vs baseline ${baseline:.0f} = +{premium_pct:.0f}% premium")
+    else:
+        level = "MINIMAL"
+        label = "Minimal war premium — market pricing in peace"
+        de_escalation_risk = "LOW"
+        signals.append(f"Brent ${brent:.0f} vs baseline ${baseline:.0f} = +{premium_pct:.0f}% premium — near fundamentals")
+
+    return {
+        "ok": True,
+        "brent": brent,
+        "baseline": baseline,
+        "premium_pct": premium_pct,
+        "level": level,
+        "label": label,
+        "de_escalation_risk": de_escalation_risk,
+        "signals": signals,
+    }
+
+
+def compute_liquidity_regime(anchor_data: List[Dict]) -> Dict:
+    """
+    Detect when "everything rises together" — stocks, gold, dollar weak.
+    This happens when central banks flood the system with liquidity.
+    It's the opposite of "normal" where stocks up = gold down.
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    gold_chg = None
+    silver_chg = None
+    dxy_chg = None
+    us_10y_chg = None
+    brent_chg = None
+
+    for a in anchor_data:
+        if not a.get("ok"):
+            continue
+        name = a.get("name", "")
+        chg = a.get("weekly_change_pct", 0) or 0
+        if name == "Gold":
+            gold_chg = chg
+        elif name == "Silver":
+            silver_chg = chg
+        elif name == "Dollar Index":
+            dxy_chg = chg
+        elif name == "US 10Y Yield":
+            us_10y_chg = chg
+        elif name == "Brent Crude":
+            brent_chg = chg
+
+    signals = []
+    score = 0  # Positive = liquidity abundant, negative = tightening
+
+    # Gold up + Dollar down = liquidity driven (money printing)
+    if gold_chg is not None and dxy_chg is not None:
+        if gold_chg > 2 and dxy_chg < -1:
+            score += 2
+            signals.append(f"Gold up {gold_chg:+.1f}% + DXY down {dxy_chg:+.1f}% = LIQUIDITY DRIVEN")
+        elif gold_chg > 2 and dxy_chg > 1:
+            score -= 1
+            signals.append(f"Gold up {gold_chg:+.1f}% + DXY up {dxy_chg:+.1f}% = INFLATION HEDGE (gold rising despite dollar strength)")
+
+    # Silver + Gold both up = precious metals bid (liquidity or fear)
+    if gold_chg is not None and silver_chg is not None:
+        if gold_chg > 2 and silver_chg > 2:
+            score += 1
+            signals.append(f"Gold + Silver both up = broad precious metals bid")
+        elif silver_chg > 3 and gold_chg < 1:
+            signals.append(f"Silver up {silver_chg:+.1f}% + Gold flat = industrial demand (not liquidity)")
+
+    # Oil + Gold both spiking = dual shock (inflationary + growth negative)
+    if gold_chg is not None and brent_chg is not None:
+        if gold_chg > 2 and brent_chg > 3:
+            score -= 1
+            signals.append("Gold + Oil both spiking = DUAL SHOCK (inflationary + growth negative)")
+
+    # US yields rising = liquidity tightening
+    if us_10y_chg is not None:
+        if us_10y_chg > 3:
+            score -= 2
+            signals.append(f"US 10Y up {us_10y_chg:+.1f}% = BOND ROUT — liquidity tightening")
+        elif us_10y_chg > 1:
+            score -= 1
+            signals.append(f"US 10Y up {us_10y_chg:+.1f}% = yields rising")
+        elif us_10y_chg < -2:
+            score += 1
+            signals.append(f"US 10Y down {us_10y_chg:+.1f}% = yields falling (liquidity easing)")
+
+    # Composite
+    if score >= 3:
+        regime = "MELT-UP"
+        label = "Everything rising together — late cycle, historically ends with 15-30% correction"
+    elif score >= 2:
+        regime = "LIQUIDITY DRIVEN"
+        label = "Central bank liquidity driving all assets — works until liquidity is withdrawn"
+    elif score >= 1:
+        regime = "MILDLY LIQUID ABUNDANT"
+        label = "Liquidity conditions favorable"
+    elif score <= -2:
+        regime = "LIQUIDITY TIGHTENING"
+        label = "Rising yields + strong dollar — worst environment for all assets"
+    elif score <= -1:
+        regime = "MILDLY TIGHT"
+        label = "Liquidity conditions tightening"
+    else:
+        regime = "NEUTRAL"
+        label = "No clear liquidity signal"
+
+    return {
+        "ok": True,
+        "regime": regime,
+        "label": label,
+        "score": score,
+        "signals": signals,
+    }
+
+
+def compute_gold_dollar_regime(anchor_data: List[Dict]) -> Dict:
+    """
+    Gold rising + Dollar falling = strongest multipolar shift signal.
+    This is what happens when the world loses confidence in the dollar
+    as reserve currency. Not a trade — a regime.
+    """
+    if not anchor_data:
+        return {"ok": False}
+
+    gold_chg = None
+    gold_price = None
+    dxy_chg = None
+    dxy_price = None
+
+    for a in anchor_data:
+        if not a.get("ok"):
+            continue
+        name = a.get("name", "")
+        if name == "Gold":
+            gold_chg = a.get("weekly_change_pct", 0) or 0
+            gold_price = a["price"]
+        elif name == "Dollar Index":
+            dxy_chg = a.get("weekly_change_pct", 0) or 0
+            dxy_price = a["price"]
+
+    if gold_chg is None or dxy_chg is None:
+        return {"ok": False, "message": "Gold or DXY data unavailable"}
+
+    signals = []
+
+    if gold_chg > 2 and dxy_chg < -1:
+        regime = "MULTIPOLAR SHIFT"
+        label = "Gold surging + Dollar weakening — structural, not cyclical"
+        signals.append(f"Gold up {gold_chg:+.1f}% + DXY down {dxy_chg:+.1f}% = multipolar shift signal")
+        signals.append("Gold bid is structural in this scenario — not a trade, a regime")
+        signals.append("Weak dollar = EM tailwind (capital flows to higher-yielding assets)")
+        india_impact = "BULLISH — weak dollar attracts FII inflows to India"
+    elif gold_chg > 2 and dxy_chg > 1:
+        regime = "INFLATION HEDGE"
+        label = "Gold rising despite dollar strength — pure inflation fear"
+        signals.append(f"Gold up {gold_chg:+.1f}% + DXY up {dxy_chg:+.1f}% = inflation hedge bid")
+        signals.append("Gold rising alongside dollar = inflation is the primary fear, not dollar weakness")
+        india_impact = "NEUTRAL — dollar strength offsets gold's inflation signal"
+    elif gold_chg < -1 and dxy_chg > 1:
+        regime = "NORMAL"
+        label = "Dollar strength pressuring gold — classic inverse relationship"
+        signals.append(f"Gold down {gold_chg:+.1f}% + DXY up {dxy_chg:+.1f}% = normal inverse")
+        india_impact = "BEARISH — strong dollar = FII outflow risk"
+    elif gold_chg < -1 and dxy_chg < -1:
+        regime = "UNUSUAL"
+        label = "Both gold and dollar weak — liquidity event"
+        signals.append(f"Gold down {gold_chg:+.1f}% + DXY down {dxy_chg:+.1f}% = unusual (liquidity event)")
+        india_impact = "MIXED — unusual correlation, monitor for contagion"
+    else:
+        regime = "NEUTRAL"
+        label = "No clear gold-dollar signal"
+        signals.append(f"Gold {gold_chg:+.1f}%, DXY {dxy_chg:+.1f}% — within normal range")
+        india_impact = "NEUTRAL"
+
+    return {
+        "ok": True,
+        "regime": regime,
+        "label": label,
+        "gold_price": gold_price,
+        "gold_chg": gold_chg,
+        "dxy_price": dxy_price,
+        "dxy_chg": dxy_chg,
+        "india_impact": india_impact,
+        "signals": signals,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # MAIN: Run all contextualization for a job execution
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -888,9 +1970,6 @@ def run_contextualization(anchor_data: List[Dict], extra_signals: Dict = None) -
     # Get macro context (VIX, DXY) from fetched anchors
     macro_context = get_macro_context(anchor_data)
 
-    # Compute Bull/Bear score with extra signals
-    bull_bear = compute_bull_bear_score(fii_context, macro_context, extra_signals=extra_signals)
-
     # Compute yield spread from anchors
     yield_spread = compute_yield_spread(anchor_data)
 
@@ -906,6 +1985,55 @@ def run_contextualization(anchor_data: List[Dict], extra_signals: Dict = None) -
     global_risk = compute_global_risk_composite(anchor_data)
     india_structural = compute_india_structural(anchor_data)
 
+    # Phase 8: Institutional macro signals (computed BEFORE bull_bear so they feed into it)
+    carry_trade = compute_carry_trade_signal(anchor_data)
+    currency_regime = compute_currency_regime(anchor_data)
+    recession_proxy = compute_recession_proxy(anchor_data)
+    commodity_breadth = compute_commodity_breadth(anchor_data)
+    real_rate_diff = compute_real_rate_differential(anchor_data)
+    carry_risk = compute_carry_trade_risk(anchor_data)
+
+    # Phase 9: Regime detection signals
+    ath_regime = compute_ath_regime(anchor_data)
+    stagflation = compute_stagflation_signal(anchor_data)
+    war_premium = compute_war_premium(anchor_data)
+    liquidity_regime = compute_liquidity_regime(anchor_data)
+    gold_dollar = compute_gold_dollar_regime(anchor_data)
+
+    # Institutional context (SWF/pension fund activity from stored data)
+    try:
+        from src.fii_tracker import get_institutional_context
+        inst_context = get_institutional_context()
+    except Exception:
+        inst_context = {"ok": False}
+
+    # US Employment data (BLS public API, no key needed)
+    try:
+        from src.data_fetcher import fetch_us_employment
+        us_employment = fetch_us_employment()
+    except Exception:
+        us_employment = {"ok": False}
+
+    # Enrich extra_signals with institutional + regime signals for bull_bear score
+    enriched_extra = dict(extra_signals) if extra_signals else {}
+    if carry_trade.get("ok"):
+        enriched_extra["carry_trade_regime"] = carry_trade["regime"]
+    if recession_proxy.get("ok"):
+        enriched_extra["recession_level"] = recession_proxy["level"]
+    if commodity_breadth.get("ok"):
+        enriched_extra["commodity_regime"] = commodity_breadth["regime"]
+    if stagflation.get("ok"):
+        enriched_extra["stagflation_regime"] = stagflation["regime"]
+    if liquidity_regime.get("ok"):
+        enriched_extra["liquidity_regime"] = liquidity_regime["regime"]
+    if inst_context.get("ok"):
+        enriched_extra["inst_regime"] = inst_context["regime"]
+    if us_employment.get("ok"):
+        enriched_extra["us_recession_level"] = us_employment.get("recession_level")
+
+    # Compute Bull/Bear score with enriched signals
+    bull_bear = compute_bull_bear_score(fii_context, macro_context, extra_signals=enriched_extra)
+
     return {
         "fii_context": fii_context,
         "macro_context": macro_context,
@@ -916,6 +2044,21 @@ def run_contextualization(anchor_data: List[Dict], extra_signals: Dict = None) -
         "credit_stress": credit_stress,
         "global_risk": global_risk,
         "india_structural": india_structural,
+        # Phase 8 additions
+        "carry_trade": carry_trade,
+        "currency_regime": currency_regime,
+        "recession_proxy": recession_proxy,
+        "commodity_breadth": commodity_breadth,
+        "real_rate_diff": real_rate_diff,
+        "carry_risk": carry_risk,
+        # Phase 9 additions
+        "ath_regime": ath_regime,
+        "stagflation": stagflation,
+        "war_premium": war_premium,
+        "liquidity_regime": liquidity_regime,
+        "gold_dollar": gold_dollar,
+        "inst_context": inst_context,
+        "us_employment": us_employment,
     }
 
 

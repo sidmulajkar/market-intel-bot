@@ -574,6 +574,120 @@ def get_breadth_history(days: int = 90) -> list:
         return []
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 8: MACRO ANCHOR SNAPSHOTS — For historical percentile + cross-asset
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def save_macro_snapshot(date_str: str, symbol: str, name: str, price: float,
+                        change_pct: float = None, weekly_change_pct: float = None) -> bool:
+    """Save daily macro anchor value to Supabase for historical tracking."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("macro_anchor_snapshots").upsert({
+            "date":              date_str,
+            "symbol":            symbol,
+            "name":              name,
+            "price":             price,
+            "change_pct":        change_pct,
+            "weekly_change_pct": weekly_change_pct,
+            "created_at":        datetime.now().isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_macro_snapshot error: {e}")
+        return False
+
+
+def save_macro_snapshots_batch(anchor_data: list, date_str: str = None) -> int:
+    """Save all macro anchor snapshots in batch. Returns count saved."""
+    if not date_str:
+        from datetime import datetime
+        date_str = datetime.now().strftime("%Y-%m-%d")
+    saved = 0
+    for a in anchor_data:
+        if a.get("ok") and a.get("price") is not None:
+            if save_macro_snapshot(
+                date_str, a["symbol"], a["name"], a["price"],
+                a.get("change_pct"), a.get("weekly_change_pct")
+            ):
+                saved += 1
+    return saved
+
+
+def get_macro_history(symbol: str, days: int = 90) -> list:
+    """Get historical macro anchor values for percentile computation."""
+    db = get_client()
+    if not db:
+        return []
+    try:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        result = (
+            db.table("macro_anchor_snapshots")
+            .select("date, price, change_pct")
+            .eq("symbol", symbol)
+            .gte("date", cutoff)
+            .order("date")
+            .execute()
+        )
+        return result.data if result.data else []
+    except Exception as e:
+        print(f"⚠️ get_macro_history error: {e}")
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 8: FII INSTITUTION TRACKER — SWF/Pension Fund Activity
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def save_fii_institution(date_str: str, institution_name: str, institution_type: str,
+                         country: str, signal_type: str, amount_cr: float = None,
+                         details: str = None, source: str = None) -> bool:
+    """Save FII institution activity to Supabase."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("fii_institution_tracker").insert({
+            "date":              date_str,
+            "institution_name":  institution_name,
+            "institution_type":  institution_type,
+            "country":           country,
+            "signal_type":       signal_type,
+            "amount_cr":         amount_cr,
+            "details":           details,
+            "source":            source,
+            "created_at":        datetime.now().isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_fii_institution error: {e}")
+        return False
+
+
+def get_fii_institutions(days: int = 180) -> list:
+    """Get recent FII institution activity."""
+    db = get_client()
+    if not db:
+        return []
+    try:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        result = (
+            db.table("fii_institution_tracker")
+            .select("*")
+            .gte("date", cutoff)
+            .order("date", desc=True)
+            .execute()
+        )
+        return result.data if result.data else []
+    except Exception as e:
+        print(f"⚠️ get_fii_institutions error: {e}")
+        return []
+
+
 # ══════════════════════════════════════════════════════════════
 # MF FLOWS (Monthly AMFI category data)
 # ══════════════════════════════════════════════════════════════
@@ -663,7 +777,7 @@ def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
     results = {
         "sent_alerts": 0, "snapshots": 0, "analysis_cache": 0,
         "fii_dii": 0, "mf_flows": 0, "breadth": 0, "valuation": 0,
-        "predictions": 0, "outcomes": 0,
+        "predictions": 0, "outcomes": 0, "shareholding": 0,
         "errors": []
     }
     cutoff_alert    = (datetime.now() - timedelta(days=days_alert)).strftime("%Y-%m-%d")
@@ -745,8 +859,506 @@ def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
     except Exception as e:
         results["errors"].append(f"prediction_outcomes: {e}")
 
+    # ── Macro anchor snapshots: 90 days ──
+    try:
+        cutoff_macro = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        resp = db.table("macro_anchor_snapshots").delete().lt("date", cutoff_macro).execute()
+        results["macro_snapshots"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"macro_anchor_snapshots: {e}")
+
+    # ── FII institution tracker: 180 days ──
+    try:
+        cutoff_fii_tracker = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
+        resp = db.table("fii_institution_tracker").delete().lt("date", cutoff_fii_tracker).execute()
+        results["fii_tracker"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"fii_institution_tracker: {e}")
+
+    # ── Shareholding snapshots: 90 days ──
+    try:
+        cutoff_sh = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        resp = db.table("shareholding_snapshots").delete().lt("date", cutoff_sh).execute()
+        results["shareholding"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"shareholding_snapshots: {e}")
+
+    # ── Options snapshots: 7 days ──
+    try:
+        cutoff_options = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        resp = db.table("options_snapshots").delete().lt("date", cutoff_options).execute()
+        results["options_snapshots"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"options_snapshots: {e}")
+
+    # ── Daily market snapshot: 3 years ──
+    try:
+        cutoff_snapshot = (datetime.now() - timedelta(days=1095)).strftime("%Y-%m-%d")
+        resp = db.table("daily_market_snapshot").delete().lt("date", cutoff_snapshot).execute()
+        results["daily_snapshot"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"daily_market_snapshot: {e}")
+
+    # ── Correlation matrix: 1 year ──
+    try:
+        cutoff_corr = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+        resp = db.table("correlation_matrix").delete().lt("date", cutoff_corr).execute()
+        results["correlation"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"correlation_matrix: {e}")
+
+    # ── Signal accuracy log: 1 year ──
+    try:
+        cutoff_signal = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+        resp = db.table("signal_accuracy_log").delete().lt("date", cutoff_signal).execute()
+        results["signal_accuracy"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"signal_accuracy_log: {e}")
+
+    # ── Divergence log: 90 days ──
+    try:
+        cutoff_div = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        resp = db.table("divergence_log").delete().lt("date", cutoff_div).execute()
+        results["divergence"] = len(resp.data) if resp.data else 0
+    except Exception as e:
+        results["errors"].append(f"divergence_log: {e}")
+
     print(f"🧹 Purged: {results['sent_alerts']} alerts, {results['snapshots']} snapshots, "
           f"{results['analysis_cache']} cache, {results['fii_dii']} fii_dii, {results['mf_flows']} mf_flows, "
           f"{results.get('breadth', 0)} breadth, {results.get('valuation', 0)} valuation, "
-          f"{results.get('predictions', 0)} predictions, {results.get('outcomes', 0)} outcomes")
+          f"{results.get('predictions', 0)} predictions, {results.get('outcomes', 0)} outcomes, "
+          f"{results.get('macro_snapshots', 0)} macro, {results.get('fii_tracker', 0)} fii_tracker, "
+          f"{results.get('shareholding', 0)} shareholding, {results.get('daily_snapshot', 0)} daily_snapshot")
     return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 11: DAILY MARKET SNAPSHOT — Rolling Statistical Memory
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def save_daily_market_snapshot(date_str: str, snapshot: dict) -> bool:
+    """
+    Save unified daily market snapshot for percentile ranking,
+    scenario matching, correlations, and divergence detection.
+    snapshot: dict with all metric values (see daily_market_snapshot schema).
+    """
+    db = get_client()
+    if not db:
+        return False
+    try:
+        record = {"date": date_str, "created_at": datetime.now().isoformat()}
+        # Only store non-None values
+        for key, val in snapshot.items():
+            if val is not None:
+                record[key] = val
+        db.table("daily_market_snapshot").upsert(record).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_daily_market_snapshot error: {e}")
+        return False
+
+
+def get_daily_market_snapshots(days: int = 252) -> list:
+    """
+    Get historical daily market snapshots for percentile computation.
+    Default 252 days (1 trading year). Max 1095 (3 years).
+    """
+    db = get_client()
+    if not db:
+        return []
+    try:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        result = (
+            db.table("daily_market_snapshot")
+            .select("*")
+            .gte("date", cutoff)
+            .order("date")
+            .execute()
+        )
+        return result.data if result.data else []
+    except Exception as e:
+        print(f"⚠️ get_daily_market_snapshots error: {e}")
+        return []
+
+
+def get_snapshot_metric_history(metric: str, days: int = 252) -> list:
+    """
+    Get a single metric's history from daily_market_snapshot.
+    Returns list of (date, value) tuples, filtering out None values.
+    """
+    db = get_client()
+    if not db:
+        return []
+    try:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        result = (
+            db.table("daily_market_snapshot")
+            .select(f"date, {metric}")
+            .gte("date", cutoff)
+            .not_.is_(metric, "null")
+            .order("date")
+            .execute()
+        )
+        return [(r["date"], r[metric]) for r in (result.data or []) if r.get(metric) is not None]
+    except Exception as e:
+        print(f"⚠️ get_snapshot_metric_history({metric}) error: {e}")
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 11: CORRELATION MATRIX — Rolling signal correlations
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def save_correlation(date_str: str, pair_name: str, correlation: float,
+                     p_value: float = None, sample_size: int = None,
+                     window_days: int = 90) -> bool:
+    """Save a computed correlation for weekly digest."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("correlation_matrix").insert({
+            "date": date_str,
+            "window_days": window_days,
+            "pair_name": pair_name,
+            "correlation": round(correlation, 4),
+            "p_value": round(p_value, 4) if p_value else None,
+            "sample_size": sample_size,
+            "created_at": datetime.now().isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_correlation error: {e}")
+        return False
+
+
+def get_correlations(date_str: str = None, days_back: int = 30) -> list:
+    """Get recent correlation matrix entries."""
+    db = get_client()
+    if not db:
+        return []
+    try:
+        from datetime import timedelta
+        if date_str:
+            cutoff = date_str
+        else:
+            cutoff = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        result = (
+            db.table("correlation_matrix")
+            .select("date, pair_name, correlation, p_value, sample_size")
+            .gte("date", cutoff)
+            .order("date", desc=True)
+            .execute()
+        )
+        return result.data if result.data else []
+    except Exception as e:
+        print(f"⚠️ get_correlations error: {e}")
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 11: SIGNAL ACCURACY LOG — Per-signal hit rates
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def log_signal_accuracy(date_str: str, signal_name: str, signal_value: float,
+                        predicted_direction: str, actual_direction: str,
+                        hit: bool, nifty_return: float = None) -> bool:
+    """Log a signal's prediction vs outcome for accuracy tracking."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("signal_accuracy_log").insert({
+            "date": date_str,
+            "signal_name": signal_name,
+            "signal_value": signal_value,
+            "predicted_direction": predicted_direction,
+            "actual_direction": actual_direction,
+            "hit": hit,
+            "nifty_return": nifty_return,
+            "created_at": datetime.now().isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ log_signal_accuracy error: {e}")
+        return False
+
+
+def get_signal_accuracy(signal_name: str = None, days: int = 90) -> dict:
+    """
+    Get signal accuracy stats. If signal_name provided, return that signal's stats.
+    Otherwise return all signals' stats.
+    Returns: {signal_name: {hit_rate, total, hits, avg_return_when_hit}}
+    """
+    db = get_client()
+    if not db:
+        return {}
+    try:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        query = db.table("signal_accuracy_log").select("signal_name, hit, nifty_return, date").gte("date", cutoff)
+        if signal_name:
+            query = query.eq("signal_name", signal_name)
+        result = query.execute()
+        if not result.data:
+            return {}
+
+        # Group by signal name
+        from collections import defaultdict
+        stats = defaultdict(lambda: {"hits": 0, "total": 0, "returns_when_hit": []})
+        for row in result.data:
+            name = row["signal_name"]
+            stats[name]["total"] += 1
+            if row.get("hit"):
+                stats[name]["hits"] += 1
+            if row.get("nifty_return") is not None:
+                stats[name]["returns_when_hit"].append(row["nifty_return"])
+
+        # Compute hit rates
+        output = {}
+        for name, s in stats.items():
+            output[name] = {
+                "hit_rate": round((s["hits"] / s["total"]) * 100, 1) if s["total"] > 0 else 0,
+                "total": s["total"],
+                "hits": s["hits"],
+                "misses": s["total"] - s["hits"],
+            }
+        return output
+    except Exception as e:
+        print(f"⚠️ get_signal_accuracy error: {e}")
+        return {}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 11: DIVERGENCE LOG — Active cross-asset divergences
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def log_divergence(date_str: str, divergence_type: str, severity: str,
+                   description: str, asset_1: str = None, asset_1_change: float = None,
+                   asset_2: str = None, asset_2_change: float = None) -> bool:
+    """Log a detected divergence for historical tracking."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("divergence_log").insert({
+            "date": date_str,
+            "divergence_type": divergence_type,
+            "severity": severity,
+            "description": description,
+            "asset_1": asset_1,
+            "asset_1_change": asset_1_change,
+            "asset_2": asset_2,
+            "asset_2_change": asset_2_change,
+            "created_at": datetime.now().isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ log_divergence error: {e}")
+        return False
+
+
+def get_recent_divergences(days: int = 7) -> list:
+    """Get recent divergences for context."""
+    db = get_client()
+    if not db:
+        return []
+    try:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        result = (
+            db.table("divergence_log")
+            .select("date, divergence_type, severity, description")
+            .gte("date", cutoff)
+            .order("date", desc=True)
+            .execute()
+        )
+        return result.data if result.data else []
+    except Exception as e:
+        print(f"⚠️ get_recent_divergences error: {e}")
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BOT STATE — Generic key-value store for runtime state
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_bot_state(key: str) -> str:
+    """Get a value from bot_state table."""
+    db = get_client()
+    if not db:
+        return None
+    try:
+        result = (
+            db.table("bot_state")
+            .select("value")
+            .eq("key", key)
+            .single()
+            .execute()
+        )
+        return result.data["value"] if result.data else None
+    except Exception:
+        return None
+
+
+def set_bot_state(key: str, value: str) -> bool:
+    """Set a value in bot_state table."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("bot_state").upsert({
+            "key": key,
+            "value": value,
+            "updated_at": datetime.now().isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ set_bot_state({key}) error: {e}")
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 12: STORAGE TABLES — Historical percentile enablement
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def save_cftc_positioning(date_str: str, contract_name: str, data: dict) -> bool:
+    """Save CFTC positioning data for historical percentile."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("cftc_positioning_history").upsert({
+            "date": date_str, "contract_name": contract_name,
+            "speculator_net": data.get("speculator_net"),
+            "commercial_net": data.get("commercial_net"),
+            "open_interest": data.get("open_interest"),
+            "speculator_percentile": data.get("speculator_percentile"),
+            "trend": data.get("trend"),
+            "created_at": datetime.now().isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_cftc_positioning error: {e}")
+        return False
+
+
+def save_factor_scores(date_str: str, scores: dict) -> bool:
+    """Save daily factor attribution scores."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("factor_scores_history").upsert({
+            "date": date_str,
+            "momentum_score": scores.get("momentum"),
+            "value_score": scores.get("value"),
+            "quality_score": scores.get("quality"),
+            "size_score": scores.get("size"),
+            "dominant_factor": scores.get("dominant"),
+            "created_at": datetime.now().isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_factor_scores error: {e}")
+        return False
+
+
+def save_sector_rs(date_str: str, sectors: list) -> bool:
+    """Save daily sector RS rankings."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        records = []
+        for s in sectors:
+            records.append({
+                "date": date_str, "sector_name": s.get("name"),
+                "rs_score": s.get("rs_score"), "rs_1w": s.get("rs_1w"),
+                "rs_1m": s.get("rs_1m"), "rs_3m": s.get("rs_3m"),
+                "rank": s.get("rank"), "created_at": datetime.now().isoformat(),
+            })
+        db.table("sector_rs_history").upsert(records).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_sector_rs error: {e}")
+        return False
+
+
+def save_earnings_surprise(ticker: str, earnings_date: str, data: dict) -> bool:
+    """Save earnings surprise data."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("earnings_surprises").upsert({
+            "ticker": ticker, "earnings_date": earnings_date,
+            "eps_actual": data.get("eps_actual"),
+            "eps_estimate": data.get("eps_estimate"),
+            "surprise_pct": data.get("surprise_pct"),
+            "stock_move_1d": data.get("stock_move_1d"),
+            "stock_move_5d": data.get("stock_move_5d"),
+            "created_at": datetime.now().isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_earnings_surprise error: {e}")
+        return False
+
+
+def save_internals_snapshot(date_str: str, internals: dict) -> bool:
+    """Save daily market internals composite score."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("market_internals_history").upsert({
+            "date": date_str,
+            "composite_score": internals.get("composite_score"),
+            "ad_score": internals.get("components", {}).get("ad_ratio", {}).get("score"),
+            "high_low_score": internals.get("components", {}).get("high_low", {}).get("score"),
+            "volume_score": internals.get("components", {}).get("volume_breadth", {}).get("score"),
+            "ma_score": internals.get("components", {}).get("ma_breadth", {}).get("score"),
+            "mcclellan_score": internals.get("components", {}).get("mcclellan", {}).get("score"),
+            "classification": internals.get("classification"),
+            "created_at": datetime.now().isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_internals_snapshot error: {e}")
+        return False
+
+
+def get_factor_history(days: int = 365) -> list:
+    """Get historical factor scores for percentile computation."""
+    db = get_client()
+    if not db:
+        return []
+    try:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        result = db.table("factor_scores_history").select("*").gte("date", cutoff).order("date").execute()
+        return result.data if result.data else []
+    except Exception as e:
+        print(f"⚠️ get_factor_history error: {e}")
+        return []
+
+
+def get_sector_rs_history(sector_name: str = None, days: int = 365) -> list:
+    """Get historical sector RS for percentile computation."""
+    db = get_client()
+    if not db:
+        return []
+    try:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        query = db.table("sector_rs_history").select("*").gte("date", cutoff)
+        if sector_name:
+            query = query.eq("sector_name", sector_name)
+        result = query.order("date").execute()
+        return result.data if result.data else []
+    except Exception as e:
+        print(f"⚠️ get_sector_rs_history error: {e}")
+        return []

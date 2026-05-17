@@ -1,0 +1,47 @@
+{
+  "sovereign_funds": [
+    {"name": "GPIF", "full_name": "Government Pension Investment Fund", "country": "Japan", "aum_bn": 1700, "bias": "passive", "notes": "World's largest pension fund. Passive allocation, tracks indices."},
+    {"name": "ADIA", "full_name": "Abu Dhabi Investment Authority", "country": "UAE", "aum_bn": 990, "bias": "active", "notes": "Active EM allocator. Significant India exposure historically."},
+    {"name": "GIC", "full_name": "GIC Private Limited", "country": "Singapore", "aum_bn": 770, "bias": "active", "notes": "Active EM investor. Known for long-term India bets."},
+    {"name": "NPS", "full_name": "National Pension Service", "country": "South Korea", "aum_bn": 800, "bias": "passive", "notes": "Increasingly active in EM allocation."},
+    {"name": "Temasek", "full_name": "Temasek Holdings", "country": "Singapore", "aum_bn": 380, "bias": "active", "notes": "Active investor in Indian financials and tech."},
+    {"name": "NBIM", "full_name": "Norges Bank Investment Management", "country": "Norway", "aum_bn": 1600, "bias": "passive", "notes": "Manages Norway's Government Pension Fund Global. Passive, rule-based."},
+    {"name": "CDPQ", "full_name": "Caisse de depot et placement du Quebec", "country": "Canada", "aum_bn": 400, "bias": "active", "notes": "Active infrastructure and EM investor."},
+    {"name": "PIF", "full_name": "Public Investment Fund", "country": "Saudi Arabia", "aum_bn": 930, "bias": "active", "notes": "Vision 2030 fund. Increasingly looking at India."},
+    {"name": "KIA", "full_name": "Kuwait Investment Authority", "country": "Kuwait", "aum_bn": 800, "bias": "passive", "notes": "One of the oldest SWFs. Long-term holder."},
+    {"name": "QIA", "full_name": "Qatar Investment Authority", "country": "Qatar", "aum_bn": 450, "bias": "active", "notes": "Active in Indian real estate and infrastructure."}
+  ],
+  "pension_funds": [
+    {"name": "CalPERS", "full_name": "California Public Employees' Retirement System", "country": "US", "aum_bn": 470, "bias": "active"},
+    {"name": "OTPP", "full_name": "Ontario Teachers' Pension Plan", "country": "Canada", "aum_bn": 250, "bias": "active"},
+    {"name": "CPP", "full_name": "Canada Pension Plan", "country": "Canada", "aum_bn": 570, "bias": "active"},
+    {"name": "NZ Super", "full_name": "New Zealand Superannuation Fund", "country": "New Zealand", "aum_bn": 58, "bias": "active"},
+    {"name": "APG", "full_name": "APG Group", "country": "Netherlands", "aum_bn": 600, "bias": "passive"}
+  ],
+  "global_managers": [
+    {"name": "BlackRock", "full_name": "BlackRock Inc", "country": "US", "aum_bn": 10000, "type": "asset_manager", "bias": "passive", "notes": "World's largest asset manager. iShares ETF provider. Tracks indices."},
+    {"name": "Vanguard", "full_name": "Vanguard Group", "country": "US", "aum_bn": 8000, "type": "asset_manager", "bias": "passive", "notes": "Second largest. Low-cost index funds."},
+    {"name": "Fidelity", "full_name": "Fidelity Investments", "country": "US", "aum_bn": 4500, "type": "asset_manager", "bias": "active", "notes": "Active stock picker. Significant India exposure."},
+    {"name": "Morgan Stanley IM", "full_name": "Morgan Stanley Investment Management", "country": "US", "aum_bn": 1400, "type": "asset_manager", "bias": "active"},
+    {"name": "Goldman Sachs AM", "full_name": "Goldman Sachs Asset Management", "country": "US", "aum_bn": 2800, "type": "asset_manager", "bias": "active"},
+    {"name": "JP Morgan AM", "full_name": "JP Morgan Asset Management", "country": "US", "aum_bn": 3000, "type": "asset_manager", "bias": "active"},
+    {"name": "Amundi", "full_name": "Amundi Asset Management", "country": "France", "aum_bn": 2100, "type": "asset_manager", "bias": "passive"},
+    {"name": "UBS AM", "full_name": "UBS Asset Management", "country": "Switzerland", "aum_bn": 1200, "type": "asset_manager", "bias": "active"}
+  ],
+  "indian_institutions": [
+    {"name": "LIC", "full_name": "Life Insurance Corporation", "country": "India", "aum_bn": 500, "type": "insurance", "bias": "active", "notes": "India's largest insurer. Dominant domestic buyer."},
+    {"name": "SBI Life", "full_name": "SBI Life Insurance", "country": "India", "aum_bn": 300, "type": "insurance", "bias": "active"},
+    {"name": "HDFC Life", "full_name": "HDFC Life Insurance", "country": "India", "aum_bn": 200, "type": "insurance", "bias": "active"},
+    {"name": "ICICI Prudential", "full_name": "ICICI Prudential Life Insurance", "country": "India", "aum_bn": 180, "type": "insurance", "bias": "active"},
+    {"name": "SBI MF", "full_name": "SBI Mutual Fund", "country": "India", "aum_bn": 900, "type": "mutual_fund", "bias": "active"},
+    {"name": "HDFC MF", "full_name": "HDFC Mutual Fund", "country": "India", "aum_bn": 600, "type": "mutual_fund", "bias": "active"},
+    {"name": "ICICI MF", "full_name": "ICICI Prudential Mutual Fund", "country": "India", "aum_bn": 700, "type": "mutual_fund", "bias": "active"},
+    {"name": "Nippon MF", "full_name": "Nippon Life India Asset Management", "country": "India", "aum_bn": 350, "type": "mutual_fund", "bias": "active"},
+    {"name": "Kotak MF", "full_name": "Kotak Mahindra Mutual Fund", "country": "India", "aum_bn": 400, "type": "mutual_fund", "bias": "active"}
+  ],
+  "known_india_exposure": {
+    "high": ["ADIA", "GIC", "Temasek", "NPS", "QIA"],
+    "moderate": ["CDPQ", "PIF", "KIA", "OTPP", "CPP"],
+    "low_passive": ["GPIF", "NBIM", "CalPERS", "APG"]
+  }
+}

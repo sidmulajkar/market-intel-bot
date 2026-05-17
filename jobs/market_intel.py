@@ -4,6 +4,10 @@ Modes: morning (blocks 1,2,4,6,8) or evening (all 10 blocks)
 """
 import sys
 import os
+import time as _time
+import statistics
+
+_job_start = _time.time()
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 _root = os.path.dirname(_dir)
@@ -21,7 +25,7 @@ from src.formatters     import format_global_indices, format_macro_anchors, form
 from src.context_engine import run_contextualization
 from src.ai_engine      import AIEngine
 from src.telegram_sender import send_text
-from src.db             import get_client
+from src.db             import get_client, save_macro_snapshots_batch
 from src.validator      import validate_articles
 
 
@@ -81,6 +85,7 @@ def main():
     blocks = {}
 
     # ── BLOCK 1: Global Indices ───────────────────────────────────
+    _t0 = _time.time()
     print("🔄 BLOCK 1: Global Indices")
     try:
         index_data = fetch_global_indices()
@@ -111,11 +116,19 @@ def main():
         print(f"   ⚠️ Breadth: {e}")
 
     # ── BLOCK 2: Macro Anchors ───────────────────────────────────
+    print(f"   ⏱️ Block 1: {_time.time()-_t0:.1f}s")
+    _t0 = _time.time()
     print("🔄 BLOCK 2: Macro Anchors")
     try:
         anchor_data = fetch_macro_anchors()
         blocks["block_2"] = format_macro_anchors(anchor_data)
         print(f"   → {len(blocks['block_2'])} chars")
+        # Save macro snapshots for historical percentile + cross-asset tracking
+        try:
+            saved = save_macro_snapshots_batch(anchor_data)
+            print(f"   → Saved {saved} macro snapshots")
+        except Exception as e:
+            print(f"   ⚠️ Macro snapshot save: {e}")
     except Exception as e:
         print(f"   ⚠️ {e}")
 
@@ -215,6 +228,8 @@ def main():
         fno_output = ""
 
     # ── BLOCK 4: FII/DII Flows ───────────────────────────────────
+    print(f"   ⏱️ Blocks 2-3: {_time.time()-_t0:.1f}s")
+    _t0 = _time.time()
     print("🔄 BLOCK 4: Flow Intelligence")
     try:
         blocks["block_4"] = format_flows()
@@ -227,6 +242,8 @@ def main():
         blocks["block_4"] = ""
 
     # ── BLOCK 6: News (Global + Indian) ───────────────────────────
+    print(f"   ⏱️ Blocks 4-5: {_time.time()-_t0:.1f}s")
+    _t0 = _time.time()
     print("🔄 BLOCK 6: News Intelligence")
     try:
         ai = AIEngine()
@@ -249,28 +266,29 @@ def main():
         print(f"   ⚠️ {e}")
         blocks["block_6"] = ""
 
-    # ── BLOCK 8: Watchlist ───────────────────────────────────────
-    print("🔄 BLOCK 8: Watchlist")
+    # ── BLOCK 8: Top Movers (India + US) ─────────────────────────
+    print(f"   ⏱️ Blocks 6-7: {_time.time()-_t0:.1f}s")
+    _t0 = _time.time()
+    print("🔄 BLOCK 8: Top Movers (India + US)")
     try:
-        from src.db import get_watchlist
-        watchlist = get_watchlist()
-        if watchlist:
-            wl_data = fetch_watchlist_data(watchlist)
-            blocks["block_8"] = format_watchlist(wl_data)
-        else:
-            blocks["block_8"] = ""
+        from src.data_fetcher import fetch_top_movers
+        from src.formatters import format_top_movers
+        movers = fetch_top_movers(top_n=10)
+        blocks["block_8"] = format_top_movers(movers)
         print(f"   → {len(blocks['block_8'])} chars")
     except Exception as e:
         print(f"   ⚠️ {e}")
         blocks["block_8"] = ""
 
-    # ── SHAREHOLDING QoQ CHANGES (evening only, top 5 stocks) ────
+    # ── SHAREHOLDING QoQ CHANGES (evening only, top 5 gainers) ───
     if mode == "evening" and blocks.get("block_8"):
         print("🔄 SHAREHOLDING PATTERN (QoQ)")
         try:
             from src.shareholding_tracker import track_all_watchlist_shareholding
-            if watchlist:
-                sh_results = track_all_watchlist_shareholding(watchlist[:5])
+            # Use top 5 India gainers for shareholding tracking
+            top_stocks = [s["symbol"] for s in movers.get("india", {}).get("gainers", [])[:5]] if movers else []
+            if top_stocks:
+                sh_results = track_all_watchlist_shareholding(top_stocks)
                 sig_changes = [r for r in sh_results if r.get("has_significant_change")]
                 if sig_changes:
                     sh_lines = ["\n📊 *Shareholding QoQ Changes:*"]
@@ -297,6 +315,17 @@ def main():
     except Exception as e:
         print(f"   ⚠️ {e}")
         blocks["block_3"] = ""
+
+    # ── FII INSTITUTION TRACKER (SWF/Pension Fund Activity) ──────
+    print("🔄 FII INSTITUTION TRACKER")
+    try:
+        from src.fii_tracker import run_fii_tracker
+        tracker_output = run_fii_tracker()
+        if tracker_output:
+            blocks["block_3"] = blocks.get("block_3", "") + "\n\n" + tracker_output
+            print(f"   → Institution tracker: {len(tracker_output)} chars")
+    except Exception as e:
+        print(f"   ⚠️ FII tracker: {e}")
 
     # ── BLOCK 7: Insider Activity ────────────────────────────────
     print("🔄 BLOCK 7: Insider Activity")
@@ -329,6 +358,395 @@ def main():
             blocks["block_10"] = ""
     else:
         blocks["block_10"] = ""
+
+    # ── ROLLING QUANT ENGINE (percentiles, divergences, scenarios, correlations) ──
+    print(f"   ⏱️ Blocks 8-10: {_time.time()-_t0:.1f}s")
+    _t0 = _time.time()
+    print("🔄 ROLLING QUANT ENGINE")
+    rolling_quant_block = ""
+    snapshot_data = {}
+    try:
+        from src.rolling_quant import run_rolling_quant_engine, format_rolling_quant_block
+        from src.db import get_daily_market_snapshots, save_daily_market_snapshot
+
+        # Build today's snapshot from collected data
+        snapshot_data = {
+            "nifty_close": nifty_closes[-1] if nifty_closes else None,
+            "nifty_pe": None,  # Will be populated from valuation if available
+            "india_vix": None,
+            "pcr": extra_signals.get("pcr"),
+            "advance_decline_ratio": extra_signals.get("breadth_ratio"),
+            "bull_bear_score": context_output_data.get("bull_bear", {}).get("normalized_score") if context_output_data else None,
+            "fear_greed_score": None,
+        }
+
+        # Extract metrics from anchor data
+        if anchor_data:
+            for a in anchor_data:
+                name = a.get("name", "")
+                if name == "India VIX" and a.get("ok"):
+                    snapshot_data["india_vix"] = a["price"]
+                elif name == "CBOE VIX" and a.get("ok"):
+                    snapshot_data["cboe_vix"] = a["price"]
+                elif name == "USD/INR" and a.get("ok"):
+                    snapshot_data["usdinr"] = a["price"]
+                elif name == "Brent Crude" and a.get("ok"):
+                    snapshot_data["brent"] = a["price"]
+                elif name == "Gold" and a.get("ok"):
+                    snapshot_data["gold"] = a["price"]
+                elif name == "Dollar Index" and a.get("ok"):
+                    snapshot_data["dxy"] = a["price"]
+                elif name == "US 10Y Yield" and a.get("ok"):
+                    snapshot_data["us_10y"] = a["price"]
+                elif name == "Copper" and a.get("ok"):
+                    snapshot_data["copper"] = a["price"]
+
+        # FII/DII
+        from src.context_engine import get_fii_dii_context
+        fii_ctx = get_fii_dii_context(days=5)
+        if fii_ctx.get("ok"):
+            snapshot_data["fii_net"] = fii_ctx.get("fii_net")
+            snapshot_data["dii_net"] = fii_ctx.get("dii_net")
+
+        # Compute 1D return
+        if nifty_closes and len(nifty_closes) >= 2:
+            snapshot_data["nifty_return_1d"] = round(
+                ((nifty_closes[-1] / nifty_closes[-2]) - 1) * 100, 2
+            )
+
+        # Save snapshot
+        from src.db import today_str
+        save_daily_market_snapshot(today_str(), snapshot_data)
+        print(f"   → Snapshot saved for {today_str()}")
+
+        # Get historical snapshots (252 days = 1 year)
+        hist_snapshots = get_daily_market_snapshots(days=252)
+        print(f"   → Historical snapshots: {len(hist_snapshots)}")
+
+        # Run rolling quant engine
+        rolling_data = run_rolling_quant_engine(snapshot_data, hist_snapshots)
+        rolling_quant_block = format_rolling_quant_block(rolling_data)
+        if rolling_quant_block:
+            print(f"   → Rolling quant: {len(rolling_quant_block)} chars")
+    except Exception as e:
+        print(f"   ⚠️ Rolling quant: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # ── OPTIONS FLOW INFERENCE ──────────────────────────────────
+    print("🔄 OPTIONS FLOW INFERENCE")
+    options_flow_block = ""
+    try:
+        from src.options_engine import infer_options_flow, format_options_flow, fetch_nse_options_chain
+        options_data = fetch_nse_options_chain("NIFTY")
+        if options_data:
+            spot = options_data[0].get("_underlying", 0) if options_data else None
+            flow = infer_options_flow(options_data, spot)
+            options_flow_block = format_options_flow(flow)
+            if options_flow_block:
+                # Append to options block
+                blocks["block_5"] = blocks.get("block_5", "") + "\n\n" + options_flow_block
+                print(f"   → Options flow: {len(options_flow_block)} chars")
+    except Exception as e:
+        print(f"   ⚠️ Options flow: {e}")
+
+    # ── SMART THRESHOLD ALERTS ──────────────────────────────────
+    print("🔄 THRESHOLD ALERTS")
+    threshold_alert_text = ""
+    try:
+        from src.threshold_alerts import run_threshold_check
+        threshold_result = run_threshold_check(
+            snapshot_data,
+            bull_bear=bull_bear_data if bull_bear_data else None,
+            fii_context=fii_context_data if fii_context_data else None,
+            macro_context=macro_context_data if macro_context_data else None,
+        )
+        if threshold_result.get("has_alerts"):
+            threshold_alert_text = threshold_result["alert_text"]
+            print(f"   → {len(threshold_result['breaches'])} threshold breaches detected")
+    except Exception as e:
+        print(f"   ⚠️ Threshold alerts: {e}")
+
+    # ── CFTC COT DATA (weekly positioning) ──────────────────────
+    print("🔄 CFTC COT DATA")
+    cftc_block = ""
+    try:
+        from src.cftc_fetcher import run_cftc_analysis
+        cftc = run_cftc_analysis()
+        if cftc.get("ok"):
+            cftc_block = cftc["formatted"]
+            print(f"   → CFTC: {len(cftc_block)} chars ({len(cftc.get('summary', {}))} contracts)")
+        else:
+            print("   → CFTC: no data available (endpoint may be down)")
+    except Exception as e:
+        print(f"   ⚠️ CFTC: {e}")
+
+    # ── FACTOR ATTRIBUTION (momentum/value/quality/size) ─────────
+    print("🔄 FACTOR ATTRIBUTION")
+    factor_block = ""
+    try:
+        from src.factor_engine import run_factor_analysis
+        # Get Nifty price history for momentum factor
+        nifty_hist_data = None
+        try:
+            import yfinance as yf
+            nifty_hist = yf.Ticker("^NSEI").history(period="1y")["Close"].dropna()
+            nifty_hist_data = nifty_hist.tolist() if len(nifty_hist) > 0 else None
+        except Exception:
+            pass
+
+        factor = run_factor_analysis(snapshot_data, nifty_hist_data)
+        if factor.get("ok"):
+            factor_block = factor["formatted"]
+            print(f"   → Factors: {factor['attribution']['dominant']}")
+        else:
+            print("   → Factor attribution: insufficient data")
+    except Exception as e:
+        print(f"   ⚠️ Factor attribution: {e}")
+
+    # ── SECTOR RS (relative strength vs Nifty) ──────────────────
+    print("🔄 SECTOR RS")
+    sector_rs_block = ""
+    try:
+        from src.sector_rs import run_sector_rs_analysis
+        sector_rs = run_sector_rs_analysis()
+        if sector_rs.get("ok"):
+            sector_rs_block = sector_rs["formatted"]
+            print(f"   → Sector RS: {len(sector_rs['sectors'])} sectors ranked")
+        else:
+            print(f"   → Sector RS: {sector_rs.get('message', 'no data')}")
+    except Exception as e:
+        print(f"   ⚠️ Sector RS: {e}")
+
+    # ── EARNINGS CALENDAR (upcoming Nifty 50 earnings) ──────────
+    print("🔄 EARNINGS CALENDAR")
+    earnings_block = ""
+    try:
+        from src.earnings_tracker import run_earnings_analysis
+        earnings = run_earnings_analysis(upcoming_limit=5)
+        if earnings.get("ok"):
+            earnings_block = format_earnings(earnings)
+            print(f"   → Earnings: {len(earnings.get('upcoming', []))} stocks with upcoming earnings")
+        else:
+            print(f"   → Earnings: {earnings.get('message', 'no data')}")
+    except Exception as e:
+        print(f"   ⚠️ Earnings: {e}")
+
+    # ── MARKET INTERNALS (composite health score) ────────────────
+    print("🔄 MARKET INTERNALS")
+    internals_block = ""
+    try:
+        from src.market_internals import run_internals_analysis
+        # Use breadth data from block_1
+        breadth_data = {}
+        if breadth:
+            breadth_data = breadth
+        # Add MA breadth if available
+        if nifty_closes:
+            # Simple approximation: % above MAs
+            if len(nifty_closes) >= 20:
+                pct_20ma = sum(1 for i in range(-20, 0) if nifty_closes[i] > statistics.mean(nifty_closes[-20:])) / 20 * 100
+                breadth_data["pct_above_20ma"] = pct_20ma
+            if len(nifty_closes) >= 50:
+                pct_50ma = sum(1 for i in range(-50, 0) if nifty_closes[i] > statistics.mean(nifty_closes[-50:])) / 50 * 100
+                breadth_data["pct_above_50ma"] = pct_50ma
+            if len(nifty_closes) >= 200:
+                pct_200ma = sum(1 for i in range(-200, 0) if nifty_closes[i] > statistics.mean(nifty_closes[-200:])) / 200 * 100
+                breadth_data["pct_above_200ma"] = pct_200ma
+        if breadth_data:
+            internals = run_internals_analysis(breadth_data, nifty_closes)
+            if internals.get("ok"):
+                internals_block = internals["formatted"]
+                print(f"   → Internals: {internals['composite']['composite_score']}/100")
+            else:
+                print(f"   → Internals: {internals.get('message', 'no data')}")
+    except Exception as e:
+        print(f"   ⚠️ Internals: {e}")
+
+    # ── BETA TRACKER (cross-asset betas) ────────────────────────
+    print("🔄 BETA TRACKER")
+    beta_block = ""
+    try:
+        from src.beta_tracker import compute_all_betas, format_betas
+        if hist_snapshots and len(hist_snapshots) >= 90:
+            betas = compute_all_betas(hist_snapshots)
+            if betas.get("ok"):
+                beta_block = format_betas(betas)
+                print(f"   → Betas: {len(betas.get('betas', {}))} assets")
+        else:
+            print(f"   → Betas: {len(hist_snapshots or [])} snapshots (need 90+)")
+    except Exception as e:
+        print(f"   ⚠️ Betas: {e}")
+
+    # ── VOLATILITY PERSISTENCE (VIX regime duration) ─────────────
+    print("🔄 VOL PERSISTENCE")
+    vol_persist_block = ""
+    try:
+        from src.vol_persistence import compute_regime_persistence, format_vol_persistence
+        if hist_snapshots and len(hist_snapshots) >= 30:
+            vol_persist = compute_regime_persistence(hist_snapshots)
+            if vol_persist.get("ok"):
+                vol_persist_block = format_vol_persistence(vol_persist)
+                print(f"   → VIX: {vol_persist['current_regime']} for {vol_persist['current_streak_days']}d")
+    except Exception as e:
+        print(f"   ⚠️ Vol persistence: {e}")
+
+    # ── REVERSAL PATTERNS (statistical price patterns) ───────────
+    print("🔄 REVERSAL PATTERNS")
+    reversal_block = ""
+    try:
+        from src.reversal_patterns import detect_all_patterns, format_patterns
+        if nifty_closes and len(nifty_closes) >= 25:
+            patterns = detect_all_patterns(nifty_closes)
+            if patterns.get("ok") and patterns.get("count", 0) > 0:
+                reversal_block = format_patterns(patterns)
+                print(f"   → Patterns: {patterns['count']} detected")
+    except Exception as e:
+        print(f"   ⚠️ Reversal patterns: {e}")
+
+    # ── FII CROSS-REFERENCE (cash × derivatives) ────────────────
+    print("🔄 FII CROSS-REFERENCE")
+    fii_xref_block = ""
+    try:
+        from src.fii_cross_reference import cross_reference_fii, format_fii_cross_reference
+        fii_net_val = snapshot_data.get("fii_net")
+        pcr_val = snapshot_data.get("pcr")
+        if fii_net_val is not None:
+            fii_xref = cross_reference_fii(fii_net=fii_net_val, pcr=pcr_val)
+            fii_xref_block = format_fii_cross_reference(fii_xref)
+            print(f"   → FII: {fii_xref['signal']} ({fii_xref['direction']})")
+    except Exception as e:
+        print(f"   ⚠️ FII cross-ref: {e}")
+
+    # ── TEMPORAL CONTEXT (duration/direction) ────────────────────
+    print("🔄 TEMPORAL CONTEXT")
+    temporal_block = ""
+    try:
+        from src.temporal_context import compute_temporal_context, format_temporal_context
+        if hist_snapshots and len(hist_snapshots) >= 10:
+            temporal = compute_temporal_context(hist_snapshots)
+            if temporal.get("ok"):
+                temporal_block = format_temporal_context(temporal)
+                print(f"   → Temporal: {len(temporal['metrics'])} metrics tracked")
+    except Exception as e:
+        print(f"   ⚠️ Temporal: {e}")
+
+    # ── CONFIDENCE ENGINE (uncertainty quantification) ───────────
+    print("🔄 CONFIDENCE ENGINE")
+    confidence_block = ""
+    try:
+        from src.confidence_engine import compute_confidence, compute_confidence_interval, format_confidence
+        arb_data = locals().get("arbitration", {}).get("arbitration", {}) if "arbitration" in dir() else {}
+        scenario_data = locals().get("rolling_data", {}).get("scenario", {}) if "rolling_data" in dir() else {}
+        confidence = compute_confidence(
+            arbitration=arb_data if arb_data else None,
+            scenario=scenario_data if scenario_data else None,
+            active_signals=len(arb_data.get("normalized", {})) if arb_data else 0,
+        )
+        ci = compute_confidence_interval(scenario_data) if scenario_data else None
+        confidence_block = format_confidence(confidence, ci)
+        print(f"   → Confidence: {confidence['confidence_score']}/100 ({confidence['level']})")
+    except Exception as e:
+        print(f"   ⚠️ Confidence: {e}")
+
+    # ── SIMPLICITY ENGINE (human-readable one-liners) ────────────
+    print("🔄 SIMPLICITY ENGINE")
+    simple_block = ""
+    try:
+        from src.simplicity_engine import generate_simple_lines, format_simple_block
+        arb_data_for_simple = locals().get("arbitration", {})
+        temporal_data_for_simple = locals().get("temporal", {})
+        conf_data_for_simple = locals().get("confidence", {})
+
+        simple_lines = generate_simple_lines(
+            arbitration=arb_data_for_simple.get("arbitration", {}) if arb_data_for_simple else None,
+            temporal=temporal_data_for_simple,
+            internals_score=internals.get("composite", {}).get("composite_score") if 'internals' in dir() and internals else None,
+            factor_dominant=factor.get("attribution", {}).get("dominant") if 'factor' in dir() and factor else None,
+            confidence_score=conf_data_for_simple.get("confidence_score") if conf_data_for_simple else None,
+            pcr=snapshot_data.get("pcr"),
+            vix_regime=persistence.get("current_regime") if 'persistence' in dir() and persistence else None,
+            vix_streak=persistence.get("current_streak_days") if 'persistence' in dir() and persistence else None,
+            vix_avg_duration=persistence.get("avg_historical_duration") if 'persistence' in dir() and persistence else None,
+        )
+        if simple_lines:
+            simple_block = format_simple_block(simple_lines)
+            print(f"   → Simple lines: {len(simple_lines)} generated")
+            for line in simple_lines:
+                print(f"      {line}")
+    except Exception as e:
+        print(f"   ⚠️ Simplicity: {e}")
+
+    # ── STALENESS DETECTION ──────────────────────────────────────
+    print("🔄 STALENESS CHECK")
+    staleness_block = ""
+    try:
+        from src.staleness_detector import check_batch_staleness, format_staleness
+        from datetime import datetime
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        staleness_items = [
+            {"source": "NSE Options", "timestamp": now_str, "max_age": 30},
+            {"source": "FII Data", "timestamp": now_str, "max_age": 60},
+        ]
+        staleness = check_batch_staleness(staleness_items)
+        if staleness.get("stale_count", 0) > 0:
+            staleness_block = format_staleness(staleness)
+            print(f"   → Staleness: {staleness['stale_count']} sources stale")
+    except Exception as e:
+        print(f"   ⚠️ Staleness: {e}")
+
+    # ── FEAR & GREED INDEX (from quant_enrichment) ───────────────
+    print("🔄 FEAR & GREED INDEX")
+    fear_greed_block = ""
+    try:
+        from src.quant_enrichment import compute_fear_greed_index
+        fg_data = {}
+        if snapshot_data.get("india_vix"):
+            fg_data["vix"] = snapshot_data["india_vix"]
+        if snapshot_data.get("pcr"):
+            fg_data["pcr"] = snapshot_data["pcr"]
+        if snapshot_data.get("advance_decline_ratio"):
+            fg_data["breadth_ratio"] = snapshot_data["advance_decline_ratio"]
+        if snapshot_data.get("bull_bear_score"):
+            fg_data["bull_bear_score"] = snapshot_data["bull_bear_score"]
+        if nifty_closes and len(nifty_closes) >= 252:
+            fg_data["momentum_12m"] = ((nifty_closes[-1] / nifty_closes[-252]) - 1) * 100
+        fear_greed = compute_fear_greed_index(**fg_data)
+        if fear_greed.get("score") is not None:
+            fear_greed_block = f"\n[Fear & Greed Index: {fear_greed['score']}/100 — {fear_greed.get('label', 'NEUTRAL')}]"
+            print(f"   → Fear/Greed: {fear_greed['score']}/100 ({fear_greed.get('label')})")
+    except Exception as e:
+        print(f"   ⚠️ Fear/Greed: {e}")
+
+    # ── SIGNAL ARBITRATION (master signal synthesis) ─────────────
+    print("🔄 SIGNAL ARBITRATION")
+    master_signal_block = ""
+    try:
+        from src.signal_arbitrator import run_arbitration, format_master_signal
+        from src.prediction_tracker import get_dynamic_signal_weights
+
+        # Collect all signals for arbitration
+        arb_signals = {}
+        if snapshot_data.get("bull_bear_score") is not None:
+            arb_signals["bull_bear"] = snapshot_data["bull_bear_score"]
+        if fear_greed and fear_greed.get("score") is not None:
+            arb_signals["fear_greed"] = fear_greed["score"]
+        if snapshot_data.get("pcr") is not None:
+            arb_signals["pcr"] = snapshot_data["pcr"]
+        if snapshot_data.get("india_vix") is not None:
+            arb_signals["vix"] = snapshot_data["india_vix"]
+        # Get signal weights for dynamic weighting
+        weights = get_dynamic_signal_weights(days=90)
+
+        if arb_signals:
+            arbitration = run_arbitration(arb_signals, weights)
+            if arbitration.get("ok"):
+                master_signal_block = arbitration["formatted"]
+                art = arbitration["arbitration"]
+                print(f"   → Master: {art['master_score']}/100 ({art['master_label']})")
+                print(f"   → Contradiction: {art['contradiction_level']}, Confidence: {art['confidence']}")
+    except Exception as e:
+        print(f"   ⚠️ Arbitration: {e}")
 
     # ── Assemble prompt ───────────────────────────────────────────
     print("🔄 Assembling prompt...")
@@ -369,6 +787,75 @@ def main():
     remaining = prompt.count("{block_")
     print(f"   → {remaining} unfilled placeholders")
 
+    # ── INJECT ROLLING QUANT BLOCK ──────────────────────────────
+    if rolling_quant_block:
+        prompt += "\n\n" + rolling_quant_block
+
+    # ── INJECT THRESHOLD ALERTS ─────────────────────────────────
+    if threshold_alert_text:
+        prompt += "\n\n" + threshold_alert_text
+
+    # ── INJECT CFTC COT DATA ────────────────────────────────────
+    if cftc_block:
+        prompt += "\n\n" + cftc_block
+
+    # ── INJECT FACTOR ATTRIBUTION ───────────────────────────────
+    if factor_block:
+        prompt += "\n\n" + factor_block
+
+    # ── INJECT SECTOR RS ────────────────────────────────────────
+    if sector_rs_block:
+        prompt += "\n\n" + sector_rs_block
+
+    # ── INJECT EARNINGS CALENDAR ────────────────────────────────
+    if earnings_block:
+        prompt += "\n\n" + earnings_block
+
+    # ── INJECT MARKET INTERNALS ─────────────────────────────────
+    if internals_block:
+        prompt += "\n\n" + internals_block
+
+    # ── INJECT BETA TRACKER ─────────────────────────────────────
+    if beta_block:
+        prompt += "\n\n" + beta_block
+
+    # ── INJECT VOL PERSISTENCE ──────────────────────────────────
+    if vol_persist_block:
+        prompt += "\n\n" + vol_persist_block
+
+    # ── INJECT REVERSAL PATTERNS ────────────────────────────────
+    if reversal_block:
+        prompt += "\n\n" + reversal_block
+
+    # ── INJECT FII CROSS-REFERENCE ──────────────────────────────
+    if fii_xref_block:
+        prompt += "\n\n" + fii_xref_block
+
+    # ── INJECT TEMPORAL CONTEXT ─────────────────────────────────
+    if temporal_block:
+        prompt += "\n\n" + temporal_block
+
+    # ── INJECT CONFIDENCE ───────────────────────────────────────
+    if confidence_block:
+        prompt += "\n\n" + confidence_block
+
+    # ── INJECT STALENESS ────────────────────────────────────────
+    if staleness_block:
+        prompt += "\n\n" + staleness_block
+
+    # ── INJECT FEAR & GREED ─────────────────────────────────────
+    if fear_greed_block:
+        prompt += "\n\n" + fear_greed_block
+
+    # ── INJECT SIMPLE LINES (Block -1, always first) ────────────
+    if simple_block:
+        prompt = simple_block + "\n\n" + prompt
+
+    # ── INJECT MASTER SIGNAL (replaces Block 0) ─────────────────
+    if master_signal_block:
+        # Replace Block 0 with master signal
+        prompt = prompt.replace("{block_0}", master_signal_block)
+
     # Total failure check - more lenient
     if non_empty == 0:
         print("⚠️ All blocks empty — sending fallback")
@@ -388,6 +875,8 @@ def main():
         return
 
     # ── AI Analysis ───────────────────────────────────────────────
+    print(f"   ⏱️ Data + Quant: {_time.time()-_t0:.1f}s")
+    _t0 = _time.time()
     print("🔄 Running AI analysis (volume task)...")
     try:
         ai = AIEngine()
@@ -398,7 +887,30 @@ def main():
         send_text(f"🚨 *Market Intel*\n\n{analysis}")
         return
 
+    # ── OUTPUT VALIDATION (pre-send consistency check) ───────────
+    print("🔄 VALIDATING OUTPUT")
+    try:
+        from src.output_validator import validate_output
+        ground_truth = {
+            "bull_bear_score": snapshot_data.get("bull_bear_score"),
+            "fii_net": snapshot_data.get("fii_net"),
+            "nifty_close": snapshot_data.get("nifty_close"),
+            "pcr": snapshot_data.get("pcr"),
+            "india_vix": snapshot_data.get("india_vix"),
+        }
+        validation = validate_output(analysis, ground_truth)
+        if not validation["send"]:
+            print(f"   ⚠️ OUTPUT REJECTED: {validation['reason']}")
+            for issue in validation["issues"]:
+                print(f"      → {issue}")
+            analysis = validation["fallback_text"] or analysis
+        else:
+            print(f"   ✅ Output validated: {validation['reason']}")
+    except Exception as e:
+        print(f"   ⚠️ Validation: {e}")
+
     # ── Store Prediction for Accuracy Tracking ───────────────────
+    print(f"   ⏱️ AI Analysis: {_time.time()-_t0:.1f}s")
     try:
         from src.prediction_tracker import parse_and_store_prediction
         nifty_close_for_pred = None
@@ -428,6 +940,12 @@ def main():
         header = f"{ist_time} *MARKET INTEL ({mode.upper()})*"
         send_text(f"{header}\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n{fallback}\n\n━━━━━━━━━━━━━━━━━━━━━━━━")
         print("⚠️ AI response too short - sent fallback")
+
+    # ── Execution time summary ──────────────────────────────────
+    total_time = _time.time() - _job_start
+    print(f"\n⏱️ Total execution: {total_time:.1f}s ({total_time/60:.1f}min)")
+    if total_time > 240:
+        print(f"⚠️ EXCEEDED 4-MIN LIMIT — consider splitting into separate jobs")
 
 
 if __name__ == "__main__":

@@ -89,6 +89,28 @@ def main():
         if validation.get("ok"):
             emoji = "✅" if validation.get("regime_correct") else "❌"
             print(f"📊 Prediction validation: {emoji} {validation.get('predicted_regime')} vs {validation.get('actual_regime')}")
+
+            # ── Record signal accuracy for dynamic weighting ────
+            try:
+                from src.prediction_tracker import record_signals_that_fired
+                from src.context_engine import get_fii_dii_context, get_macro_context
+
+                fii_ctx = get_fii_dii_context(days=30)
+                macro_ctx = get_macro_context()
+
+                # Determine actual direction from change
+                change_pct = validation.get("change_pct", 0)
+                actual_direction = "UP" if change_pct > 0.3 else "DOWN" if change_pct < -0.3 else "FLAT"
+
+                record_signals_that_fired(
+                    fii_context=fii_ctx if fii_ctx.get("ok") else {},
+                    macro_context=macro_ctx if macro_ctx else {},
+                    extra_signals={},
+                    actual_direction=actual_direction,
+                    nifty_return=change_pct,
+                )
+            except Exception as e:
+                print(f"⚠️  Signal accuracy recording: {e}")
     except Exception as e:
         print(f"⚠️  Prediction validation: {e}")
 

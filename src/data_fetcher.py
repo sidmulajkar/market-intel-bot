@@ -284,17 +284,18 @@ def fetch_watchlist_data(symbols: List[str]) -> Dict:
 
 def fetch_macro_anchors() -> list:
     """
-    Fetch macro anchors — global risk, dollar, energy, metals, rates.
+    Fetch macro anchors — global risk, dollar, energy, metals, rates, currencies.
     Batch fetch via single yf.download() call for speed.
 
     Returns list of dicts with: name, symbol, price, change_pct, weekly_change_pct, status, ok
 
-    Anchors (9):
+    Anchors (14):
     - USD/INR, Brent Crude, Gold — existing
     - India VIX, Dollar Index, US 10Y — existing
-    - CBOE VIX (global fear), HYG (credit stress), WTI Crude — NEW
+    - CBOE VIX (global fear), HYG (credit stress), WTI Crude — existing
+    - JPY (carry trade), EUR (DXY composition), Silver, Copper (growth proxy), US 2Y (Fed expectations) — NEW
     """
-    print("📡 Fetching macro anchors (9 tickers, batch)...")
+    print("📡 Fetching macro anchors (14 tickers, batch)...")
     anchors = [
         {"name": "USD/INR",         "symbol": "USDINR=X"},
         {"name": "Brent Crude",     "symbol": "BZ=F"},
@@ -305,6 +306,12 @@ def fetch_macro_anchors() -> list:
         {"name": "CBOE VIX",        "symbol": "^VIX"},
         {"name": "US High Yield",   "symbol": "HYG"},
         {"name": "WTI Crude",       "symbol": "CL=F"},
+        # Phase 8: Institutional macro anchors
+        {"name": "USD/JPY",         "symbol": "JPY=X"},       # Carry trade funding currency
+        {"name": "EUR/USD",         "symbol": "EURUSD=X"},    # DXY composition (57%)
+        {"name": "Silver",          "symbol": "SI=F"},        # Industrial precious metal
+        {"name": "Copper",          "symbol": "HG=F"},        # Dr. Copper — growth proxy
+        {"name": "US 2Y Yield",     "symbol": "2YY=F"},       # Fed expectations
     ]
 
     symbols = [a["symbol"] for a in anchors]
@@ -712,3 +719,336 @@ def compute_mcclellan() -> Dict:
 
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TOP MOVERS — Auto-fetched top gainers/losers from India + US markets
+# Replaces static watchlist with dynamic market-wide view
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Nifty 50 constituents (NSE symbols with .NS suffix for yfinance)
+NIFTY_50 = [
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+    "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
+    "LT.NS", "AXISBANK.NS", "BAJFINANCE.NS", "ASIANPAINT.NS", "MARUTI.NS",
+    "SUNPHARMA.NS", "TITAN.NS", "ULTRACEMCO.NS", "NESTLEIND.NS", "WIPRO.NS",
+    "HCLTECH.NS", "M&M.NS", "NTPC.NS", "TATAMOTORS.NS", "POWERGRID.NS",
+    "ONGC.NS", "JSWSTEEL.NS", "TATASTEEL.NS", "ADANIENT.NS", "ADANIPORTS.NS",
+    "BAJAJFINSV.NS", "TECHM.NS", "HDFCLIFE.NS", "DIVISLAB.NS", "DRREDDY.NS",
+    "CIPLA.NS", "EICHERMOT.NS", "BRITANNIA.NS", "COALINDIA.NS", "GRASIM.NS",
+    "HEROMOTOCO.NS", "INDUSINDBK.NS", "TATACONSUM.NS", "APOLLOHOSP.NS",
+    "BPCL.NS", "HINDALCO.NS", "SBILIFE.NS", "UPL.NS", "BAJAJ-AUTO.NS",
+    "SHRIRAMFIN.NS",
+]
+
+# Major US stocks (broad representation across sectors)
+US_MAJOR = [
+    # Tech mega caps
+    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO",
+    # Semis
+    "AMD", "INTC", "QCOM", "MU", "ARM",
+    # Finance
+    "JPM", "BAC", "GS", "MS", "V", "MA", "BRK-B",
+    # Healthcare
+    "UNH", "JNJ", "LLY", "PFE", "ABBV", "MRK",
+    # Consumer
+    "WMT", "PG", "KO", "PEP", "COST", "MCD", "NKE",
+    # Energy
+    "XOM", "CVX", "COP",
+    # Industrial
+    "CAT", "BA", "HON", "UPS", "GE",
+    # Telecom
+    "DIS", "NFLX", "CMCSA",
+    # Other
+    "PLTR", "COIN", "SQ", "SHOP", "CRWD",
+]
+
+
+def fetch_top_movers(top_n: int = 10) -> Dict:
+    """
+    Fetch top gainers and losers from Indian (Nifty 50) and US markets.
+    Returns top N gainers + losers per market, sorted by daily change%.
+    """
+    import yfinance as yf
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    result = {
+        "india": {"gainers": [], "losers": []},
+        "us": {"gainers": [], "losers": []},
+    }
+
+    def _fetch_batch(symbols, market):
+        """Fetch a batch of tickers (chunked to 25 max) and return sorted movers."""
+        try:
+            all_movers = []
+            # Chunk into groups of 25 to avoid yfinance rate limits
+            chunk_size = 25
+            for i in range(0, len(symbols), chunk_size):
+                chunk = symbols[i:i + chunk_size]
+                chunk_movers = _fetch_single_chunk(chunk, market)
+                all_movers.extend(chunk_movers)
+                # Rate limit: sleep between chunks (not after last)
+                if i + chunk_size < len(symbols):
+                    import time
+                    time.sleep(1)
+            return all_movers
+        except Exception as e:
+            print(f"⚠️  {market} batch fetch error: {e}")
+            return []
+
+    def _fetch_single_chunk(symbols, market):
+        """Fetch a single chunk of tickers."""
+        try:
+            data = yf.download(symbols, period="5d", interval="1d",
+                               group_by="ticker", progress=False, threads=True)
+            movers = []
+            for sym in symbols:
+                try:
+                    if len(symbols) > 1:
+                        series = _safe_series_movers(data, sym, "Close")
+                    else:
+                        series = _safe_series_movers(data, symbols[0], "Close")
+                    if series is not None and len(series) >= 2:
+                        current = float(series.iloc[-1])
+                        prev = float(series.iloc[-2])
+                        change_pct = round((current - prev) / prev * 100, 2) if prev > 0 else 0
+                        # Get weekly change (5-day)
+                        if len(series) >= 5:
+                            week_ago = float(series.iloc[-5])
+                            weekly_pct = round((current - week_ago) / week_ago * 100, 2) if week_ago > 0 else 0
+                        else:
+                            weekly_pct = change_pct
+                        movers.append({
+                            "symbol": sym.replace(".NS", ""),
+                            "price": current,
+                            "change_pct": change_pct,
+                            "weekly_pct": weekly_pct,
+                            "market": market,
+                        })
+                except Exception:
+                    continue
+            return movers
+        except Exception as e:
+            print(f"⚠️  {market} batch fetch error: {e}")
+            return []
+
+    # Fetch India (Nifty 50) and US in parallel
+    print("📊 Fetching top movers (India Nifty 50 + US majors)...")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        india_future = executor.submit(_fetch_batch, NIFTY_50, "India")
+        us_future = executor.submit(_fetch_batch, US_MAJOR, "US")
+
+        india_movers = india_future.result()
+        us_movers = us_future.result()
+
+    # Sort and split into gainers/losers
+    india_sorted = sorted(india_movers, key=lambda x: x["change_pct"], reverse=True)
+    result["india"]["gainers"] = india_sorted[:top_n]
+    result["india"]["losers"] = india_sorted[-top_n:][::-1]  # reverse to show worst first
+    result["india"]["total"] = len(india_movers)
+
+    us_sorted = sorted(us_movers, key=lambda x: x["change_pct"], reverse=True)
+    result["us"]["gainers"] = us_sorted[:top_n]
+    result["us"]["losers"] = us_sorted[-top_n:][::-1]
+    result["us"]["total"] = len(us_movers)
+
+    print(f"   → India: {len(india_movers)} stocks, US: {len(us_movers)} stocks")
+    return result
+
+
+def _safe_series_movers(data, ticker, col):
+    """Safely extract a series from yfinance batch download (top movers variant)."""
+    try:
+        if hasattr(data, 'columns') and isinstance(data.columns, pd.MultiIndex):
+            if col in data.columns.get_level_values(0):
+                s = data[col][ticker] if ticker in data[col].columns else None
+            elif ticker in data.columns.get_level_values(0):
+                s = data[ticker][col] if col in data[ticker].columns else None
+            else:
+                s = None
+        else:
+            s = data[col] if col in data.columns else None
+        return s.dropna() if s is not None else None
+    except Exception:
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# US EMPLOYMENT DATA — BLS Public API (no key needed)
+# Fetches unemployment rate, nonfarm payrolls, JOLTS job openings
+# For recession detection + labor market health + geopolitical impact
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def fetch_us_employment() -> Dict:
+    """
+    Fetch US employment data from BLS public API v2 (no API key).
+    Returns unemployment rate, NFP, JOLTS with trend analysis.
+
+    Signals:
+    - Unemployment rising > 0.5% from 12M low = recession warning
+    - NFP declining for 3+ months = labor market weakening
+    - JOLTS falling = demand for workers declining (early recession signal)
+    - Unemployment > 4.5% = elevated (recession territory historically)
+    """
+    import requests as req
+
+    series_map = {
+        "unemployment": "LNS14000000",      # Unemployment Rate (SA)
+        "nfp": "CES0000000001",              # Nonfarm Payrolls (thousands)
+        "jolts": "JTS000000000000000JOL",    # JOLTS Total Job Openings
+    }
+
+    result = {}
+    headers = {"Content-type": "application/json"}
+
+    for name, series_id in series_map.items():
+        try:
+            url = f"https://api.bls.gov/publicAPI/v2/timeseries/data/{series_id}"
+            resp = req.get(url, headers=headers, timeout=15)
+            data = resp.json()
+
+            if data.get("status") != "REQUEST_SUCCEEDED":
+                result[name] = {"ok": False}
+                continue
+
+            series_data = data.get("Results", {}).get("series", [{}])[0].get("data", [])
+            if not series_data:
+                result[name] = {"ok": False}
+                continue
+
+            # Parse values
+            readings = []
+            for item in series_data[:12]:  # Last 12 months
+                val = item.get("value")
+                if val and val != "-":
+                    readings.append({
+                        "year": item["year"],
+                        "month": item.get("periodName", ""),
+                        "value": float(val),
+                    })
+
+            if len(readings) < 2:
+                result[name] = {"ok": False}
+                continue
+
+            latest = readings[0]
+            prev = readings[1]
+
+            # Compute trend (3-month vs 6-month average)
+            recent_3 = [r["value"] for r in readings[:3]]
+            recent_6 = [r["value"] for r in readings[:6]]
+            avg_3 = sum(recent_3) / len(recent_3)
+            avg_6 = sum(recent_6) / len(recent_6)
+
+            # 12-month low and high
+            all_vals = [r["value"] for r in readings]
+            low_12m = min(all_vals)
+            high_12m = max(all_vals)
+
+            result[name] = {
+                "ok": True,
+                "latest": latest["value"],
+                "latest_label": f"{latest['month']} {latest['year']}",
+                "prev": prev["value"],
+                "prev_label": f"{prev['month']} {prev['year']}",
+                "change": round(latest["value"] - prev["value"], 2),
+                "avg_3m": round(avg_3, 2),
+                "avg_6m": round(avg_6, 2),
+                "low_12m": low_12m,
+                "high_12m": high_12m,
+                "trend": "RISING" if avg_3 > avg_6 else ("FALLING" if avg_3 < avg_6 else "FLAT"),
+                "readings": readings,
+            }
+
+        except Exception as e:
+            print(f"⚠️ BLS {name} fetch error: {e}")
+            result[name] = {"ok": False}
+
+    # Compute composite signals
+    unemp = result.get("unemployment", {})
+    nfp = result.get("nfp", {})
+    jolts = result.get("jolts", {})
+
+    signals = []
+    recession_score = 0  # 0-10, higher = more recession risk
+
+    # Unemployment analysis
+    if unemp.get("ok"):
+        rate = unemp["latest"]
+        low = unemp["low_12m"]
+        rise_from_low = round(rate - low, 1)
+
+        if rate > 5.0:
+            recession_score += 3
+            signals.append(f"Unemployment {rate}% — ABOVE 5% (recession territory)")
+        elif rate > 4.5:
+            recession_score += 2
+            signals.append(f"Unemployment {rate}% — ELEVATED (above 4.5%)")
+        elif rate > 4.0:
+            signals.append(f"Unemployment {rate}% — NORMAL range")
+        else:
+            signals.append(f"Unemployment {rate}% — LOW (tight labor market)")
+
+        if rise_from_low >= 0.5:
+            recession_score += 2
+            signals.append(f"Unemployment up {rise_from_low}% from 12M low — Sahm Rule proximity")
+
+        if unemp["trend"] == "RISING":
+            recession_score += 1
+            signals.append(f"Unemployment trend: RISING ({unemp['avg_3m']}% 3M avg vs {unemp['avg_6m']}% 6M avg)")
+
+    # NFP analysis (values in thousands: 158736 = 158.7M total, monthly change in K)
+    if nfp.get("ok"):
+        latest_nfp = nfp["latest"]
+        change = nfp["change"]
+
+        # NFP is total employment in thousands. Monthly job gains = current - previous
+        monthly_gain = change  # already computed as latest - prev
+
+        if monthly_gain < 100:
+            recession_score += 2
+            signals.append(f"NFP monthly gain {monthly_gain:+.0f}K — BELOW 100K (recession signal)")
+        elif monthly_gain < 150:
+            signals.append(f"NFP monthly gain {monthly_gain:+.0f}K — SLOWING (below trend)")
+        else:
+            signals.append(f"NFP monthly gain {monthly_gain:+.0f}K — HEALTHY")
+
+        if nfp["trend"] == "FALLING":
+            recession_score += 1
+            signals.append(f"NFP trend: FALLING — employment growth decelerating")
+
+    # JOLTS analysis (values in thousands: 6866 = 6.866M)
+    if jolts.get("ok"):
+        openings = jolts["latest"]
+        if openings < 6000:
+            recession_score += 2
+            signals.append(f"JOLTS {openings/1000:.1f}M — BELOW 6M (labor demand weakening)")
+        elif openings < 7000:
+            signals.append(f"JOLTS {openings/1000:.1f}M — COOLING (was 9M+ in 2022)")
+        else:
+            signals.append(f"JOLTS {openings/1000:.1f}M — STILL ELEVATED")
+
+        if jolts["trend"] == "FALLING":
+            recession_score += 1
+            signals.append(f"JOLTS trend: FALLING — demand for workers declining")
+
+    # Composite recession risk
+    recession_score = min(10, recession_score)
+    if recession_score >= 7:
+        recession_level = "HIGH"
+    elif recession_score >= 4:
+        recession_level = "ELEVATED"
+    elif recession_score >= 2:
+        recession_level = "MODERATE"
+    else:
+        recession_level = "LOW"
+
+    return {
+        "ok": any(r.get("ok") for r in result.values()),
+        "unemployment": unemp,
+        "nfp": nfp,
+        "jolts": jolts,
+        "recession_score": recession_score,
+        "recession_level": recession_level,
+        "signals": signals,
+    }

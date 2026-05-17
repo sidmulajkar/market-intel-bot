@@ -76,13 +76,70 @@ Dominant factor: [single most important driver]
 OUTPUT CONSTRAINT: Max 600 words. Prioritize synthesis across blocks. Avoid verbose background, disclaimers, or repeating raw tables verbatim. Every number must have context — never state a bare number without "since [date]", "Xth percentile", or "vs [benchmark]".
 
 [BLOCK 0: MARKET POSTURE — READ FIRST]
-This block contains the pre-computed market posture with Bull/Bear score, technical/positioning signals, yield spread, and momentum regime. Read this first — it frames your interpretation of all subsequent blocks.
+This block contains the pre-computed market posture with Bull/Bear score, technical/positioning signals, yield spread, momentum regime, institutional macro signals (carry trade, currency regime, recession proxy, commodity breadth, real rate differential), AND regime detection (ATH clustering, stagflation, war premium, liquidity regime, gold vs dollar). Read this first — it frames your interpretation of all subsequent blocks.
 {block_0}
+
+[CARRY TRADE RULES — JPY is the funding currency for global EM flows]
+- JPY strengthening > 1% in 5 days = carry unwind risk — expect FII selling pressure
+- JPY weakening = carry expanding — EM inflows likely
+- USD/JPY > 155 = BOJ intervention risk zone — sudden JPY spike could trigger global sell-off
+- India-US yield spread wide + JPY stable = ideal carry setup (bullish for India)
+- CARRY-STRESS regime = defensive; CARRY-ON = favorable for equity allocation
+
+[CURRENCY REGIME RULES — DXY is 57% EUR, 14% JPY]
+- EUR-driven dollar strength = less bearish for EM (ECB dovishness, not US strength)
+- JPY-driven dollar strength = carry unwind — MORE dangerous for EM
+- Broad dollar weakness (EUR + JPY both up) = strongest EM tailwind
+- Multipolar shift signal: EUR up + JPY up + DXY down = structural dollar weakness
+
+[RECESSION PROXY RULES — Copper/Gold + Term Structure]
+- Copper/Gold ratio falling = growth slowing, shift to defensive
+- Copper/Gold ratio rising = reflation, risk-on
+- Yield curve inversion (10Y < 2Y) = recession signal (6-12 month lead)
+- Gold rallying + Copper falling = flight to safety (most bearish combo)
+- Copper rallying + Gold falling = reflation (most bullish combo for EM)
+
+[COMMODITY BREADTH RULES — What commodities tell us about the macro regime]
+- All commodities rising = inflationary, RBI may tighten
+- Gold + Silver rising + Oil falling = mixed signals (safe haven + weak demand)
+- Copper + Oil rising = growth-driven demand (healthy for EM)
+- Inflation signal: HIGH = RBI hawkish risk; LOW = policy flexibility
+
+[REAL RATE DIFFERENTIAL RULES — Drives FII allocation decisions]
+- India real rate > US real rate by > 3% = very attractive carry for FII
+- Differential narrowing = FII outflow risk
+- Differential negative = US more attractive on real basis (rare, very bearish for EM flows)
+
+[REGIME DETECTION RULES — Phase 9]
+- MULTI-ASSET ATH (3+ assets near highs) = late-cycle melt-up risk. Not immediately bearish, but raises crash probability. Tighten stops.
+- STAGFLATION RISK = rising inflation + slowing growth. RBI may be forced to hike even as growth slows. Worst outcome for equities.
+- WAR PREMIUM > 15% = oil has significant geopolitical premium. De-escalation = oil crash (deflationary). Escalation = further spike.
+- LIQUIDITY DRIVEN (stocks + gold + dollar weak) = central bank liquidity driving all assets. Works until liquidity is withdrawn.
+- MULTIPOLAR SHIFT (gold ATH + dollar weak) = structural. Not a trade, a regime. Gold bid is permanent in this scenario.
+- MELT-UP (everything rising together) = late cycle. Not a sell signal, but raise cash incrementally. Historically ends with 15-30% correction.
+- INFLATION HEDGE (gold up + dollar up) = inflation is the primary fear. Gold rising despite dollar strength = pure inflation bid.
+- LIQUIDITY TIGHTENING (yields rising + dollar strong) = worst environment for all assets. Defensive positioning.
+
+[US EMPLOYMENT RULES — BLS data, no API key]
+- Unemployment > 5% = recession territory. Historically, once unemployment rises 0.5% from 12M low, recession follows.
+- Sahm Rule: unemployment 3M avg rises 0.5%+ above 12M low = recession confirmed. We're close when rise > 0.3%.
+- NFP < 100K = recession signal. < 150K = slowing. > 200K = healthy.
+- JOLTS falling below 6M = labor demand collapsing. Was 9M+ in 2022, now cooling.
+- Unemployment rising + NFP falling + JOLTS declining = TRIPLE CONFIRMATION of labor market recession.
+- Geopolitical shock (war, tariffs) → watch initial claims 2-4 weeks later for impact.
+- AI displacement signal: rising unemployment in tech/office sectors + JOLTS falling in those sectors = structural job loss, not cyclical.
+
+[WAR/GEOPOLITICAL RULES]
+- Oil war premium > 15% = price in de-escalation risk. Surprise peace = oil crash.
+- Gold + Oil both spiking = dual shock (inflationary + growth negative). Worst combo for EM.
+- VIX elevated + markets at ATH = complacency. The VIX is wrong until it's right.
+- War crash recovery speed = measure of market resilience. Fast recovery = strong underlying bid. Slow = fragile.
+- USD/JPY > 155 + active conflict = double risk (carry unwind + geopolitical). High conviction bearish.
 
 [BLOCK 1: GLOBAL INDICES + BREADTH + NIFTY TECHNICAL LEVELS]
 {block_1}
 
-[BLOCK 2: MACRO ANCHORS + VALUATION (USDINR, BRENT, GOLD, VIX, DXY, US10Y, P/E, Risk Premium)]
+[BLOCK 2: MACRO ANCHORS + VALUATION (USDINR, BRENT, GOLD, VIX, DXY, US10Y, JPY, EUR, SILVER, COPPER, US2Y, P/E, Risk Premium)]
 {block_2}
 
 [BLOCK 3: SECTOR FPI ACTIVITY]

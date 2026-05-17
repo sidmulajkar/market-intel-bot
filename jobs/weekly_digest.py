@@ -57,6 +57,60 @@ def main():
     except Exception as e:
         print(f"⚠️ Accuracy report: {e}")
 
+    # ── Cross-Signal Backtest (weekly, on stored data) ──────────
+    try:
+        from src.quant_enrichment import backtest_cross_signals
+        from src.context_engine import get_fii_dii_context
+        import yfinance as yf
+
+        fii_context = get_fii_dii_context(days=90)
+        nifty_hist = yf.Ticker("^NSEI").history(period="3mo")["Close"].dropna()
+        nifty_closes = nifty_hist.tolist() if len(nifty_hist) > 0 else None
+
+        if fii_context.get("ok") and nifty_closes:
+            backtest = backtest_cross_signals(fii_context, nifty_closes)
+            if backtest.get("ok"):
+                bt_lines = ["📊 *Cross-Signal Backtest (Weekly)*"]
+                bt_lines.append(f"Data: {backtest['data_points']} FII days, {len(nifty_closes)} Nifty closes")
+                bt_lines.append("")
+                for name, sig in backtest.get("signals", {}).items():
+                    bt_lines.append(f"• {name}")
+                    bt_lines.append(f"  {sig['label']}")
+                    bt_lines.append(f"  Count: {sig['sample_count']} | Direction: {sig['direction']}")
+                send_text("\n".join(bt_lines))
+                print(f"📊 Cross-signal backtest sent ({len(backtest.get('signals', {}))} signals)")
+            else:
+                print(f"   → Backtest: {backtest.get('message', 'insufficient data')}")
+    except Exception as e:
+        print(f"⚠️ Cross-signal backtest: {e}")
+
+    # ── Dynamic Signal Weights (weekly — needs 30+ occurrences) ──
+    try:
+        from src.prediction_tracker import get_dynamic_signal_weights, format_signal_weights
+        weights = get_dynamic_signal_weights(days=90)
+        if weights:
+            send_text(format_signal_weights(weights))
+            print(f"📊 Dynamic signal weights sent ({len(weights)} signals)")
+        else:
+            print("   → Signal weights: insufficient data (need 30+ occurrences)")
+    except Exception as e:
+        print(f"⚠️ Signal weights: {e}")
+
+    # ── Rolling Correlations (weekly — needs 90+ days of snapshots) ──
+    try:
+        from src.rolling_quant import compute_rolling_correlations, format_correlations
+        from src.db import get_daily_market_snapshots
+        snapshots = get_daily_market_snapshots(days=90)
+        if snapshots and len(snapshots) >= 60:
+            corr = compute_rolling_correlations(snapshots)
+            if corr.get("ok"):
+                send_text(format_correlations(corr))
+                print(f"📊 Rolling correlations sent ({len(corr.get('pairs', {}))} pairs)")
+        else:
+            print(f"   → Correlations: {len(snapshots or [])} snapshots (need 60+)")
+    except Exception as e:
+        print(f"⚠️ Rolling correlations: {e}")
+
     for symbol in list({s: d for s, d in watchlist_data.items() if d.get("ok")}.keys())[:3]:
         try:
             send_image(generate_technical_chart(symbol, period="1mo"),

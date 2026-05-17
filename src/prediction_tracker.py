@@ -371,3 +371,228 @@ def format_weekly_accuracy() -> str:
     lines.append(f"Trend: {stats['trend']}")
 
     return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SIGNAL ACCURACY TRACKING — Dynamic Weight Adjustment
+# Track which signals are actually predictive. Adjust bull/bear weights by hit rate.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def record_signals_that_fired(fii_context: Dict, macro_context: Dict,
+                                extra_signals: Dict = None, actual_direction: str = None,
+                                nifty_return: float = None) -> bool:
+    """
+    Record which signals fired today and whether they were correct.
+    Called AFTER we know the actual market outcome.
+
+    Tracks these signal types:
+      - fii_streak_bearish: FII selling streak >= 3 days
+      - fii_streak_bullish: FII buying streak >= 3 days
+      - fii_extreme_selling: FII z-score < -1.5
+      - fii_extreme_buying: FII z-score > 1.5
+      - vix_high: VIX > 20 (regime HIGH)
+      - vix_low: VIX < 15 (regime LOW)
+      - dxy_rising: DXY direction RISING
+      - dxy_falling: DXY direction FALLING
+      - dii_absorbing: DII absorption High
+      - pcr_contrarian_bull: PCR < 0.7
+      - pcr_bearish: PCR > 1.3
+      - breadth_weak: A/D ratio < 0.7
+      - breadth_strong: A/D ratio > 1.5
+      - carry_stress: Carry trade STRESSED
+      - carry_on: Carry trade ON
+      - stagflation: Stagflation risk
+      - triple_threat_bear: FII sell + streak + HIGH VIX
+    """
+    from src.db import log_signal_accuracy, today_str
+
+    if actual_direction is None:
+        return False
+
+    date_str = today_str()
+    signals_fired = []
+
+    # FII signals
+    fii_z = fii_context.get("fii_z_score", 0)
+    fii_streak = fii_context.get("fii_streak", 0)
+    fii_dir = fii_context.get("fii_streak_direction", "")
+
+    if fii_streak >= 3 and fii_dir == "negative":
+        signals_fired.append(("fii_streak_bearish", fii_streak))
+    if fii_streak >= 3 and fii_dir == "positive":
+        signals_fired.append(("fii_streak_bullish", fii_streak))
+    if fii_z < -1.5:
+        signals_fired.append(("fii_extreme_selling", fii_z))
+    if fii_z > 1.5:
+        signals_fired.append(("fii_extreme_buying", fii_z))
+
+    # VIX signals
+    vix_regime = macro_context.get("vix_regime", "UNKNOWN")
+    if vix_regime == "HIGH":
+        signals_fired.append(("vix_high", macro_context.get("vix_price", 0)))
+    if vix_regime == "LOW":
+        signals_fired.append(("vix_low", macro_context.get("vix_price", 0)))
+
+    # DXY signals
+    dxy_dir = macro_context.get("dxy", {}).get("direction", "FLAT")
+    if dxy_dir == "RISING":
+        signals_fired.append(("dxy_rising", macro_context.get("dxy", {}).get("change_pct", 0)))
+    if dxy_dir == "FALLING":
+        signals_fired.append(("dxy_falling", macro_context.get("dxy", {}).get("change_pct", 0)))
+
+    # DII absorption
+    if fii_context.get("dii_absorbed") == "High":
+        signals_fired.append(("dii_absorbing", 1))
+
+    # PCR signals
+    extra = extra_signals or {}
+    pcr = extra.get("pcr")
+    if pcr is not None:
+        if pcr < 0.7:
+            signals_fired.append(("pcr_contrarian_bull", pcr))
+        if pcr > 1.3:
+            signals_fired.append(("pcr_bearish", pcr))
+
+    # Breadth signals
+    breadth = extra.get("breadth_ratio")
+    if breadth is not None:
+        if breadth < 0.7:
+            signals_fired.append(("breadth_weak", breadth))
+        if breadth > 1.5:
+            signals_fired.append(("breadth_strong", breadth))
+
+    # Carry trade
+    carry = extra.get("carry_trade_regime", "")
+    if carry == "CARRY-STRESS":
+        signals_fired.append(("carry_stress", 1))
+    if carry == "CARRY-ON":
+        signals_fired.append(("carry_on", 1))
+
+    # Stagflation
+    stag = extra.get("stagflation_regime", "")
+    if "STAGFLATION" in stag:
+        signals_fired.append(("stagflation", 1))
+
+    # Triple threat (rare but critical)
+    if fii_z < -1.5 and fii_streak >= 3 and vix_regime == "HIGH":
+        signals_fired.append(("triple_threat_bear", fii_z))
+
+    # Log each signal
+    recorded = 0
+    for signal_name, signal_value in signals_fired:
+        # Predicted direction for this signal type
+        bearish_signals = {
+            "fii_streak_bearish", "fii_extreme_selling", "vix_high",
+            "dxy_rising", "pcr_bearish", "breadth_weak", "carry_stress",
+            "stagflation", "triple_threat_bear"
+        }
+        predicted = "DOWN" if signal_name in bearish_signals else "UP"
+
+        # Check if prediction was correct
+        hit = (predicted == actual_direction) if actual_direction in ("UP", "DOWN") else None
+
+        if hit is not None:
+            log_signal_accuracy(
+                date_str=date_str,
+                signal_name=signal_name,
+                signal_value=signal_value,
+                predicted_direction=predicted,
+                actual_direction=actual_direction,
+                hit=hit,
+                nifty_return=nifty_return,
+            )
+            recorded += 1
+
+    if recorded > 0:
+        print(f"📊 Recorded {recorded} signal accuracy logs for {date_str}")
+
+    return recorded > 0
+
+
+def get_dynamic_signal_weights(days: int = 90) -> Dict:
+    """
+    Compute dynamic signal weights based on historical hit rates.
+    Signals with hit rate > 65% get weight × 1.3 (amplified)
+    Signals with hit rate < 45% get weight × 0.7 (penalized)
+    Signals with insufficient data (< 10 occurrences) get weight × 1.0
+
+    Dampening: weight changes limited to ±10% per week to prevent oscillation.
+    Returns: {signal_name: {"weight_multiplier": float, "hit_rate": float, "occurrences": int}}
+    """
+    from src.db import get_signal_accuracy, get_bot_state, set_bot_state
+    import json
+
+    accuracy = get_signal_accuracy(days=days)
+    if not accuracy:
+        return {}
+
+    # Load previous weights for dampening
+    prev_weights_raw = get_bot_state("signal_weights")
+    prev_weights = {}
+    if prev_weights_raw:
+        try:
+            prev_weights = json.loads(prev_weights_raw)
+        except Exception:
+            pass
+
+    weights = {}
+    for signal_name, stats in accuracy.items():
+        hit_rate = stats["hit_rate"]
+        total = stats["total"]
+
+        if total < 10:
+            multiplier = 1.0
+        elif hit_rate > 65:
+            multiplier = 1.3
+        elif hit_rate < 45:
+            multiplier = 0.7
+        else:
+            multiplier = 1.0
+
+        # Dampening: limit ±10% change from previous weight
+        prev = prev_weights.get(signal_name, 1.0)
+        max_change = 0.10
+        if multiplier > prev + max_change:
+            multiplier = prev + max_change
+        elif multiplier < prev - max_change:
+            multiplier = prev - max_change
+
+        weights[signal_name] = {
+            "weight_multiplier": round(multiplier, 2),
+            "hit_rate": hit_rate,
+            "occurrences": total,
+            "hits": stats["hits"],
+            "misses": stats["misses"],
+        }
+
+    # Save current weights for next week's dampening
+    weights_to_save = {k: v["weight_multiplier"] for k, v in weights.items()}
+    set_bot_state("signal_weights", json.dumps(weights_to_save))
+
+    return weights
+
+
+def format_signal_weights(weights: Dict) -> str:
+    """Format signal weights for AI prompt."""
+    if not weights:
+        return ""
+
+    lines = ["[Signal Accuracy & Dynamic Weights]"]
+    for name, data in sorted(weights.items(), key=lambda x: abs(x[1]["weight_multiplier"] - 1), reverse=True):
+        mult = data["weight_multiplier"]
+        rate = data["hit_rate"]
+        occ = data["occurrences"]
+
+        if mult > 1:
+            icon = "🟢"
+            adj = f"AMPLIFIED ×{mult:.1f}"
+        elif mult < 1:
+            icon = "🔴"
+            adj = f"PENALIZED ×{mult:.1f}"
+        else:
+            icon = "⚪"
+            adj = "neutral"
+
+        lines.append(f"  {icon} {name}: {rate}% hit rate ({occ} occ) → {adj}")
+
+    return "\n".join(lines)

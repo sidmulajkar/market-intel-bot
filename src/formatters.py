@@ -5,7 +5,7 @@ Phase 1: Blocks 1, 2, 4, 6, 8, 10
 Intelligence Layer: context_engine + options_engine integrated
 Quant Layer: percentiles, cross-signals, significance labels
 """
-from typing import Optional
+from typing import Dict, Optional
 
 
 # Index name mapping for proper labels
@@ -110,9 +110,22 @@ def format_macro_anchors(anchor_data: list) -> str:
             weekly_s  = f" | Weekly: {sign}{weekly:.2f}%" if weekly else ""
             status_e  = "📈" if status == "up" else ("📉" if status == "down" else "➡️")
 
-            # Use ₹ for INR pairs, $ for others
-            currency = "₹" if "INR" in name.upper() or "Nifty" in name else "$"
-            lines.append(f"{name}: {currency}{price:,.2f} ({sign}{change:.2f}%){weekly_s} {status_e}")
+            # Yield tickers: show as percentage
+            if "Yield" in name:
+                formatted = f"{name}: {price:.2f}% ({sign}{change:.2f}%){weekly_s} {status_e}"
+            # Currency pairs: no prefix, show as-is
+            elif "/" in name:
+                formatted = f"{name}: {price:,.2f} ({sign}{change:.2f}%){weekly_s} {status_e}"
+            # India VIX / CBOE VIX: no currency
+            elif "VIX" in name.upper():
+                formatted = f"{name}: {price:.2f} ({sign}{change:.2f}%){weekly_s} {status_e}"
+            # INR pairs
+            elif "INR" in name.upper() or "Nifty" in name:
+                formatted = f"{name}: ₹{price:,.2f} ({sign}{change:.2f}%){weekly_s} {status_e}"
+            # Dollar-denominated
+            else:
+                formatted = f"{name}: ${price:,.2f} ({sign}{change:.2f}%){weekly_s} {status_e}"
+            lines.append(formatted)
 
         if not lines:
             return ""
@@ -820,4 +833,73 @@ def format_options_block(symbol: str = "NIFTY", run_label: str = "morning") -> s
     except Exception as e:
         print(f"⚠️ format_options_block: {e}")
         return ""
+
+
+def format_top_movers(movers: Dict) -> str:
+    """
+    Format top 10 gainers/losers from India + US markets.
+    Replaces the static watchlist block.
+    """
+    if not movers:
+        return ""
+
+    lines = ["📈📉 *Top Market Movers (Auto-Fetched)*"]
+    lines.append("━" * 30)
+
+    # India
+    india = movers.get("india", {})
+    if india.get("gainers"):
+        lines.append("")
+        lines.append(f"🇮🇳 *India (Nifty 50) — {india.get('total', 0)} stocks*")
+        lines.append("")
+
+        lines.append("📈 *Top 10 Gainers*")
+        for i, s in enumerate(india["gainers"], 1):
+            weekly = f" | W: {s['weekly_pct']:+.1f}%" if s.get("weekly_pct") else ""
+            lines.append(f"{i:2d}. {s['symbol']:15s} ₹{s['price']:>8,.1f}  {s['change_pct']:+.2f}%{weekly}")
+
+        lines.append("")
+        lines.append("📉 *Top 10 Losers*")
+        for i, s in enumerate(india["losers"], 1):
+            weekly = f" | W: {s['weekly_pct']:+.1f}%" if s.get("weekly_pct") else ""
+            lines.append(f"{i:2d}. {s['symbol']:15s} ₹{s['price']:>8,.1f}  {s['change_pct']:+.2f}%{weekly}")
+
+    # US
+    us = movers.get("us", {})
+    if us.get("gainers"):
+        lines.append("")
+        lines.append(f"🇺🇸 *US Market — {us.get('total', 0)} stocks*")
+        lines.append("")
+
+        lines.append("📈 *Top 10 Gainers*")
+        for i, s in enumerate(us["gainers"], 1):
+            weekly = f" | W: {s['weekly_pct']:+.1f}%" if s.get("weekly_pct") else ""
+            price_str = f"${s['price']:>8,.1f}"
+            lines.append(f"{i:2d}. {s['symbol']:8s} {price_str}  {s['change_pct']:+.2f}%{weekly}")
+
+        lines.append("")
+        lines.append("📉 *Top 10 Losers*")
+        for i, s in enumerate(us["losers"], 1):
+            weekly = f" | W: {s['weekly_pct']:+.1f}%" if s.get("weekly_pct") else ""
+            price_str = f"${s['price']:>8,.1f}"
+            lines.append(f"{i:2d}. {s['symbol']:8s} {price_str}  {s['change_pct']:+.2f}%{weekly}")
+
+    # Market breadth summary
+    india_up = sum(1 for s in india.get("gainers", []) if s["change_pct"] > 0)
+    india_down = sum(1 for s in india.get("losers", []) if s["change_pct"] < 0)
+    us_up = sum(1 for s in us.get("gainers", []) if s["change_pct"] > 0)
+    us_down = sum(1 for s in us.get("losers", []) if s["change_pct"] < 0)
+
+    lines.append("")
+    lines.append("📊 *Quick Read*")
+    if india.get("gainers") and india.get("losers"):
+        top_india = india["gainers"][0]
+        bot_india = india["losers"][0]
+        lines.append(f"🇮🇳 Best: {top_india['symbol']} ({top_india['change_pct']:+.1f}%) | Worst: {bot_india['symbol']} ({bot_india['change_pct']:+.1f}%)")
+    if us.get("gainers") and us.get("losers"):
+        top_us = us["gainers"][0]
+        bot_us = us["losers"][0]
+        lines.append(f"🇺🇸 Best: {top_us['symbol']} ({top_us['change_pct']:+.1f}%) | Worst: {bot_us['symbol']} ({bot_us['change_pct']:+.1f}%)")
+
+    return "\n".join(lines)
 

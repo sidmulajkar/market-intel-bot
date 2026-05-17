@@ -37,16 +37,10 @@ def fetch_nse_options_chain(symbol: str = "NIFTY") -> List[Dict]:
     Selects expiry: nearest expiry, but if <3 days to expiry → use next expiry.
     Returns list of strike-wise OI data including IV.
 
-    Note: Uses session to maintain cookies - hits homepage first.
+    Uses shared NSE session from nse_session.py for cookie management.
     """
     from datetime import datetime, timedelta
-    import requests
-
-    session = requests.Session()
-    try:
-        session.get("https://www.nseindia.com/", headers=NSE_HEADERS, timeout=10)
-    except:
-        pass
+    from src.nse_session import nse_get
 
     # Use correct endpoint based on symbol type
     if symbol.upper() in INDEX_SYMBOLS:
@@ -55,11 +49,7 @@ def fetch_nse_options_chain(symbol: str = "NIFTY") -> List[Dict]:
         url = f"https://www.nseindia.com/api/option-chain-equities?symbol={symbol}"
 
     try:
-        resp = session.get(url, headers=NSE_HEADERS, timeout=20)
-        if resp.status_code == 403:
-            session = requests.Session()
-            session.get("https://www.nseindia.com/", headers=NSE_HEADERS, timeout=10)
-            resp = session.get(url, headers=NSE_HEADERS, timeout=20)
+        resp = nse_get(url, timeout=20, retries=1)
 
         if resp.status_code != 200:
             print(f"⚠️  Options API returned {resp.status_code}")
@@ -786,6 +776,160 @@ def format_derivatives_intel(analysis: Dict) -> str:
         if adv.get("unusual_activity"):
             ua = adv["unusual_activity"][0]
             lines.append(f"Unusual: {ua['side']} {ua['strike']} — {ua['signal']} (vol {ua['volume']:,}, OI chg {ua['oi_change']:+,})")
+
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OPTIONS FLOW INFERENCE — "Who is buying vs selling options?"
+# Uses OI + price movement to infer flow direction (no flow data needed)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def infer_options_flow(options_data: List[Dict], spot_price: float = None) -> Dict:
+    """
+    Infer options flow direction from OI changes + price movement.
+    No real flow data needed — pure inference from OI + IV + price.
+
+    Flow classification per strike:
+      OI increases + price increases = BUYERS dominant (new longs)
+      OI increases + price decreases = SELLERS dominant (new shorts)
+      OI decreases + price increases = SHORT COVERING
+      OI decreases + price decreases = LONG LIQUIDATION
+
+    Returns: flow classification, institutional activity, unusual strikes.
+    """
+    if not options_data:
+        return {"ok": False, "message": "No options data"}
+
+    if not spot_price and options_data:
+        spot_price = options_data[0].get("_underlying", 0)
+
+    flows = []
+    institutional_flows = []
+    unusual_strikes = []
+
+    for o in options_data:
+        strike = o["strike"]
+        call_oi_chg = o.get("call_change_oi", 0) or 0
+        put_oi_chg = o.get("put_change_oi", 0) or 0
+        call_iv = o.get("call_iv", 0) or 0
+        put_iv = o.get("put_iv", 0) or 0
+        call_vol = o.get("call_volume", 0) or 0
+        put_vol = o.get("put_volume", 0) or 0
+
+        # Skip strikes with negligible activity
+        if abs(call_oi_chg) < 1000 and abs(put_oi_chg) < 1000:
+            continue
+
+        # --- CALL SIDE FLOW ---
+        if abs(call_oi_chg) > 1000:
+            # Price proxy: if call IV is rising, price is likely rising
+            iv_rising = call_iv > 15  # Above ATM baseline
+
+            if call_oi_chg > 0 and iv_rising:
+                call_flow = "BUYERS_DOMINANT"
+                call_signal = "New long positions — institutional buying pressure"
+            elif call_oi_chg > 0 and not iv_rising:
+                call_flow = "SELLERS_DOMINANT"
+                call_signal = "Selling premium — institutions capping upside"
+            elif call_oi_chg < 0 and iv_rising:
+                call_flow = "SHORT_COVERING"
+                call_signal = "Shorts unwinding — potential breakout"
+            else:
+                call_flow = "LONG_LIQUIDATION"
+                call_signal = "Longs exiting — reduce risk"
+
+            # Institutional detection (large OI change + high volume)
+            if abs(call_oi_chg) > 50000 and call_vol > 50000:
+                institutional_flows.append({
+                    "strike": strike, "side": "CALL", "flow": call_flow,
+                    "oi_change": call_oi_chg, "volume": call_vol,
+                    "signal": call_signal,
+                })
+
+            # Unusual activity (volume > 3x OI)
+            if call_vol > 0 and o.get("call_oi", 0) > 0:
+                vol_oi_ratio = call_vol / o["call_oi"]
+                if vol_oi_ratio > 3:
+                    unusual_strikes.append({
+                        "strike": strike, "side": "CALL",
+                        "vol_oi_ratio": round(vol_oi_ratio, 1),
+                        "volume": call_vol, "oi_change": call_oi_chg,
+                        "interpretation": "UNUSUAL — new positioning today",
+                    })
+
+        # --- PUT SIDE FLOW ---
+        if abs(put_oi_chg) > 1000:
+            iv_rising = put_iv > 15
+
+            if put_oi_chg > 0 and iv_rising:
+                put_flow = "BUYERS_DOMINANT"
+                put_signal = "New put positions — hedging or bearish bets"
+            elif put_oi_chg > 0 and not iv_rising:
+                put_flow = "SELLERS_DOMINANT"
+                put_signal = "Selling puts — institutions expect support"
+            elif put_oi_chg < 0 and iv_rising:
+                put_flow = "SHORT_COVERING"
+                put_signal = "Put shorts unwinding — support may break"
+            else:
+                put_flow = "LONG_LIQUIDATION"
+                put_signal = "Put holders exiting — bullish signal"
+
+            if abs(put_oi_chg) > 50000 and put_vol > 50000:
+                institutional_flows.append({
+                    "strike": strike, "side": "PUT", "flow": put_flow,
+                    "oi_change": put_oi_chg, "volume": put_vol,
+                    "signal": put_signal,
+                })
+
+            if put_vol > 0 and o.get("put_oi", 0) > 0:
+                vol_oi_ratio = put_vol / o["put_oi"]
+                if vol_oi_ratio > 3:
+                    unusual_strikes.append({
+                        "strike": strike, "side": "PUT",
+                        "vol_oi_ratio": round(vol_oi_ratio, 1),
+                        "volume": put_vol, "oi_change": put_oi_chg,
+                        "interpretation": "UNUSUAL — new positioning today",
+                    })
+
+    # Aggregate flow summary
+    call_buyers = sum(1 for f in institutional_flows if f["side"] == "CALL" and "BUYERS" in f["flow"])
+    call_sellers = sum(1 for f in institutional_flows if f["side"] == "CALL" and "SELLERS" in f["flow"])
+    put_buyers = sum(1 for f in institutional_flows if f["side"] == "PUT" and "BUYERS" in f["flow"])
+    put_sellers = sum(1 for f in institutional_flows if f["side"] == "PUT" and "SELLERS" in f["flow"])
+
+    if call_buyers > call_sellers and put_sellers > put_buyers:
+        overall = "INSTITUTIONAL BULLISH — call buying + put selling"
+    elif call_sellers > call_buyers and put_buyers > put_sellers:
+        overall = "INSTITUTIONAL BEARISH — call selling + put buying"
+    else:
+        overall = "MIXED — no clear institutional direction"
+
+    return {
+        "ok": True,
+        "overall_flow": overall,
+        "institutional_flows": sorted(institutional_flows, key=lambda x: abs(x["oi_change"]), reverse=True)[:5],
+        "unusual_strikes": sorted(unusual_strikes, key=lambda x: x["vol_oi_ratio"], reverse=True)[:5],
+        "call_buyers": call_buyers,
+        "call_sellers": call_sellers,
+        "put_buyers": put_buyers,
+        "put_sellers": put_sellers,
+    }
+
+
+def format_options_flow(flow: Dict) -> str:
+    """Format options flow inference for AI prompt."""
+    if not flow.get("ok"):
+        return ""
+
+    lines = [f"[Options Flow Inference — {flow['overall_flow']}]"]
+
+    for f in flow.get("institutional_flows", [])[:3]:
+        emoji = "🟢" if "BUYERS" in f["flow"] else "🔴" if "SELLERS" in f["flow"] else "⚪"
+        lines.append(f"  {emoji} {f['side']} {f['strike']}: {f['signal']} (OI chg: {f['oi_change']:+,}, vol: {f['volume']:,})")
+
+    for u in flow.get("unusual_strikes", [])[:2]:
+        lines.append(f"  ⚡ UNUSUAL: {u['side']} {u['strike']} — vol/OI ratio {u['vol_oi_ratio']}x ({u['interpretation']})")
 
     return "\n".join(lines)
 
