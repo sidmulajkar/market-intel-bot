@@ -37,6 +37,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Regime** — Bull/Bear score (8 signals), 12M momentum, global risk composite
 - **Contrarian** — Sentiment extremes, SIP concentration (HHI), PCR contrarian readings
 - **Quant** — Percentiles, cross-signal patterns (7), backtest function, regime transitions
+- **Market State** — 8-signal weighted composite phase classifier (EXPANSION/RECOVERY/NEUTRAL/DISTRIBUTION/CONTRACTION), stance = phase × confidence, risk watch pattern detection
+- **Cross-Asset** — 12+ regime detectors synthesized into single label (RISK_ON/RISK_OFF/STAGFLATION/etc.) with confirmation %
+- **Institutional** — Sector regime, volatility compression, risk appetite, breadth thrust, FII footprint (all from stored data, zero API cost)
+- **Earnings** — Season regime (PEAK_WEEK/ACTIVE/APPROACHING/QUIET) from dynamic yfinance calendar
+- **Signal Arbitration** — Master signal synthesis with contradiction scoring, dynamic weights from accuracy log
 
 ---
 
@@ -51,7 +56,7 @@ src/                       # Library modules (shared)
 ├── technical_analysis.py  # RSI, 200-DMA, S/R, MACD, Bollinger Bands from OHLCV
 ├── valuation_engine.py    # Nifty P/E, P/B, earnings yield, risk premium, reverse DCF
 ├── macro_fetcher.py       # Macro calendar, RBI policy tracker, real rate
-├── context_engine.py      # Bull/Bear (8 signals), global risk, VIX spread, credit stress, momentum, yield spread
+├── context_engine.py      # Bull/Bear (8 signals), global risk, VIX spread, credit stress, momentum, yield spread, cross-asset regime, market phase classifier
 ├── options_engine.py      # NSE options chain, max pain, PCR, GEX, skew, advanced OI
 ├── fii_derivatives.py     # F&O participant OI data (FII/DII/Client long/short)
 ├── fii_sector.py          # FPI sector-wise data (SEBI/NSE), sector rotation

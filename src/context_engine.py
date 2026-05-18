@@ -1959,6 +1959,423 @@ def compute_gold_dollar_regime(anchor_data: List[Dict]) -> Dict:
 # MAIN: Run all contextualization for a job execution
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def compute_market_phase(ctx: Dict, inst_signals: Dict = None,
+                         earnings_regime: Dict = None) -> Dict:
+    """
+    Classify market into 4 phases using weighted composite scoring.
+    Each signal contributes a -1.0 to +1.0 score with magnitude.
+    Missing signals are excluded (not scored as 0).
+
+    Phases:
+    EXPANSION   — composite >= +0.5
+    RECOVERY    — composite +0.2 to +0.5
+    NEUTRAL     — composite -0.2 to +0.2
+    DISTRIBUTION — composite -0.5 to -0.2
+    CONTRACTION  — composite <= -0.5
+    """
+    inst = inst_signals or {}
+    er = earnings_regime or {}
+    earnings = er.get("regime", "QUIET")
+
+    # ── Step 1: Score each signal -1.0 to +1.0 ────────────────────
+    scores = {}  # {name: (score, weight, available)}
+
+    # Bull/Bear score (0-100)
+    bb = ctx.get("bull_bear", {})
+    if bb.get("ok"):
+        bb_score = bb.get("score", 50)
+        if bb_score >= 70:    s = 1.0
+        elif bb_score >= 60:  s = 0.6
+        elif bb_score >= 45:  s = 0.2
+        elif bb_score >= 35:  s = -0.2
+        elif bb_score >= 25:  s = -0.6
+        else:                 s = -1.0
+        scores["bull_bear"] = (s, 0.20, True)
+
+    # Cross-asset regime
+    car = ctx.get("cross_asset_regime", {})
+    if car.get("ok"):
+        car_regime = car.get("regime", "CONFUSION")
+        car_map = {
+            "RISK_ON": 1.0, "LIQUIDITY_DRIVEN": 0.7, "FLIGHT_TO_SAFETY": -0.7,
+            "STAGFLATION": -0.8, "RISK_OFF": -1.0, "CONFUSION": 0.0,
+        }
+        scores["cross_asset"] = (car_map.get(car_regime, 0.0), 0.15, True)
+
+    # Sector regime
+    sr = inst.get("sector_regime", {})
+    if sr.get("ok"):
+        sr_regime = sr.get("regime", "NEUTRAL")
+        sr_map = {
+            "OFFENSIVE": 0.8, "MILDLY_OFFENSIVE": 0.4, "NEUTRAL": 0.0,
+            "MILDLY_DEFENSIVE": -0.4, "DEFENSIVE": -0.8,
+        }
+        scores["sector"] = (sr_map.get(sr_regime, 0.0), 0.05, True)
+
+    # Breadth thrust
+    bt = inst.get("breadth_thrust", {})
+    if bt.get("ok"):
+        bt_signal = bt.get("signal", "NO_THRUST")
+        bt_map = {"STRONG_THRUST": 1.0, "SINGLE_THRUST": 0.5, "NO_THRUST": -0.2}
+        scores["breadth"] = (bt_map.get(bt_signal, 0.0), 0.15, True)
+
+    # FII footprint
+    fi = inst.get("fii_footprint", {})
+    if fi.get("ok"):
+        fi_signal = fi.get("signal", "MIXED")
+        fi_map = {
+            "CONSENSUS_BUY": 1.0, "STEALTH_ACCUMULATION": 0.6,
+            "MIXED": 0.0, "DISTRIBUTION": -0.6, "CONSENSUS_SELL": -1.0,
+        }
+        scores["fii_footprint"] = (fi_map.get(fi_signal, 0.0), 0.20, True)
+
+    # Volatility setup
+    vs = inst.get("volatility_setup", {})
+    if vs.get("ok"):
+        vs_setup = vs.get("setup", "NORMAL")
+        vs_map = {
+            "COMPRESSION": 0.3, "NORMAL": 0.0, "ELEVATED": -0.4, "PANIC": -0.8,
+        }
+        scores["volatility"] = (vs_map.get(vs_setup, 0.0), 0.05, True)
+
+    # Fear/Greed (from ctx or inst)
+    fg = ctx.get("fear_greed", {}) or inst.get("fear_greed", {})
+    if fg.get("ok") or fg.get("score") is not None:
+        fg_score = fg.get("score", 50)
+        if fg_score >= 75:    s = 0.8
+        elif fg_score >= 60:  s = 0.4
+        elif fg_score >= 40:  s = 0.0
+        elif fg_score >= 25:  s = -0.4
+        else:                 s = -0.8
+        scores["fear_greed"] = (s, 0.10, True)
+
+    # Credit stress
+    cs = ctx.get("credit_stress", {})
+    if cs.get("ok"):
+        cs_level = cs.get("level", "STABLE")
+        cs_map = {
+            "RISK_ON": 0.5, "STABLE": 0.0, "MILD": -0.3,
+            "STRESS": -0.7, "CRISIS": -1.0,
+        }
+        scores["credit"] = (cs_map.get(cs_level, 0.0), 0.10, True)
+
+    # ── Step 2: Weighted composite ─────────────────────────────────
+    total_weight = 0.0
+    weighted_sum = 0.0
+    for name, (score, weight, available) in scores.items():
+        if available:
+            weighted_sum += score * weight
+            total_weight += weight
+
+    composite = weighted_sum / total_weight if total_weight > 0 else 0.0
+
+    # ── Step 3: Phase classification ───────────────────────────────
+    if composite >= 0.5:
+        phase = "EXPANSION"
+        label = "Strong breadth, flows, macro aligned"
+    elif composite >= 0.2:
+        phase = "RECOVERY"
+        label = "Improving but not fully confirmed"
+    elif composite > -0.2:
+        phase = "NEUTRAL"
+        label = "Mixed signals, no directional edge"
+    elif composite > -0.5:
+        phase = "DISTRIBUTION"
+        label = "Cracks forming, smart money exiting"
+    else:
+        phase = "CONTRACTION"
+        label = "Broad deterioration across all signals"
+
+    # ── Step 4: Stance = phase × confidence cross-reference ────────
+    # Confidence: coverage × agreement
+    coverage = total_weight / 1.0  # max possible weight = 1.0
+
+    # Agreement: how many signals point same direction as composite
+    agree_weight = 0.0
+    for name, (score, weight, available) in scores.items():
+        if available:
+            if (composite >= 0 and score >= 0) or (composite < 0 and score < 0):
+                agree_weight += weight
+    agreement = agree_weight / total_weight if total_weight > 0 else 0.0
+
+    confidence = round(coverage * agreement * 100)
+
+    # Stance logic: phase × confidence
+    if confidence < 30:
+        stance = "WAIT"
+        exposure = "Hold cash"
+        focus = "No new positions — signal quality insufficient"
+        avoid = "All directional trades"
+    elif phase == "EXPANSION":
+        if confidence >= 70:
+            stance = "AGGRESSIVE"
+            exposure = "70-80%"
+            focus = "Cyclicals, high-beta, financials"
+            avoid = "Cash drag, excessive hedging"
+        else:
+            stance = "MODERATE"
+            exposure = "55-65%"
+            focus = "Quality cyclicals, diversified"
+            avoid = "Leverage, concentrated bets"
+    elif phase == "RECOVERY":
+        if confidence >= 60:
+            stance = "MODERATE"
+            exposure = "55-65%"
+            focus = "Beaten-down quality, early cyclicals"
+            avoid = "Chasing gaps, leveraged trades"
+        else:
+            stance = "SELECTIVE"
+            exposure = "45-55%"
+            focus = "Quality stocks only"
+            avoid = "Speculative positions"
+    elif phase == "NEUTRAL":
+        stance = "BALANCED"
+        exposure = "40-55%"
+        focus = "Quality stocks, sector rotation"
+        avoid = "Concentrated bets, leverage"
+    elif phase == "DISTRIBUTION":
+        if confidence >= 60:
+            stance = "DEFENSIVE"
+            exposure = "30-45%"
+            focus = "Cash, bonds, low-beta quality"
+            avoid = "Momentum, leverage, new longs"
+        else:
+            stance = "REDUCE"
+            exposure = "45-55%"
+            focus = "Quality large-caps, dividend stocks"
+            avoid = "Small-caps, crowded longs"
+    elif phase == "CONTRACTION":
+        if confidence >= 70:
+            stance = "CAPITAL_PRESERVATION"
+            exposure = "20-30%"
+            focus = "Cash, Gold, Pharma, defensive"
+            avoid = "All cyclicals, all leverage"
+        else:
+            stance = "DEFENSIVE"
+            exposure = "30-40%"
+            focus = "Pharma, FMCG, Gold, cash"
+            avoid = "High-beta, momentum trades"
+
+    # ── Step 5: Risk watch — specific pattern detection ────────────
+    risk_actions = []
+
+    # Contradiction: smart money vs sentiment
+    fi_score = scores.get("fii_footprint", (0, 0, False))[0]
+    fg_score_val = scores.get("fear_greed", (0, 0, False))[0]
+    if scores.get("fii_footprint", (0, 0, False))[2] and scores.get("fear_greed", (0, 0, False))[2]:
+        if (fi_score < -0.3 and fg_score_val > 0.3) or (fi_score > 0.3 and fg_score_val < -0.3):
+            risk_actions.append("Smart money and sentiment diverging — watch for reversal")
+
+    # Vol compression in distribution/contraction
+    if scores.get("volatility", (0, 0, False))[2]:
+        vs_score = scores["volatility"][0]
+        if vs_score > 0.2 and phase in ("DISTRIBUTION", "CONTRACTION"):
+            risk_actions.append("Volatility compressed in bear phase — sharp selloff risk")
+
+    # FII selling + retail absorbing
+    if scores.get("fii_footprint", (0, 0, False))[2] and fi_score < -0.5:
+        risk_actions.append("FII distributing — retail absorbing supply")
+
+    # Contrarian setup: extreme fear + positive composite
+    if scores.get("fear_greed", (0, 0, False))[2] and fg_score_val < -0.5 and composite > 0:
+        risk_actions.append("Contrarian setup — extreme fear at positive composite")
+
+    # Earnings noise
+    if earnings == "PEAK_WEEK":
+        risk_actions.append("Earnings peak week — stock-specific noise overrides index signals")
+    elif earnings == "ACTIVE":
+        risk_actions.append("Earnings active — sector RS signals may be noisy")
+
+    # Low confidence
+    if confidence < 35 and len(risk_actions) < 3:
+        risk_actions.append("Insufficient signal quality — no directional conviction")
+
+    # Cap at 3
+    risk_actions = risk_actions[:3]
+
+    # ── Return ─────────────────────────────────────────────────────
+    return {
+        "ok": True,
+        "phase": phase,
+        "phase_label": label,
+        "stance": stance,
+        "exposure_range": exposure,
+        "focus": focus,
+        "avoid": avoid,
+        "risk_actions": risk_actions,
+        "confidence": confidence,
+        "composite": round(composite, 2),
+        "coverage": round(coverage * 100),
+        "signals_available": len([1 for _, _, a in scores.values() if a]),
+        "signals_total": len(scores),
+        "bull_bear_score": ctx.get("bull_bear", {}).get("score", 50),
+        "cross_asset_regime": ctx.get("cross_asset_regime", {}).get("regime", "N/A"),
+        "earnings_regime": earnings,
+        "scores": {k: round(v[0], 2) for k, v in scores.items()},
+    }
+
+
+def compute_cross_asset_regime(ctx: Dict) -> Dict:
+    """
+    Synthesize all regime detectors into a single cross-asset regime label.
+    Counts how many independent detectors confirm each regime.
+
+    Args:
+        ctx: output from run_contextualization() individual signals
+    Returns:
+        Dict with regime label, confirmation score, transition signal.
+    """
+    votes = {
+        "RISK_ON": 0,
+        "RISK_OFF": 0,
+        "STAGFLATION": 0,
+        "LIQUIDITY_DRIVEN": 0,
+        "FLIGHT_TO_SAFETY": 0,
+    }
+    total_signals = 0
+    reasons = []
+
+    # Global risk composite (direct mapping)
+    gr = ctx.get("global_risk", {})
+    if gr.get("ok"):
+        total_signals += 1
+        r = gr.get("regime", "")
+        if "RISK_ON" in r:
+            votes["RISK_ON"] += 1
+            reasons.append(f"Global risk: {r}")
+        elif "RISK_OFF" in r:
+            votes["RISK_OFF"] += 1
+            reasons.append(f"Global risk: {r}")
+
+    # Commodity breadth (flight to safety vs reflation)
+    cb = ctx.get("commodity_breadth", {})
+    if cb.get("ok"):
+        total_signals += 1
+        r = cb.get("regime", "")
+        if "FLIGHT" in r:
+            votes["FLIGHT_TO_SAFETY"] += 1
+            reasons.append(f"Commodities: {r}")
+        elif "REFLATION" in r or "RISK_ON" in r:
+            votes["RISK_ON"] += 1
+            reasons.append(f"Commodities: {r}")
+        elif "DEFLATIONARY" in r:
+            votes["RISK_OFF"] += 1
+            reasons.append(f"Commodities: {r}")
+
+    # Stagflation
+    sf = ctx.get("stagflation", {})
+    if sf.get("ok"):
+        total_signals += 1
+        r = sf.get("regime", "")
+        if "STAGFLATION" in r:
+            votes["STAGFLATION"] += 1
+            reasons.append(f"Stagflation: {r}")
+        elif "FLIGHT" in r:
+            votes["FLIGHT_TO_SAFETY"] += 1
+            reasons.append(f"Stagflation: {r}")
+        elif "RISK_ON" in r or "REFLATION" in r:
+            votes["RISK_ON"] += 1
+
+    # Liquidity regime
+    lr = ctx.get("liquidity_regime", {})
+    if lr.get("ok"):
+        total_signals += 1
+        r = lr.get("regime", "")
+        if "MELT" in r or "LIQUIDITY DRIVEN" in r:
+            votes["LIQUIDITY_DRIVEN"] += 1
+            reasons.append(f"Liquidity: {r}")
+        elif "TIGHTENING" in r or "TIGHT" in r:
+            votes["RISK_OFF"] += 1
+            reasons.append(f"Liquidity: {r}")
+
+    # Credit stress
+    cs = ctx.get("credit_stress", {})
+    if cs.get("ok"):
+        total_signals += 1
+        level = cs.get("level", "")
+        if level in ("CRISIS", "STRESS"):
+            votes["RISK_OFF"] += 1
+            reasons.append(f"Credit: {level}")
+        elif level == "RISK_ON":
+            votes["RISK_ON"] += 1
+
+    # VIX spread
+    vs = ctx.get("vix_spread", {})
+    if vs.get("ok"):
+        total_signals += 1
+        r = vs.get("regime", "")
+        if "GLOBAL FEAR" in r:
+            votes["RISK_OFF"] += 1
+            reasons.append(f"VIX spread: {r}")
+        elif "LOCAL FEAR" in r:
+            # India-specific, not global contagion
+            pass
+
+    # Carry trade
+    ct = ctx.get("carry_trade", {})
+    if ct.get("ok"):
+        total_signals += 1
+        r = ct.get("regime", "")
+        if "STRESS" in r:
+            votes["RISK_OFF"] += 1
+            reasons.append(f"Carry: {r}")
+        elif "CARRY_ON" in r:
+            votes["RISK_ON"] += 1
+
+    # Gold-dollar regime
+    gd = ctx.get("gold_dollar", {})
+    if gd.get("ok"):
+        total_signals += 1
+        r = gd.get("regime", "")
+        if "MULTIPOLAR" in r:
+            votes["FLIGHT_TO_SAFETY"] += 1
+            reasons.append(f"Gold/Dollar: {r}")
+        elif "INFLATION HEDGE" in r:
+            votes["STAGFLATION"] += 1
+
+    # Bull/bear score (final arbiter)
+    bb = ctx.get("bull_bear", {})
+    if bb.get("ok"):
+        score = bb.get("score", 50)
+        if score >= 65:
+            votes["RISK_ON"] += 1
+        elif score <= 35:
+            votes["RISK_OFF"] += 1
+
+    # Determine winner
+    if total_signals < 3:
+        return {"ok": False, "message": "Insufficient signals"}
+
+    max_votes = max(votes.values())
+    winners = [k for k, v in votes.items() if v == max_votes]
+
+    if len(winners) > 1 or max_votes < 2:
+        regime = "CONFUSION"
+        label  = "Mixed signals — no clear cross-asset consensus"
+    else:
+        regime = winners[0]
+        labels = {
+            "RISK_ON": "Risk-on: equities + cyclicals leading, credit stable",
+            "RISK_OFF": "Risk-off: defensives + gold leading, credit widening",
+            "STAGFLATION": "Stagflation: rising commodities + slowing growth",
+            "LIQUIDITY_DRIVEN": "Liquidity-driven: all assets rising together (melt-up risk)",
+            "FLIGHT_TO_SAFETY": "Flight to safety: gold + bonds rallying, equities weak",
+        }
+        label = labels.get(regime, regime)
+
+    confirmation = round((max_votes / total_signals) * 100)
+
+    return {
+        "ok": True,
+        "regime": regime,
+        "label": label,
+        "confirmation_pct": confirmation,
+        "votes": votes,
+        "total_signals": total_signals,
+        "reasons": reasons[:5],
+    }
+
+
 def run_contextualization(anchor_data: List[Dict], extra_signals: Dict = None) -> Dict:
     """
     Full contextualization pipeline — runs inside single job execution.
@@ -2036,6 +2453,19 @@ def run_contextualization(anchor_data: List[Dict], extra_signals: Dict = None) -
     # Compute Bull/Bear score with enriched signals
     bull_bear = compute_bull_bear_score(fii_context, macro_context, extra_signals=enriched_extra)
 
+    # Cross-asset regime synthesis (needs all signals computed first)
+    cross_asset_regime = compute_cross_asset_regime({
+        "global_risk": global_risk,
+        "commodity_breadth": commodity_breadth,
+        "stagflation": stagflation,
+        "liquidity_regime": liquidity_regime,
+        "credit_stress": credit_stress,
+        "vix_spread": vix_spread,
+        "carry_trade": carry_trade,
+        "gold_dollar": gold_dollar,
+        "bull_bear": bull_bear,
+    })
+
     return {
         "fii_context": fii_context,
         "macro_context": macro_context,
@@ -2061,6 +2491,7 @@ def run_contextualization(anchor_data: List[Dict], extra_signals: Dict = None) -
         "gold_dollar": gold_dollar,
         "inst_context": inst_context,
         "us_employment": us_employment,
+        "cross_asset_regime": cross_asset_regime,
     }
 
 

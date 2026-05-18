@@ -414,6 +414,27 @@ def main():
                 ((nifty_closes[-1] / nifty_closes[-2]) - 1) * 100, 2
             )
 
+        # Cross-asset regime (from context engine)
+        try:
+            ctx = getattr(format_context_block, 'last_ctx', None)
+            if ctx and ctx.get("cross_asset_regime", {}).get("ok"):
+                car = ctx["cross_asset_regime"]
+                snapshot_data["cross_asset_regime"] = car.get("regime", "")
+                snapshot_data["cross_asset_confirmation"] = car.get("confirmation_pct", 0)
+                print(f"   → Cross-asset regime: {car['regime']} ({car['confirmation_pct']}% confirm)")
+        except Exception as e:
+            print(f"   ⚠️ Cross-asset regime: {e}")
+
+        # Earnings regime
+        try:
+            from src.earnings_tracker import compute_earnings_regime
+            earnings_regime = compute_earnings_regime()
+            if earnings_regime.get("ok"):
+                snapshot_data["earnings_regime"] = earnings_regime.get("regime", "QUIET")
+                print(f"   → Earnings regime: {earnings_regime['regime']} ({earnings_regime.get('count_next_7d', 0)} in 7d)")
+        except Exception as e:
+            print(f"   ⚠️ Earnings regime: {e}")
+
         # Save snapshot
         from src.db import today_str
         save_daily_market_snapshot(today_str(), snapshot_data)
@@ -718,6 +739,105 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Fear/Greed: {e}")
 
+    # ── MARKET STATE DASHBOARD ─────────────────────────────────
+    market_state_block = ""
+    try:
+        from src.context_engine import compute_market_phase
+        from src.formatters import format_market_state_dashboard
+
+        # Get context from format_context_block
+        ctx = getattr(format_context_block, 'last_ctx', None) or {}
+
+        # Get institutional signals
+        inst_signals = {}
+        try:
+            from src.quant_enrichment import (
+                compute_sector_regime, compute_volatility_setup,
+                compute_risk_appetite, compute_breadth_thrust,
+                compute_fii_institutional_footprint
+            )
+            # Sector regime from top movers
+            try:
+                from src.data_fetcher import fetch_top_movers
+                _movers = fetch_top_movers(top_n=10)
+                _sector_perf = {}
+                for m in (_movers.get("india", {}).get("gainers", []) + _movers.get("india", {}).get("losers", [])):
+                    sym = m.get("symbol", "")
+                    if sym in ("HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK"):
+                        _sector_perf.setdefault("BANK", []).append(m.get("weekly_pct", m.get("change_pct", 0)))
+                    elif sym in ("TATAMOTORS", "M&M", "MARUTI"):
+                        _sector_perf.setdefault("AUTO", []).append(m.get("weekly_pct", m.get("change_pct", 0)))
+                    elif sym in ("TCS", "INFY", "WIPRO", "TECHM"):
+                        _sector_perf.setdefault("IT", []).append(m.get("weekly_pct", m.get("change_pct", 0)))
+                    elif sym in ("SUNPHARMA", "DRREDDY"):
+                        _sector_perf.setdefault("PHARMA", []).append(m.get("weekly_pct", m.get("change_pct", 0)))
+                    elif sym in ("HINDUNILVR", "ITC"):
+                        _sector_perf.setdefault("FMCG", []).append(m.get("weekly_pct", m.get("change_pct", 0)))
+                    elif sym in ("TATASTEEL", "JSW", "HINDALCO"):
+                        _sector_perf.setdefault("METAL", []).append(m.get("weekly_pct", m.get("change_pct", 0)))
+                avg_sector = {k: round(sum(v)/len(v), 2) for k, v in _sector_perf.items() if v}
+                inst_signals["sector_regime"] = compute_sector_regime(avg_sector)
+            except Exception:
+                pass
+
+            # Volatility setup from VIX history
+            try:
+                from src.db import get_macro_history
+                _vix_hist = get_macro_history("India VIX", days=90)
+                _vix_vals = [v.get("price", 0) for v in _vix_hist if v.get("price")]
+                if _vix_vals:
+                    inst_signals["volatility_setup"] = compute_volatility_setup(_vix_vals, _vix_vals[-1])
+            except Exception:
+                pass
+
+            # Risk appetite from sector regime
+            sr = inst_signals.get("sector_regime", {})
+            if sr.get("ok"):
+                _perf = {}
+                for s, v in sr.get("leaders", []):
+                    _perf[s] = v
+                for s, v in sr.get("laggards", []):
+                    _perf[s] = v
+                inst_signals["risk_appetite"] = compute_risk_appetite(_perf)
+
+            # Breadth thrust
+            try:
+                from src.db import get_breadth_history
+                _breadth = get_breadth_history(days=30)
+                if _breadth:
+                    inst_signals["breadth_thrust"] = compute_breadth_thrust(_breadth)
+            except Exception:
+                pass
+
+            # FII footprint
+            try:
+                from src.db import get_fii_institutions
+                _inst = get_fii_institutions(days=30)
+                if _inst:
+                    inst_signals["fii_footprint"] = compute_fii_institutional_footprint(_inst)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # Earnings regime
+        earnings_regime = {"ok": False}
+        try:
+            from src.earnings_tracker import compute_earnings_regime
+            earnings_regime = compute_earnings_regime()
+        except Exception:
+            pass
+
+        # Compute market phase
+        market_phase = compute_market_phase(ctx, inst_signals, earnings_regime)
+
+        # Format dashboard
+        market_state_block = format_market_state_dashboard(market_phase, ctx)
+        if market_state_block:
+            print(f"   → Market State: {market_phase['phase']} ({market_phase['stance']})")
+    except Exception as e:
+        print(f"   ⚠️ Market State: {e}")
+
     # ── SIGNAL ARBITRATION (master signal synthesis) ─────────────
     print("🔄 SIGNAL ARBITRATION")
     master_signal_block = ""
@@ -846,6 +966,10 @@ def main():
     # ── INJECT FEAR & GREED ─────────────────────────────────────
     if fear_greed_block:
         prompt += "\n\n" + fear_greed_block
+
+    # ── INJECT MARKET STATE DASHBOARD ──────────────────────────
+    if market_state_block:
+        prompt += "\n\n" + market_state_block
 
     # ── INJECT SIMPLE LINES (Block -1, always first) ────────────
     if simple_block:

@@ -741,6 +741,9 @@ def format_context_block(anchor_data: list = None, extra_signals: dict = None) -
         # Run full contextualization pipeline with extra signals
         ctx = run_contextualization(anchor_data, extra_signals=extra_signals)
 
+        # Store raw context for snapshot access (cross_asset_regime, etc.)
+        format_context_block.last_ctx = ctx
+
         if not ctx.get("fii_context", {}).get("ok"):
             return ""
 
@@ -751,6 +754,7 @@ def format_context_block(anchor_data: list = None, extra_signals: dict = None) -
 
     except Exception as e:
         print(f"⚠️ format_context_block: {e}")
+        format_context_block.last_ctx = None
         return ""
 
 
@@ -900,6 +904,80 @@ def format_top_movers(movers: Dict) -> str:
         top_us = us["gainers"][0]
         bot_us = us["losers"][0]
         lines.append(f"🇺🇸 Best: {top_us['symbol']} ({top_us['change_pct']:+.1f}%) | Worst: {bot_us['symbol']} ({bot_us['change_pct']:+.1f}%)")
+
+    return "\n".join(lines)
+
+
+def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
+    """
+    Format the Market State Dashboard — the single most important block.
+    Answers: Where are we? What to do? What could go wrong?
+    """
+    if not market_phase or not market_phase.get("ok"):
+        return ""
+
+    mp = market_phase
+    ctx = ctx or {}
+
+    # Phase emoji
+    phase_emoji = {
+        "EXPANSION": "🟢",
+        "DISTRIBUTION": "🟡",
+        "CONTRACTION": "🔴",
+        "RECOVERY": "🔵",
+        "NEUTRAL": "⚪",
+    }.get(mp["phase"], "⚪")
+
+    # Stance emoji
+    stance_emoji = {
+        "AGGRESSIVE": "🚀",
+        "REDUCE": "⬇️",
+        "DEFENSIVE": "🛡️",
+        "SELECTIVE": "🎯",
+        "BALANCED": "⚖️",
+    }.get(mp["stance"], "⚖️")
+
+    lines = ["🎯 *MARKET STATE*"]
+    lines.append("━" * 30)
+
+    # Phase
+    lines.append(f"{phase_emoji} *Phase:* {mp['phase']} — {mp['phase_label']}")
+
+    # Stance
+    lines.append(f"{stance_emoji} *Stance:* {mp['stance']} ({mp['exposure_range']} exposure)")
+    lines.append(f"   Focus: {mp['focus']}")
+    lines.append(f"   Avoid: {mp['avoid']}")
+
+    # Risk watch
+    risk_actions = mp.get("risk_actions", [])
+    if risk_actions:
+        lines.append("")
+        lines.append("⚠️ *Risk Watch:*")
+        for action in risk_actions:
+            lines.append(f"   • {action}")
+
+    # Confidence + composite
+    lines.append("")
+    conf = mp.get("confidence", 50)
+    composite = mp.get("composite", 0)
+    coverage = mp.get("coverage", 0)
+    avail = mp.get("signals_available", 0)
+    total = mp.get("signals_total", 0)
+    lines.append(f"📊 Confidence: {conf}% ({avail}/{total} signals available)")
+    lines.append(f"   Composite: {composite:+.2f} | Coverage: {coverage}%")
+
+    car = mp.get("cross_asset_regime", "N/A")
+    car_confirm = ctx.get("cross_asset_regime", {}).get("confirmation_pct", 0)
+    if car != "N/A":
+        lines.append(f"   Regime: {car} ({car_confirm}% confirm)")
+
+    # Earnings context
+    er = mp.get("earnings_regime", "QUIET")
+    if er != "QUIET":
+        lines.append(f"   Earnings: {er}")
+
+    lines.append("━" * 30)
+    lines.append("_Regime = market's current character. Composite = -1 (bear) to +1 (bull)._")
 
     return "\n".join(lines)
 

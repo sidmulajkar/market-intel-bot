@@ -133,6 +133,31 @@ Under 200 words. Reference actual headlines provided.
         + closing_summary
         + "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_India outlook for tomorrow ↑_"
     )
+
+    # ── Market State Dashboard ─────────────────────────────────────
+    try:
+        from src.data_fetcher import fetch_macro_anchors
+        from src.context_engine import run_contextualization, compute_market_phase
+        from src.formatters import format_market_state_dashboard
+
+        anchors = fetch_macro_anchors()
+        ctx = run_contextualization(anchors)
+
+        earnings_regime = {"ok": False}
+        try:
+            from src.earnings_tracker import compute_earnings_regime
+            earnings_regime = compute_earnings_regime()
+        except Exception:
+            pass
+
+        market_phase = compute_market_phase(ctx, {}, earnings_regime)
+        dashboard = format_market_state_dashboard(market_phase, ctx)
+        if dashboard:
+            send_text(dashboard)
+            print("   → Market State Dashboard sent")
+    except Exception as e:
+        print(f"   ⚠️ Market State Dashboard: {e}")
+
     print("✅ EVENING REPORT COMPLETE")
 
 if __name__ == "__main__":

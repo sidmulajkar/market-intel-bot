@@ -231,6 +231,75 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Snapshot failed: {e}")
 
+    # ── Market State Dashboard ─────────────────────────────────────
+    try:
+        from src.data_fetcher import fetch_macro_anchors
+        from src.context_engine import run_contextualization, compute_market_phase
+        from src.formatters import format_market_state_dashboard
+
+        anchors = fetch_macro_anchors()
+        ctx = run_contextualization(anchors)
+
+        # Institutional signals
+        inst_signals = {}
+        try:
+            from src.quant_enrichment import (
+                compute_sector_regime, compute_volatility_setup,
+                compute_risk_appetite, compute_breadth_thrust,
+                compute_fii_institutional_footprint
+            )
+            from src.db import get_macro_history, get_breadth_history, get_fii_institutions
+
+            # Sector regime from top movers
+            _sector_perf = {}
+            for m in (movers.get("india", {}).get("gainers", []) + movers.get("india", {}).get("losers", [])):
+                sym = m.get("symbol", "")
+                if sym in ("HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK"):
+                    _sector_perf.setdefault("BANK", []).append(m.get("weekly_pct", m.get("change_pct", 0)))
+                elif sym in ("TCS", "INFY", "WIPRO", "TECHM"):
+                    _sector_perf.setdefault("IT", []).append(m.get("weekly_pct", m.get("change_pct", 0)))
+                elif sym in ("SUNPHARMA", "DRREDDY"):
+                    _sector_perf.setdefault("PHARMA", []).append(m.get("weekly_pct", m.get("change_pct", 0)))
+                elif sym in ("HINDUNILVR", "ITC"):
+                    _sector_perf.setdefault("FMCG", []).append(m.get("weekly_pct", m.get("change_pct", 0)))
+            avg_sector = {k: round(sum(v)/len(v), 2) for k, v in _sector_perf.items() if v}
+            inst_signals["sector_regime"] = compute_sector_regime(avg_sector)
+
+            _vix_hist = get_macro_history("India VIX", days=90)
+            _vix_vals = [v.get("price", 0) for v in _vix_hist if v.get("price")]
+            if _vix_vals:
+                inst_signals["volatility_setup"] = compute_volatility_setup(_vix_vals, _vix_vals[-1])
+
+            sr = inst_signals.get("sector_regime", {})
+            if sr.get("ok"):
+                _perf = {s: v for s, v in sr.get("leaders", []) + sr.get("laggards", [])}
+                inst_signals["risk_appetite"] = compute_risk_appetite(_perf)
+
+            _breadth = get_breadth_history(days=30)
+            if _breadth:
+                inst_signals["breadth_thrust"] = compute_breadth_thrust(_breadth)
+
+            _inst = get_fii_institutions(days=30)
+            if _inst:
+                inst_signals["fii_footprint"] = compute_fii_institutional_footprint(_inst)
+        except Exception:
+            pass
+
+        earnings_regime = {"ok": False}
+        try:
+            from src.earnings_tracker import compute_earnings_regime
+            earnings_regime = compute_earnings_regime()
+        except Exception:
+            pass
+
+        market_phase = compute_market_phase(ctx, inst_signals, earnings_regime)
+        dashboard = format_market_state_dashboard(market_phase, ctx)
+        if dashboard:
+            send_text(dashboard)
+            print("   → Market State Dashboard sent")
+    except Exception as e:
+        print(f"   ⚠️ Market State Dashboard: {e}")
+
     print("=" * 50)
     print("✅ MORNING BRIEF COMPLETE")
     print("=" * 50)

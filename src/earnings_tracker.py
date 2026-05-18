@@ -290,6 +290,68 @@ def format_earnings(analysis: Dict) -> str:
     return "\n".join(lines)
 
 
+def compute_earnings_regime() -> Dict:
+    """
+    Detect if we're in earnings season and how heavy it is.
+    Classifies: PEAK_WEEK (5+ stocks), ACTIVE (2-4), APPROACHING (1), QUIET (0).
+
+    Returns regime label + list of upcoming earnings for context.
+    """
+    try:
+        upcoming = fetch_earnings_calendar()
+    except Exception as e:
+        return {"ok": False, "message": f"Failed to fetch: {e}"}
+
+    if not upcoming:
+        return {
+            "ok": True,
+            "regime": "QUIET",
+            "label": "No major earnings expected in next 30 days",
+            "count_this_week": 0,
+            "count_next_7d": 0,
+            "upcoming": [],
+        }
+
+    # Count earnings in next 7 days
+    from datetime import datetime, timedelta
+    today = datetime.now()
+    week_from_now = today + timedelta(days=7)
+
+    this_week = []
+    next_7d = []
+    for stock in upcoming:
+        days = stock.get("days_until", 99)
+        if days <= 3:
+            this_week.append(stock)
+        if days <= 7:
+            next_7d.append(stock)
+
+    count_week = len(this_week)
+    count_7d = len(next_7d)
+
+    if count_week >= 5:
+        regime = "PEAK_WEEK"
+        label  = f"Peak earnings week — {count_week} Nifty 50 stocks reporting. Expect stock-specific moves overriding index signals."
+    elif count_week >= 2:
+        regime = "ACTIVE"
+        label  = f"Earnings season active — {count_week} stocks reporting this week. Sector RS may be noisy."
+    elif count_7d >= 1:
+        regime = "APPROACHING"
+        label  = f"Earnings approaching — {count_7d} stock(s) in next 7 days. Expect positioning, not conviction."
+    else:
+        regime = "QUIET"
+        label  = "No major earnings this week — normal signal environment"
+
+    return {
+        "ok": True,
+        "regime": regime,
+        "label": label,
+        "count_this_week": count_week,
+        "count_next_7d": count_7d,
+        "upcoming": upcoming[:5],
+    }
+
+
 if __name__ == "__main__":
     result = run_earnings_analysis()
     if result["ok"]:
