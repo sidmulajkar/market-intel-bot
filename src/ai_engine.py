@@ -290,6 +290,288 @@ Under 200 words. Do NOT invent events. Use the news provided.
 """
 
     @staticmethod
+    def midday_market_prompt(global_indices: dict, top_movers: dict,
+                             news_items: list = None, bull_bear: dict = None) -> str:
+        # Format global indices (top 5 by absolute change)
+        idx_lines = []
+        if global_indices:
+            sorted_idx = sorted(
+                [(c, d) for c, d in global_indices.items() if d.get("ok")],
+                key=lambda x: abs(x[1].get("change_pct", 0)),
+                reverse=True
+            )
+            for country, d in sorted_idx[:5]:
+                sign = "+" if d.get("change_pct", 0) >= 0 else ""
+                idx_lines.append(f"{d.get('flag','')} {country}: {sign}{d.get('change_pct',0):.2f}%")
+
+        # Format top movers
+        gainers, losers = [], []
+        if top_movers:
+            for m in top_movers.get("india", {}).get("gainers", [])[:3]:
+                gainers.append(f"{m['symbol']} +{m['change_pct']:.1f}%")
+            for m in top_movers.get("india", {}).get("losers", [])[:3]:
+                losers.append(f"{m['symbol']} {m['change_pct']:.1f}%")
+
+        # Format news
+        news_block = ""
+        if news_items:
+            news_lines = []
+            for n in news_items[:3]:
+                headline = n.get("headline", "")[:60]
+                trust = n.get("trust_score", 0)
+                source = n.get("source", "unknown")
+                news_lines.append(f"• {headline} ({source}, Trust:{trust}/10)")
+            if news_lines:
+                news_block = f"\nHeadlines:\n{chr(10).join(news_lines)}"
+
+        # Bull/bear context
+        bb_line = ""
+        if bull_bear and bull_bear.get("ok"):
+            bb_line = f"\nBull/Bear Score: {bull_bear.get('score', 'N/A')}/100 ({bull_bear.get('label', 'N/A')})"
+
+        return f"""
+Midday market snapshot:
+Global indices: {chr(10).join(idx_lines) if idx_lines else 'No data'}
+Top gainers: {' | '.join(gainers) if gainers else 'No data'}
+Top losers: {' | '.join(losers) if losers else 'No data'}
+{news_block}
+{bb_line}
+
+Provide a sharp 3-point midday brief:
+1. Market Mood — what's driving sentiment right now
+2. What Changed — any shift since morning (flows, global moves, news)
+3. What to Watch — key level or event for the afternoon session
+
+Under 80 words. No disclaimers. Be direct.
+"""
+
+    @staticmethod
+    def eod_market_prompt(top_movers: dict, global_indices: dict = None,
+                          news_items: list = None, consensus_sentiment: str = "neutral",
+                          bull_bear: dict = None) -> str:
+        # Format top movers (India + US)
+        india_g, india_l, us_g, us_l = [], [], [], []
+        if top_movers:
+            for m in top_movers.get("india", {}).get("gainers", [])[:5]:
+                india_g.append(f"{m['symbol']} +{m['change_pct']:.1f}%")
+            for m in top_movers.get("india", {}).get("losers", [])[:5]:
+                india_l.append(f"{m['symbol']} {m['change_pct']:.1f}%")
+            for m in top_movers.get("us", {}).get("gainers", [])[:5]:
+                us_g.append(f"{m['symbol']} +{m['change_pct']:.1f}%")
+            for m in top_movers.get("us", {}).get("losers", [])[:5]:
+                us_l.append(f"{m['symbol']} {m['change_pct']:.1f}%")
+
+        # Format global indices
+        idx_lines = []
+        if global_indices:
+            for country, d in list(global_indices.items())[:8]:
+                if d.get("ok"):
+                    sign = "+" if d.get("change_pct", 0) >= 0 else ""
+                    idx_lines.append(f"{d.get('flag','')} {country}: {sign}{d.get('change_pct',0):.2f}%")
+
+        # Format news
+        news_block = ""
+        if news_items:
+            news_lines = []
+            for n in news_items[:5]:
+                headline = n.get("headline", "")[:70]
+                trust = n.get("trust_score", 0)
+                source = n.get("source", "unknown")
+                news_lines.append(f"• {headline} ({source}, Trust:{trust}/10)")
+            if news_lines:
+                news_block = f"\nToday's validated news:\n{chr(10).join(news_lines)}"
+
+        # Bull/bear context
+        bb_line = ""
+        if bull_bear and bull_bear.get("ok"):
+            bb_line = f"\nBull/Bear Score: {bull_bear.get('score', 'N/A')}/100 ({bull_bear.get('label', 'N/A')})"
+
+        return f"""
+End-of-day market summary:
+
+Global indices:
+{chr(10).join(idx_lines) if idx_lines else 'No data'}
+
+India top gainers: {' | '.join(india_g) if india_g else 'No data'}
+India top losers: {' | '.join(india_l) if india_l else 'No data'}
+US top gainers: {' | '.join(us_g) if us_g else 'No data'}
+US top losers: {' | '.join(us_l) if us_l else 'No data'}
+
+Sentiment: {consensus_sentiment.upper()}
+{news_block}
+{bb_line}
+
+Provide (based on actual data, not speculation):
+1. What happened today + why (reference news and flows)
+2. Sector rotation story (which sectors led/lagged)
+3. What to watch tomorrow
+
+Under 150 words. Reference news trust scores. No disclaimers.
+"""
+
+    @staticmethod
+    def market_open_prompt(global_indices: dict, top_movers: dict,
+                           news_items: list = None, bull_bear: dict = None) -> str:
+        # Format global indices (overnight moves)
+        idx_lines = []
+        if global_indices:
+            sorted_idx = sorted(
+                [(c, d) for c, d in global_indices.items() if d.get("ok")],
+                key=lambda x: abs(x[1].get("change_pct", 0)),
+                reverse=True
+            )
+            for country, d in sorted_idx[:5]:
+                sign = "+" if d.get("change_pct", 0) >= 0 else ""
+                idx_lines.append(f"{d.get('flag','')} {country}: {sign}{d.get('change_pct',0):.2f}%")
+
+        # Format pre-market movers
+        gap_ups, gap_downs = [], []
+        if top_movers:
+            for m in top_movers.get("india", {}).get("gainers", [])[:3]:
+                if m.get("change_pct", 0) >= 1.5:
+                    gap_ups.append(f"{m['symbol']} +{m['change_pct']:.1f}%")
+            for m in top_movers.get("india", {}).get("losers", [])[:3]:
+                if m.get("change_pct", 0) <= -1.5:
+                    gap_downs.append(f"{m['symbol']} {m['change_pct']:.1f}%")
+
+        # Format news
+        news_block = ""
+        if news_items:
+            news_lines = []
+            for n in news_items[:3]:
+                headline = n.get("headline", "")[:60]
+                trust = n.get("trust_score", 0)
+                source = n.get("source", "unknown")
+                news_lines.append(f"• {headline} ({source}, Trust:{trust}/10)")
+            if news_lines:
+                news_block = f"\nOvernight news:\n{chr(10).join(news_lines)}"
+
+        # Bull/bear context
+        bb_line = ""
+        if bull_bear and bull_bear.get("ok"):
+            bb_line = f"\nBull/Bear Score: {bull_bear.get('score', 'N/A')}/100 ({bull_bear.get('label', 'N/A')})"
+
+        return f"""
+Indian market opening at 9:15 AM IST.
+
+Overnight global moves:
+{chr(10).join(idx_lines) if idx_lines else 'No data'}
+
+Gap ups: {' | '.join(gap_ups) if gap_ups else 'None'}
+Gap downs: {' | '.join(gap_downs) if gap_downs else 'None'}
+{news_block}
+{bb_line}
+
+Give a sharp 3-point opening brief:
+1. Opening Mood + reason (weight high-trust news sources)
+2. Sectors to watch today
+3. Key Nifty level to watch
+
+Under 100 words. No disclaimers. Reference trust scores.
+"""
+
+    @staticmethod
+    def weekly_digest_intelligence_prompt(
+        scorecard: dict = None, fii_pattern: dict = None,
+        regime_shift: dict = None, institutional_signals: dict = None,
+        global_indices: dict = None, news_items: list = None,
+        bull_bear: dict = None
+    ) -> str:
+        # Format scorecard
+        sc_block = ""
+        if scorecard and scorecard.get("ok"):
+            sc_block = f"""Prediction Scorecard: {scorecard.get('correct',0)}/{scorecard.get('total',0)} correct ({scorecard.get('accuracy_pct',0):.0f}%)
+Best call: {scorecard.get('best_call', 'N/A')}
+Worst call: {scorecard.get('worst_call', 'N/A')}"""
+
+        # Format FII pattern
+        fii_block = ""
+        if fii_pattern and fii_pattern.get("ok"):
+            fii_block = f"""FII Weekly: ₹{fii_pattern.get('weekly_net',0):+,.0f} Cr
+DII Weekly: ₹{fii_pattern.get('dii_net',0):+,.0f} Cr
+Streak: {fii_pattern.get('streak_weeks',0)} weeks"""
+
+        # Format regime shift
+        regime_block = ""
+        if regime_shift and regime_shift.get("ok"):
+            regime_block = f"""Regime: {regime_shift.get('monday_label','N/A')} → {regime_shift.get('friday_label','N/A')}
+Score: {regime_shift.get('monday_score','?')} → {regime_shift.get('friday_score','?')}
+Key driver: {regime_shift.get('what_changed', 'N/A')}"""
+
+        # Format institutional signals
+        inst_block = ""
+        if institutional_signals:
+            sr = institutional_signals.get("sector_regime", {})
+            vs = institutional_signals.get("volatility_setup", {})
+            ra = institutional_signals.get("risk_appetite", {})
+            bt = institutional_signals.get("breadth_thrust", {})
+            fi = institutional_signals.get("fii_footprint", {})
+            parts = []
+            if sr.get("ok"):
+                parts.append(f"Sector Regime: {sr['label']}")
+            if vs.get("ok"):
+                parts.append(f"Vol Setup: VIX {vs['vix_current']:.1f} ({vs['percentile']}th pctile) — {vs['label']}")
+            if ra.get("ok"):
+                parts.append(f"Risk Appetite: {ra['label']}")
+            if bt.get("ok"):
+                parts.append(f"Breadth: {bt['label']}")
+            if fi.get("ok"):
+                parts.append(f"FII Footprint: {fi['label']}")
+            inst_block = "\n".join(parts)
+
+        # Format global indices
+        idx_lines = []
+        if global_indices:
+            for country, d in list(global_indices.items())[:8]:
+                if d.get("ok"):
+                    sign = "+" if d.get("change_pct", 0) >= 0 else ""
+                    idx_lines.append(f"{d.get('flag','')} {country}: {sign}{d.get('change_pct',0):.2f}%")
+
+        # Format news
+        news_block = ""
+        if news_items:
+            news_lines = []
+            for n in news_items[:5]:
+                headline = n.get("headline", "")[:70]
+                trust = n.get("trust_score", 0)
+                news_lines.append(f"• {headline} (Trust:{trust}/10)")
+            if news_lines:
+                news_block = "\n".join(news_lines)
+
+        bb_line = ""
+        if bull_bear and bull_bear.get("ok"):
+            bb_line = f"Bull/Bear: {bull_bear.get('score','N/A')}/100 ({bull_bear.get('label','N/A')})"
+
+        return f"""
+Weekly market intelligence report:
+
+{sc_block}
+
+{fii_block}
+
+{regime_block}
+
+Global indices:
+{chr(10).join(idx_lines) if idx_lines else 'No data'}
+
+Institutional signals:
+{inst_block if inst_block else 'No data'}
+
+News this week:
+{news_block if news_block else 'No data'}
+
+{bb_line}
+
+Provide a sharp weekly narrative:
+1. What happened this week + why (reference FII pattern, regime shift, news)
+2. What smart money is doing (institutional signals — sector regime, risk appetite, FII footprint)
+3. Contrarian opportunity — what's the crowd missing?
+4. Next week preview — key events, levels, what to watch
+
+Under 200 words. Be direct. Reference data, not opinions.
+"""
+
+    @staticmethod
     def weekly_digest_prompt(index_data: dict, watchlist_data: dict) -> str:
         global_lines = [
             f"{d.get('flag','')} {c}: {d.get('change_pct',0):+.2f}%"

@@ -903,3 +903,111 @@ def format_top_movers(movers: Dict) -> str:
 
     return "\n".join(lines)
 
+
+def format_weekly_digest(scorecard: Dict = None, fii_pattern: Dict = None,
+                         regime_shift: Dict = None, movers: Dict = None,
+                         institutional: str = "", contrarian: str = "",
+                         ai_summary: str = "") -> str:
+    """
+    Format the complete weekly digest message.
+    Structure ordered by engagement:
+    1. Prediction Scorecard (hero)
+    2. FII Weekly Pattern
+    3. Regime Shift
+    4. Top Movers of the Week
+    5. Institutional Signals
+    6. Contrarian / AI Summary
+    7. Next Week Preview
+    """
+    lines = ["📅 *WEEKLY MARKET DIGEST*"]
+    lines.append("━" * 30)
+    lines.append("")
+
+    # ── 1. Prediction Scorecard (HERO) ─────────────────────────────
+    if scorecard and scorecard.get("ok"):
+        sc = scorecard
+        emoji = "🏆" if sc.get("accuracy_pct", 0) >= 70 else ("📊" if sc.get("accuracy_pct", 0) >= 50 else "⚠️")
+        lines.append(f"{emoji} *This Week: {sc.get('correct', 0)}/{sc.get('total', 0)} predictions correct ({sc.get('accuracy_pct', 0):.0f}%)*")
+        if sc.get("cumulative_pct"):
+            lines.append(f"📈 Cumulative: {sc['cumulative_pct']:.0f}% ({sc.get('cumulative_total', 0)} predictions)")
+        if sc.get("best_call"):
+            lines.append(f"🏆 Best call: {sc['best_call']}")
+        if sc.get("worst_call"):
+            lines.append(f"❌ Worst call: {sc['worst_call']}")
+        lines.append("")
+
+    # ── 2. FII Weekly Pattern ──────────────────────────────────────
+    if fii_pattern and fii_pattern.get("ok"):
+        fp = fii_pattern
+        emoji = "🟢" if fp.get("weekly_net", 0) > 0 else "🔴"
+        streak = ""
+        if fp.get("streak_weeks", 0) > 1:
+            direction = "buying" if fp["weekly_net"] > 0 else "selling"
+            streak = f" ({fp['streak_weeks']} consecutive {direction} weeks)"
+        lines.append(f"💰 *FII Weekly:* {emoji} ₹{fp.get('weekly_net', 0):+,.0f} Cr{streak}")
+        if fp.get("dii_net"):
+            dii_emoji = "🟢" if fp["dii_net"] > 0 else "🔴"
+            lines.append(f"   DII: {dii_emoji} ₹{fp['dii_net']:+,.0f} Cr")
+        if fp.get("4w_avg"):
+            lines.append(f"   4W avg: ₹{fp['4w_avg']:+,.0f} Cr")
+        lines.append("")
+
+    # ── 3. Regime Shift ────────────────────────────────────────────
+    if regime_shift and regime_shift.get("ok"):
+        rs = regime_shift
+        lines.append(f"🔄 *Regime Shift:* {rs.get('monday_label', 'N/A')} → {rs.get('friday_label', 'N/A')}")
+        if rs.get("score_change"):
+            direction = "improved" if rs["score_change"] > 0 else "weakened"
+            lines.append(f"   Bull/Bear: {rs.get('monday_score', '?')} → {rs.get('friday_score', '?')} ({direction} by {abs(rs['score_change'])} pts)")
+        if rs.get("what_changed"):
+            lines.append(f"   Key driver: {rs['what_changed']}")
+        lines.append("")
+
+    # ── 4. Top Movers of the Week ──────────────────────────────────
+    if movers:
+        india = movers.get("india", {})
+        us = movers.get("us", {})
+        if india.get("gainers") or us.get("gainers"):
+            lines.append("📊 *Top Movers (Weekly)*")
+
+            if india.get("gainers"):
+                g = india["gainers"][:3]
+                g_str = ", ".join(f"{m['symbol']} {m.get('weekly_pct', m.get('change_pct', 0)):+.1f}%" for m in g)
+                lines.append(f"🇮🇳 Gainers: {g_str}")
+            if india.get("losers"):
+                l = india["losers"][:3]
+                l_str = ", ".join(f"{m['symbol']} {m.get('weekly_pct', m.get('change_pct', 0)):+.1f}%" for m in l)
+                lines.append(f"🇮🇳 Losers: {l_str}")
+
+            if us.get("gainers"):
+                g = us["gainers"][:3]
+                g_str = ", ".join(f"{m['symbol']} {m.get('weekly_pct', m.get('change_pct', 0)):+.1f}%" for m in g)
+                lines.append(f"🇺🇸 Gainers: {g_str}")
+            if us.get("losers"):
+                l = us["losers"][:3]
+                l_str = ", ".join(f"{m['symbol']} {m.get('weekly_pct', m.get('change_pct', 0)):+.1f}%" for m in l)
+                lines.append(f"🇺🇸 Losers: {l_str}")
+            lines.append("")
+
+    # ── 5. Institutional Signals ───────────────────────────────────
+    if institutional:
+        lines.append(institutional)
+        lines.append("")
+
+    # ── 6. AI Summary (includes contrarian + next week) ────────────
+    if ai_summary:
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(ai_summary)
+
+    # ── 7. Contrarian Signal ───────────────────────────────────────
+    if contrarian:
+        lines.append("")
+        lines.append("🔄 *Contrarian Signal*")
+        lines.append(contrarian)
+
+    lines.append("")
+    lines.append("━" * 30)
+    lines.append("_Weekly digest — see you Monday! 🌅_")
+
+    return "\n".join(lines)
+

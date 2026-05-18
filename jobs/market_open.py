@@ -2,89 +2,104 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data_fetcher    import fetch_watchlist_data, fetch_general_news
+from src.data_fetcher    import fetch_global_indices, fetch_top_movers, fetch_general_news, fetch_macro_anchors
 from src.ai_engine       import AIEngine
 from src.telegram_sender import send_text
-from src.db              import get_watchlist
-from src.validator      import validate_articles, assess_sentiment_consensus
+from src.validator       import validate_articles, assess_sentiment_consensus
 
 def main():
     print("=" * 50)
     print("📈 MARKET OPEN JOB STARTING")
     print("=" * 50)
 
-    stocks = get_watchlist()
-    print(f"📋 Watchlist loaded: {len(stocks)} stocks")
+    # ── Fetch market data ──────────────────────────────────────────
+    print("🌍 Fetching overnight global indices + pre-market movers...")
+    index_data = fetch_global_indices()
+    movers     = fetch_top_movers(top_n=10)
+    raw_news   = fetch_general_news()
 
-    if not stocks:
-        send_text("📈 *Market Open*\n⚠️ Watchlist empty!\nUse `/add SYMBOL`")
-        return
+    valid_index = {
+        k: v for k, v in index_data.items()
+        if v.get("ok") and v.get("price", 0) > 0
+    }
+    print(f"   Indices: {len(valid_index)}/18 | Movers: {len(movers.get('india',{}).get('gainers',[]))} gainers")
 
-    data      = fetch_watchlist_data(stocks)
-    lines     = []
-    gap_ups   = []
-    gap_downs = []
-
-    for sym, d in data.items():
-        if not d.get("ok"):
-            lines.append(f"⚪ *{sym}*: No data")
-            continue
-        change = d.get("day_change", 0)
-        emoji  = "🟢" if change > 0 else ("🔴" if change < 0 else "⚪")
-        spike  = " ⚡" if d.get("volume_spike") else ""
-        lines.append(f"{emoji} *{sym}*: {change:+.2f}%{spike}")
-        if change >= 2.0:
-            gap_ups.append(f"*{sym}* +{change:.2f}%")
-        elif change <= -2.0:
-            gap_downs.append(f"*{sym}* {change:.2f}%")
-
-    # Fetch and validate news
-    news   = fetch_general_news()
-    ai     = AIEngine()
-
-    # Validate news and add sentiment
-    validated_news = validate_articles(news, min_trust=6) if news else []
+    # ── Validate news + sentiment ──────────────────────────────────
+    ai = AIEngine()
+    validated_news = validate_articles(raw_news, min_trust=6) if raw_news else []
     sentiments = []
     for article in validated_news[:3]:
         sent = ai.sentiment(article.get("headline", ""))
         article["sentiment"] = sent
         if sent:
             sentiments.append(sent)
+    consensus = assess_sentiment_consensus(sentiments) if sentiments else "neutral"
 
-    # Format news with trust scores for prompt
-    news_text = ""
-    if validated_news:
-        news_lines = []
-        for n in validated_news[:3]:
-            trust = n.get("trust_score", 0)
-            source = n.get("source", "unknown")
-            headline = n.get("headline", "")[:60]
-            news_lines.append(f"• {headline} ({source}, Trust:{trust}/10)")
-        news_text = f"\nValidated news:\n{chr(10).join(news_lines)}"
-
-    prompt = f"""
-Indian market just opened at 9:15 AM IST.
-Watchlist snapshot:
-{chr(10).join(lines)}
-{news_text}
-
-Give a sharp 3-point opening briefing:
-1. Opening Mood + reason (weight high-trust sources)
-2. 2-3 stocks to watch today
-3. Key Nifty level to watch
-Under 100 words. Reference trust scores when analyzing news.
-"""
+    # ── Get bull/bear context ──────────────────────────────────────
+    bull_bear = {}
     try:
+        from src.context_engine import run_contextualization
+        anchor_data = fetch_macro_anchors()
+        if anchor_data:
+            ctx = run_contextualization(anchor_data)
+            bull_bear = ctx.get("bull_bear", {})
+    except Exception as e:
+        print(f"   ⚠️ Context engine: {e}")
+
+    # ── Build market context lines ─────────────────────────────────
+    lines = []
+
+    # Overnight global moves — top 3 by absolute change
+    global_sorted = sorted(
+        [(c, d) for c, d in valid_index.items()
+         if c not in ("Nifty 50", "India VIX", "Bank Nifty", "Nifty Next 50")],
+        key=lambda x: abs(x[1].get("change_pct", 0)),
+        reverse=True
+    )
+    if global_sorted:
+        g_parts = []
+        for country, d in global_sorted[:3]:
+            sign = "+" if d.get("change_pct", 0) >= 0 else ""
+            g_parts.append(f"{d.get('flag','')} {country} {sign}{d.get('change_pct',0):.1f}%")
+        lines.append(f"🌍 Overnight: {' | '.join(g_parts)}")
+
+    # Pre-market gap ups/downs from dynamic movers
+    india_g = movers.get("india", {}).get("gainers", [])
+    india_l = movers.get("india", {}).get("losers", [])
+
+    gap_ups   = [m for m in india_g if m.get("change_pct", 0) >= 1.5]
+    gap_downs = [m for m in india_l if m.get("change_pct", 0) <= -1.5]
+
+    if gap_ups:
+        g_str = ", ".join(f"{m['symbol']} +{m['change_pct']:.1f}%" for m in gap_ups[:3])
+        lines.append(f"🚀 Gap Up: {g_str}")
+    if gap_downs:
+        d_str = ", ".join(f"{m['symbol']} {m['change_pct']:.1f}%" for m in gap_downs[:3])
+        lines.append(f"🔻 Gap Down: {d_str}")
+
+    # News headline
+    if validated_news:
+        top = validated_news[0]
+        headline = top.get("headline", "")[:60]
+        trust    = top.get("trust_score", 0)
+        source   = top.get("source", "unknown")
+        lines.append(f"📰 {headline} ({source}, Trust:{trust}/10)")
+
+    # ── AI opening brief ───────────────────────────────────────────
+    print("🤖 Running AI opening analysis...")
+    try:
+        prompt   = AIEngine.market_open_prompt(valid_index, movers, validated_news, bull_bear)
         analysis = ai.analyze("fast", prompt)
     except Exception as e:
-        analysis = f"AI unavailable: {e}"
+        print(f"   ⚠️ AI failed: {e}")
+        analysis = ""
 
+    # ── Send message ───────────────────────────────────────────────
     msg = "📈 *MARKET OPEN — 9:15 AM IST*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    msg += "\n".join(lines) + "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n" + analysis
-    if gap_ups:
-        msg += f"\n\n🚀 *Gap Ups:* {' | '.join(gap_ups)}"
-    if gap_downs:
-        msg += f"\n🔻 *Gap Downs:* {' | '.join(gap_downs)}"
+    msg += "\n".join(lines)
+    if analysis:
+        msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{analysis}"
+    msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━"
 
     send_text(msg)
     print("✅ MARKET OPEN COMPLETE")

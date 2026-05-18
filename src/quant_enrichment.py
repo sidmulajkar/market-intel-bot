@@ -901,3 +901,350 @@ def generate_scenarios(bull_bear_score: float, cross_signals: List[Dict],
     lines.append(f"• Bear case ({bear_pct}%): {bear_desc}")
 
     return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# INSTITUTIONAL SIGNALS — "What smart money does, not what it says"
+# All computed from stored Supabase data. Zero API cost.
+# ═══════════════════════════════════════════════════════════════════════
+
+OFFENSIVE_SECTORS = {"BANK", "AUTO", "REALTY", "METAL", "INFRA"}
+DEFENSIVE_SECTORS = {"PHARMA", "FMCG", "IT", "MEDIA"}
+
+HIGH_BETA_SECTORS = {"BANK", "AUTO", "METAL", "REALTY"}
+LOW_BETA_SECTORS  = {"PHARMA", "FMCG"}
+
+
+def compute_sector_regime(sector_perf: Dict[str, float]) -> Dict:
+    """
+    Classify market regime by which sectors are leading.
+    Offensive (cyclicals leading) vs Defensive (staples/pharma leading).
+    Defensive shift = classic late-cycle warning that AMCs watch.
+
+    Args:
+        sector_perf: {sector_name: weekly_change_pct} e.g. {"BANK": 2.1, "PHARMA": -0.5}
+    Returns:
+        Dict with regime label, offensive/defensive scores, leading sectors.
+    """
+    if not sector_perf:
+        return {"ok": False, "message": "No sector data"}
+
+    off_scores = [sector_perf[s] for s in OFFENSIVE_SECTORS if s in sector_perf]
+    def_scores = [sector_perf[s] for s in DEFENSIVE_SECTORS if s in sector_perf]
+
+    off_avg = sum(off_scores) / len(off_scores) if off_scores else 0
+    def_avg = sum(def_scores) / len(def_scores) if def_scores else 0
+    spread  = off_avg - def_avg
+
+    if spread > 2.0:
+        regime = "OFFENSIVE"
+        label  = "Risk-on: cyclicals leading (bullish)"
+    elif spread > 0.5:
+        regime = "MILDLY_OFFENSIVE"
+        label  = "Slight risk preference"
+    elif spread > -0.5:
+        regime = "NEUTRAL"
+        label  = "No clear sector preference"
+    elif spread > -2.0:
+        regime = "MILDLY_DEFENSIVE"
+        label  = "Early defensive rotation (caution)"
+    else:
+        regime = "DEFENSIVE"
+        label  = "Risk-off: defensives leading (late-cycle warning)"
+
+    # Top 3 leaders and laggards
+    sorted_sectors = sorted(sector_perf.items(), key=lambda x: x[1], reverse=True)
+    leaders   = sorted_sectors[:3]
+    laggards  = sorted_sectors[-3:]
+
+    return {
+        "ok": True,
+        "regime": regime,
+        "label": label,
+        "offensive_avg": round(off_avg, 2),
+        "defensive_avg": round(def_avg, 2),
+        "spread": round(spread, 2),
+        "leaders": leaders,
+        "laggards": laggards,
+    }
+
+
+def compute_volatility_setup(vix_history: List[float], vix_current: float) -> Dict:
+    """
+    Detect volatility compression (coiled spring) or expansion.
+    Options desks use this daily. VIX below 20th percentile = breakout imminent.
+    Above 80th percentile = panic, mean-reversion likely.
+
+    Args:
+        vix_history: list of VIX closing prices over 90 days
+        vix_current: today's VIX value
+    Returns:
+        Dict with percentile, setup label, historical context.
+    """
+    if not vix_history or len(vix_history) < 10 or vix_current is None:
+        return {"ok": False, "message": "Insufficient VIX history"}
+
+    sorted_vix = sorted(vix_history)
+    n = len(sorted_vix)
+
+    # Find percentile rank
+    rank = sum(1 for v in sorted_vix if v <= vix_current)
+    percentile = round((rank / n) * 100)
+
+    # Compute compression/expansion
+    recent_5  = vix_history[-5:] if len(vix_history) >= 5 else vix_history
+    recent_20 = vix_history[-20:] if len(vix_history) >= 20 else vix_history
+
+    avg_5  = sum(recent_5) / len(recent_5)
+    avg_20 = sum(recent_20) / len(recent_20)
+    compression = round(((avg_20 - vix_current) / avg_20) * 100, 1) if avg_20 else 0
+
+    if percentile <= 15:
+        setup = "EXTREME_COMPRESSION"
+        label = "Coiled spring — breakout imminent (options desks buy straddles here)"
+    elif percentile <= 30:
+        setup = "COMPRESSION"
+        label = "Low vol environment — complacency building"
+    elif percentile <= 70:
+        setup = "NORMAL"
+        label = "Volatility in normal range"
+    elif percentile <= 85:
+        setup = "ELEVATED"
+        label = "Elevated fear — hedging activity rising"
+    else:
+        setup = "PANIC"
+        label = "Extreme fear — mean-reversion likely (contrarian buy signal)"
+
+    return {
+        "ok": True,
+        "vix_current": vix_current,
+        "percentile": percentile,
+        "setup": setup,
+        "label": label,
+        "avg_5d": round(avg_5, 2),
+        "avg_20d": round(avg_20, 2),
+        "compression_pct": compression,
+        "90d_range": (round(sorted_vix[0], 2), round(sorted_vix[-1], 2)),
+    }
+
+
+def compute_risk_appetite(sector_perf: Dict[str, float]) -> Dict:
+    """
+    High-beta (Bank, Auto, Metal) vs Low-beta (Pharma, FMCG) spread.
+    Widening = risk-on, narrowing = risk-off.
+    Institutional flow direction proxy — funds rotate between these buckets.
+
+    Args:
+        sector_perf: {sector_name: weekly_change_pct}
+    Returns:
+        Dict with spread, appetite label, component scores.
+    """
+    if not sector_perf:
+        return {"ok": False, "message": "No sector data"}
+
+    hb_scores = [sector_perf[s] for s in HIGH_BETA_SECTORS if s in sector_perf]
+    lb_scores = [sector_perf[s] for s in LOW_BETA_SECTORS if s in sector_perf]
+
+    hb_avg = sum(hb_scores) / len(hb_scores) if hb_scores else 0
+    lb_avg = sum(lb_scores) / len(lb_scores) if lb_scores else 0
+    spread = hb_avg - lb_avg
+
+    if spread > 3.0:
+        appetite = "STRONG_RISK_ON"
+        label    = "Aggressive risk appetite — institutions rotating into cyclicals"
+    elif spread > 1.0:
+        appetite = "RISK_ON"
+        label    = "Moderate risk preference"
+    elif spread > -1.0:
+        appetite = "NEUTRAL"
+        label    = "No clear risk preference"
+    elif spread > -3.0:
+        appetite = "RISK_OFF"
+        label    = "Defensive rotation — institutions reducing beta"
+    else:
+        appetite = "STRONG_RISK_OFF"
+        label    = "Flight to safety — institutions hiding in defensives"
+
+    return {
+        "ok": True,
+        "appetite": appetite,
+        "label": label,
+        "high_beta_avg": round(hb_avg, 2),
+        "low_beta_avg": round(lb_avg, 2),
+        "spread": round(spread, 2),
+    }
+
+
+def compute_breadth_thrust(breadth_history: List[Dict]) -> Dict:
+    """
+    Count "thrust days" — days where >65% of stocks advanced.
+    Rare signal. Historically precedes 10%+ rallies within 3 months.
+    Used by tactical AMCs (PMS desks) for entry timing.
+
+    Args:
+        breadth_history: list of {date, advances, declines, ratio} from get_breadth_history()
+    Returns:
+        Dict with thrust count, total days, thrust ratio, signal.
+    """
+    if not breadth_history or len(breadth_history) < 5:
+        return {"ok": False, "message": "Insufficient breadth data"}
+
+    total   = len(breadth_history)
+    thrusts = []
+
+    for snap in breadth_history:
+        adv = snap.get("advances", 0)
+        dec = snap.get("declines", 0)
+        total_stocks = adv + dec
+        if total_stocks > 0:
+            adv_pct = adv / total_stocks
+            if adv_pct >= 0.65:
+                thrusts.append({
+                    "date": snap.get("date", ""),
+                    "adv_pct": round(adv_pct * 100, 1),
+                    "advances": adv,
+                    "declines": dec,
+                })
+
+    thrust_count = len(thrusts)
+    thrust_ratio = round((thrust_count / total) * 100, 1) if total else 0
+
+    if thrust_count >= 3:
+        signal = "STRONG_THRUST"
+        label  = f"{thrust_count} thrust days in {total}-day window — rare bullish signal (historically precedes 10%+ rallies)"
+    elif thrust_count >= 1:
+        signal = "SINGLE_THRUST"
+        label  = f"{thrust_count} thrust day — watch for confirmation"
+    else:
+        signal = "NO_THRUST"
+        label  = "No breadth thrust — rally lacks broad participation"
+
+    return {
+        "ok": True,
+        "thrust_count": thrust_count,
+        "total_days": total,
+        "thrust_ratio": thrust_ratio,
+        "signal": signal,
+        "label": label,
+        "thrust_days": thrusts[-3:],  # Last 3 thrust days
+    }
+
+
+def compute_fii_institutional_footprint(institutions: List[Dict]) -> Dict:
+    """
+    Analyze FII institution types: who is accumulating vs distributing.
+    Long-only funds buying + hedge funds selling = stealth accumulation.
+    Hedge funds buying + long-only selling = short-term trade, likely reversal.
+
+    Args:
+        institutions: list from get_fii_institutions() with institution_name, type, buy/sell
+    Returns:
+        Dict with net flows by type, accumulation/distribution signal.
+    """
+    if not institutions or len(institutions) < 3:
+        return {"ok": False, "message": "Insufficient institutional data"}
+
+    # Group by institution type
+    type_flows = {}
+    for inst in institutions:
+        inst_type = inst.get("institution_type", "Unknown")
+        buy_val   = inst.get("buy_value_cr", 0) or 0
+        sell_val  = inst.get("sell_value_cr", 0) or 0
+        net       = buy_val - sell_val
+
+        if inst_type not in type_flows:
+            type_flows[inst_type] = {"buy": 0, "sell": 0, "net": 0, "count": 0}
+        type_flows[inst_type]["buy"]  += buy_val
+        type_flows[inst_type]["sell"] += sell_val
+        type_flows[inst_type]["net"]  += net
+        type_flows[inst_type]["count"] += 1
+
+    # Classify each type
+    type_signals = {}
+    for t, flows in type_flows.items():
+        net = flows["net"]
+        if net > 500:
+            type_signals[t] = "ACCUMULATING"
+        elif net > 100:
+            type_signals[t] = "MILD_BUYING"
+        elif net > -100:
+            type_signals[t] = "NEUTRAL"
+        elif net > -500:
+            type_signals[t] = "MILD_SELLING"
+        else:
+            type_signals[t] = "DISTRIBUTING"
+
+    # Overall signal
+    long_only_net  = type_flows.get("Long Only", {}).get("net", 0)
+    hedge_fund_net = type_flows.get("Hedge Fund", {}).get("net", 0)
+
+    if long_only_net > 500 and hedge_fund_net < -200:
+        signal = "STEALTH_ACCUMULATION"
+        label  = "Long-only funds buying, hedge funds selling — smart money accumulating on dips"
+    elif long_only_net < -500 and hedge_fund_net > 200:
+        signal = "DISTRIBUTION"
+        label  = "Long-only funds exiting, hedge funds buying — institutional distribution phase"
+    elif long_only_net > 200 and hedge_fund_net > 200:
+        signal = "CONSENSUS_BUY"
+        label  = "Both long-only and hedge funds buying — strong institutional conviction"
+    elif long_only_net < -200 and hedge_fund_net < -200:
+        signal = "CONSENSUS_SELL"
+        label  = "Both long-only and hedge funds selling — broad institutional exit"
+    else:
+        signal = "MIXED"
+        label  = "No clear institutional consensus"
+
+    return {
+        "ok": True,
+        "signal": signal,
+        "label": label,
+        "type_flows": {t: {"net_cr": round(f["net"]), "count": f["count"]}
+                       for t, f in type_flows.items()},
+        "type_signals": type_signals,
+    }
+
+
+def format_institutional_signals(signals: Dict) -> str:
+    """
+    Format all institutional signals into a readable Telegram block.
+    """
+    lines = ["🏦 *Institutional Signals (Smart Money)*"]
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    sr = signals.get("sector_regime", {})
+    if sr.get("ok"):
+        emoji = "🟢" if "OFFENSIVE" in sr["regime"] else ("🔴" if "DEFENSIVE" in sr["regime"] else "⚪")
+        lines.append(f"{emoji} *Sector Regime:* {sr['label']}")
+        if sr.get("leaders"):
+            ldr = ", ".join(f"{s} {v:+.1f}%" for s, v in sr["leaders"])
+            lines.append(f"   Leaders: {ldr}")
+        if sr.get("laggards"):
+            lag = ", ".join(f"{s} {v:+.1f}%" for s, v in sr["laggards"])
+            lines.append(f"   Laggards: {lag}")
+
+    vs = signals.get("volatility_setup", {})
+    if vs.get("ok"):
+        emoji = "🔥" if vs["percentile"] <= 20 else ("⚠️" if vs["percentile"] >= 80 else "📊")
+        lines.append(f"{emoji} *Vol Setup:* VIX {vs['vix_current']:.1f} ({vs['percentile']}th percentile)")
+        lines.append(f"   {vs['label']}")
+
+    ra = signals.get("risk_appetite", {})
+    if ra.get("ok"):
+        emoji = "🟢" if "RISK_ON" in ra["appetite"] else ("🔴" if "RISK_OFF" in ra["appetite"] else "⚪")
+        lines.append(f"{emoji} *Risk Appetite:* {ra['label']}")
+        lines.append(f"   High-beta avg: {ra['high_beta_avg']:+.1f}% | Low-beta avg: {ra['low_beta_avg']:+.1f}%")
+
+    bt = signals.get("breadth_thrust", {})
+    if bt.get("ok"):
+        emoji = "🚀" if bt["signal"] == "STRONG_THRUST" else ("📊" if bt["signal"] == "SINGLE_THRUST" else "⚪")
+        lines.append(f"{emoji} *Breadth:* {bt['label']}")
+
+    fi = signals.get("fii_footprint", {})
+    if fi.get("ok"):
+        emoji = "🟢" if "ACCUMULATION" in fi["signal"] else ("🔴" if "DISTRIBUTION" in fi["signal"] else "⚪")
+        lines.append(f"{emoji} *FII Footprint:* {fi['label']}")
+        for t, sig in fi.get("type_signals", {}).items():
+            net = fi.get("type_flows", {}).get(t, {}).get("net_cr", 0)
+            lines.append(f"   {t}: {sig} (₹{net:+,} Cr)")
+
+    return "\n".join(lines)
