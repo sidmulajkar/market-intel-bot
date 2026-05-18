@@ -760,7 +760,7 @@ US_MAJOR = [
     # Telecom
     "DIS", "NFLX", "CMCSA",
     # Other
-    "PLTR", "COIN", "SQ", "SHOP", "CRWD",
+    "PLTR", "COIN", "XYZ", "SHOP", "CRWD",
 ]
 
 

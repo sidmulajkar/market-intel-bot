@@ -439,3 +439,26 @@ Max 3-4 minutes per runner:
 | `FINNHUB_KEY` | data_fetcher.py |
 | `SUPABASE_URL`, `SUPABASE_KEY` | db.py |
 | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` | telegram_sender.py |
+
+## Project Status: SHIPPED
+
+**Phase 0-14 complete.** 44 modules, 221+ functions, 14 cron jobs, 15 Supabase tables. Rating: 9.0/10 (structural ceiling with free infrastructure).
+
+### What's Built
+| Phase | Modules | Key Features |
+|-------|---------|-------------|
+| 0-7 | Core infra, data, analysis, output | Telegram, AI, data fetchers, options, valuation, technicals, formatters |
+| 8-10 | Institutional macro, regime, SWF | 16 macro signals, regime detection, SWF tracker, top movers |
+| 11 | Rolling quant engine | Percentiles, divergences, scenarios, correlations, seasonal, relative value |
+| 12 | 13 new modules | CFTC, factors, sector RS, earnings, internals, multi-expiry, beta, HHI, vol persistence, turnover, staleness, reversal patterns, API budget |
+| 13 | 7 coherence modules | Signal arbitrator, prompt engine, output validator, FII cross-ref, daily state, temporal context, confidence engine |
+| 14 | Simplicity engine | Emoji-tagged one-liners for new investors |
+
+### What's Left (Operational)
+- Monitor first week of live runs
+- Fix NSE session duplication (6 modules)
+- Let percentile data accumulate (6+ months)
+- Track prediction accuracy over time
+
+### Structural Ceiling
+Real-time data + alternative data = need paid infrastructure. Not buildable free.

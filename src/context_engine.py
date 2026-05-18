@@ -130,10 +130,12 @@ def get_dxy_signal(dxy_change_pct: float) -> Dict:
     }
 
 
-def get_macro_context(anchor_data: List[Dict]) -> Dict:
+def get_macro_context(anchor_data: List[Dict] = None) -> Dict:
     """
     Extract VIX regime and DXY signal from anchor data.
     """
+    if anchor_data is None:
+        anchor_data = []
     vix_data = next((a for a in anchor_data if "VIX" in a.get("name", "")), None)
     dxy_data = next((a for a in anchor_data if "DXY" in a.get("name", "") or "Dollar" in a.get("name", "")), None)
     usd_data = next((a for a in anchor_data if "USD" in a.get("name", "")), None)

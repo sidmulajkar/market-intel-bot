@@ -18,9 +18,9 @@ if _spec is None:
 
 print(f"✅ Path confirmed: {_root}")
 
-from src.data_fetcher      import fetch_global_indices, fetch_watchlist_data, fetch_general_news
+from src.data_fetcher      import fetch_global_indices, fetch_watchlist_data, fetch_general_news, fetch_top_movers
 from src.heatmap_generator  import generate_heatmap
-from src.sector_heatmap    import generate_sector_heatmap, generate_watchlist_heatmap
+from src.sector_heatmap    import generate_sector_heatmap, generate_watchlist_heatmap, generate_top_movers_heatmap
 from src.ai_engine         import AIEngine
 from src.telegram_sender   import send_image, send_text, fmt_morning_report
 from src.db                import save_daily_snapshot, get_watchlist, purge_old_data
@@ -153,15 +153,17 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Sector heatmap failed: {e}")
 
-    # ── Watchlist Heatmap ─────────────────────────────────────────
+    # ── Top Movers Heatmap (India + US separately) ────────────────
+    print("📊 Fetching top movers for heatmap...")
     try:
+        movers = fetch_top_movers(top_n=10)
         send_image(
-            generate_watchlist_heatmap(stocks),
-            caption="📊 *My Watchlist Heatmap*"
+            generate_top_movers_heatmap(movers),
+            caption="📊 *Top Market Movers — India & US*"
         )
-        print("   ✅ Watchlist heatmap sent")
+        print("   ✅ Top movers heatmap sent")
     except Exception as e:
-        print(f"   ⚠️ Watchlist heatmap failed: {e}")
+        print(f"   ⚠️ Top movers heatmap failed: {e}")
 
     # ── Fetch & Validate News ─────────────────────────────────────
     print("📰 Fetching and validating news...")

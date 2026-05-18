@@ -28,7 +28,6 @@ NIFTY_SECTORS = {
     "Realty":         {"symbol": "^CNXREALTY","emoji": "🏠"},
     "Financial Svcs": {"symbol": "^CNXFIN",   "emoji": "💰"},
     "PSU Bank":       {"symbol": "^CNXPSUBANK","emoji": "🏛️"},
-    "Healthcare":     {"symbol": "^CNXHEALTH","emoji": "🏥"},
     "Media":          {"symbol": "^CNXMEDIA", "emoji": "📺"},
 }
 
@@ -219,3 +218,129 @@ def generate_watchlist_heatmap(symbols: list) -> BytesIO:
     items.sort(key=lambda x: x[1].get("change_pct", 0), reverse=True)
     print(f"  ✅ Watchlist heatmap: {sum(1 for _, d, _ in items if d.get('ok'))}/{len(items)} fetched")
     return _make_heatmap_image("My Watchlist Heatmap", items, cols=4)
+
+
+def generate_top_movers_heatmap(movers: dict) -> BytesIO:
+    """
+    Generate Top Movers Heatmap — separate sections for India and US.
+    Each market has Gainers and Losers shown independently.
+    Input: movers dict from fetch_top_movers()
+    """
+    print("📊 Generating top movers heatmap...")
+
+    F      = _load_fonts()
+    IMG_W  = 900
+    CARD_W = 160
+    CARD_H = 72
+    PAD    = 8
+    COLS   = 5
+
+    sections = []
+    for market, flag in [("india", "🇮🇳"), ("us", "🇺🇸")]:
+        data = movers.get(market, {})
+        gainers = data.get("gainers", [])[:10]
+        losers  = data.get("losers", [])[:10]
+        if gainers:
+            sections.append((f"{flag} {market.title()} Top Gainers", gainers, "gain", market))
+        if losers:
+            sections.append((f"{flag} {market.title()} Top Losers", losers, "loss", market))
+
+    if not sections:
+        # Empty placeholder
+        img  = Image.new("RGB", (IMG_W, 200), BG)
+        draw = ImageDraw.Draw(img)
+        draw.text((IMG_W // 2, 100), "No market data available",
+                  fill=GREY, font=F["label"], anchor="mm")
+        buf = BytesIO()
+        buf.name = "heatmap.png"
+        img.save(buf, "PNG")
+        buf.seek(0)
+        return buf
+
+    # Calculate total height
+    total_rows = 0
+    for title, stocks, kind, mkt in sections:
+        n_rows = (len(stocks) + COLS - 1) // COLS
+        total_rows += 2 + n_rows  # header + gap + rows
+
+    IMG_H = 80 + total_rows * (CARD_H + PAD) + 40
+
+    img  = Image.new("RGB", (IMG_W, IMG_H), BG)
+    draw = ImageDraw.Draw(img)
+
+    ist = datetime.now(pytz.timezone("Asia/Kolkata"))
+    y   = 12
+    draw.text((IMG_W // 2, y), "Top Market Movers",
+              fill=WHITE, font=F["title"], anchor="mt")
+    y += 30
+    draw.text((IMG_W // 2, y),
+              ist.strftime("As of %d-%b-%Y %H:%M IST"),
+              fill=GREY, font=F["small"], anchor="mt")
+    y += 24
+
+    for sec_title, stocks, kind, market in sections:
+        # Section header
+        y += 6
+        draw.rectangle([(0, y), (IMG_W, y + 28)], fill=HDR_GREEN)
+        draw.text((IMG_W // 2, y + 14), sec_title,
+                  fill=WHITE, font=F["label"], anchor="mm")
+        y += 36
+
+        # Draw cards in grid
+        n_rows = (len(stocks) + COLS - 1) // COLS
+        for row_i in range(n_rows):
+            row = stocks[row_i * COLS: (row_i + 1) * COLS]
+            tot_w = len(row) * CARD_W + (len(row) - 1) * PAD
+            x0    = (IMG_W - tot_w) // 2
+
+            for col_i, s in enumerate(row):
+                x   = x0 + col_i * (CARD_W + PAD)
+                pct = s.get("change_pct", 0)
+                bg  = _cell_bg(pct)
+                tc  = _text_color(pct)
+
+                draw.rounded_rectangle(
+                    [(x, y), (x + CARD_W, y + CARD_H)],
+                    radius=6, fill=bg)
+
+                # Rank
+                rank = row_i * COLS + col_i + 1
+                draw.text((x + 8, y + 6), f"#{rank}",
+                          fill=tc, font=F["small"])
+
+                # Symbol
+                sym = s.get("symbol", "?")
+                draw.text((x + CARD_W // 2, y + 6), sym,
+                          fill=tc, font=F["label"], anchor="mt")
+
+                # Price
+                price = s.get("price", 0)
+                currency = "$" if market == "us" else "₹"
+                if price > 0:
+                    draw.text((x + CARD_W // 2, y + 26),
+                              f"{currency}{price:,.1f}",
+                              fill=tc, font=F["small"], anchor="mt")
+
+                # Change %
+                sign = "+" if pct >= 0 else ""
+                draw.text((x + CARD_W // 2, y + 44),
+                          f"{sign}{pct:.2f}%",
+                          fill=tc, font=F["pct"], anchor="mt")
+
+                # Weekly change if available
+                weekly = s.get("weekly_pct")
+                if weekly is not None:
+                    wsign = "+" if weekly >= 0 else ""
+                    draw.text((x + CARD_W // 2, y + 62),
+                              f"W: {wsign}{weekly:.1f}%",
+                              fill=tc, font=F["small"], anchor="mt")
+
+            y += CARD_H + PAD
+
+    img = img.crop((0, 0, IMG_W, y + 15))
+    buf = BytesIO()
+    buf.name = "heatmap.png"
+    img.save(buf, "PNG", optimize=True)
+    buf.seek(0)
+    print(f"  ✅ Top movers heatmap: {len(sections)} sections")
+    return buf
