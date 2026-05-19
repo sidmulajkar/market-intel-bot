@@ -681,6 +681,9 @@ def test_phase15():
         check("P3: cross-ref (F&O data)", r2["confidence"] == "HIGH", f"signal={r2['signal']}")
         fmt = format_fii_cross_reference(r2)
         check("P3: cross-ref format", "SELLING" in fmt or "BEAR" in fmt, fmt[:80])
+        # Hedged Selling regime (cash sell + deriv long)
+        r3 = cross_reference_fii(fii_net=-1500, fno_net=800, pcr=0.7)
+        check("P3: cross-ref (Hedged Selling)", r3["signal"] == "HEDGE SELLING", f"signal={r3['signal']}")
     except Exception as e:
         check("fii_cross_reference", False, str(e))
 

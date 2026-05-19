@@ -504,11 +504,13 @@ def main():
         print(f"   ⚠️ Options flow: {e}")
 
     # ── SMART THRESHOLD ALERTS ──────────────────────────────────
+    # NOTE: last_ctx is always fresh — set at line ~226 (format_context_block),
+    # read here at line ~512. Same function, same run. No standalone alert job exists.
+    # If a standalone alert cron is added in the future, recompute context at trigger time.
     print("🔄 THRESHOLD ALERTS")
     threshold_alert_text = ""
     try:
         from src.threshold_alerts import run_threshold_check
-        # Get context from format_context_block (computed earlier at line 226)
         _ctx = getattr(format_context_block, 'last_ctx', None) or {}
         threshold_result = run_threshold_check(
             snapshot_data,
