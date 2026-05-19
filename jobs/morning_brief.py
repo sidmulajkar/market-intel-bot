@@ -202,25 +202,113 @@ def main():
         fallback = get_fallback_brief(valid_index, validated_news, consensus_sentiment)
         send_text(fallback)
 
-    # ── Watchlist Alerts ──────────────────────────────────────────
+    # ── Watchlist Alerts (Sector Grouped) ──────────────────────────
+    STOCK_SECTORS = {
+        "RELIANCE": "ENERGY", "TCS": "IT", "INFY": "IT", "HDFCBANK": "BANKING",
+        "ICICIBANK": "BANKING", "WIPRO": "IT", "TATASTEEL": "STEEL",
+        "JSWSTEEL": "STEEL", "LT": "INFRA", "BHARTIARTL": "TELECOM",
+        "ASIANPAINT": "PAINT", "MARUTI": "AUTO", "TATAMOTORS": "AUTO",
+        "SUNPHARMA": "PHARMA", "DRREDDY": "PHARMA", "HINDUNILVR": "FMCG",
+        "ITC": "FMCG", "NTPC": "POWER", "POWERGRID": "POWER",
+        "ONGC": "ENERGY", "COALINDIA": "MINING", "ADANIPORTS": "INFRA",
+        "BAJFINANCE": "NBFC", "BAJAJFINSV": "NBFC", "SBIN": "BANKING",
+        "AXISBANK": "BANKING", "KOTAKBANK": "BANKING", "TECHM": "IT",
+        "HCLTECH": "IT", "ULTRACEMCO": "CEMENT", "GRASIM": "CEMENT",
+        "NESTLEIND": "FMCG", "BRITANNIA": "FMCG", "TITAN": "LUXURY",
+        "DIVISLAB": "PHARMA", "CIPLA": "PHARMA", "EICHERMOT": "AUTO",
+        "HEROMOTOCO": "AUTO", "BAJAJ-AUTO": "AUTO", "BPCL": "ENERGY",
+        "HINDALCO": "METAL", "VEDL": "METAL",
+        "AAPL": "US-TECH", "TSLA": "US-TECH", "NVDA": "US-TECH",
+        "MSFT": "US-TECH", "AMZN": "US-TECH", "GOOGL": "US-TECH",
+    }
+
+    # Sector keywords for matching news to sectors
+    SECTOR_KEYWORDS = {
+        "METAL": ["iron ore", "steel", "metal", "china pmi", "commodity", "copper", "aluminium"],
+        "IT": ["tech", "software", "h1b", "outsourcing", "digital", "ai ", "cloud"],
+        "BANKING": ["bank", "rbi", "rate cut", "rate hike", "credit", "npa", "repo"],
+        "AUTO": ["auto", "car", "vehicle", "ev ", "sales data", "dispatch"],
+        "PHARMA": ["pharma", "drug", "fda", "healthcare", "medicine"],
+        "ENERGY": ["oil", "crude", "opec", "energy", "fuel", "petrol", "diesel"],
+        "FMCG": ["fmcg", "consumer", "retail", "demand", "rural"],
+        "INFRA": ["infra", "construction", "cement", "capex", "government spending"],
+        "NBFC": ["nbfc", "finance", "lending", "credit growth"],
+        "STEEL": ["steel", "iron ore", "china demand", "metal"],
+    }
+
     print("📈 Checking watchlist alerts...")
     try:
         wl_data = fetch_watchlist_data(stocks)
-        alerts  = []
+        sector_alerts = {}  # sector -> [(symbol, change, vol_ratio)]
+        vol_spikes = []     # high volume but low price change
+
         for sym, d in wl_data.items():
             if not d.get("ok"):
                 continue
             change = d.get("day_change", 0)
-            if abs(change) >= 3.0:
-                emoji = "🟢" if change > 0 else "🔴"
-                alerts.append(f"{emoji} *{sym}*: {change:+.2f}%")
-            if d.get("volume_spike"):
-                alerts.append(f"⚡ *{sym}*: Volume spike!")
-        if alerts:
+            vol = d.get("volume", 0)
+            avg_vol = d.get("avg_volume", 1) or 1
+            vol_ratio = round(vol / avg_vol, 1) if avg_vol > 0 else 0
+
+            # Clean symbol name (remove .NS suffix)
+            clean_sym = sym.replace(".NS", "").replace(".BO", "")
+            sector = STOCK_SECTORS.get(clean_sym, "OTHER")
+
+            if abs(change) >= 2.5:
+                if sector not in sector_alerts:
+                    sector_alerts[sector] = []
+                sector_alerts[sector].append((clean_sym, change, vol_ratio))
+            elif vol_ratio >= 2.5:
+                # High volume without big price move — unusual
+                vol_spikes.append((clean_sym, change, vol_ratio))
+
+        # Match news headlines to sectors for WHY context
+        sector_context = {}
+        for article in (validated_news or [])[:5]:
+            headline = article.get("headline", "").lower()
+            for sector in sector_alerts:
+                keywords = SECTOR_KEYWORDS.get(sector, [])
+                if any(kw in headline for kw in keywords):
+                    if sector not in sector_context:  # first match wins
+                        sector_context[sector] = article.get("headline", "")[:60]
+
+        # Format sector-grouped alerts
+        alert_lines = []
+        # Sort sectors by worst performer
+        sorted_sectors = sorted(
+            sector_alerts.items(),
+            key=lambda x: min(c for _, c, _ in x[1])
+        )
+
+        for sector, stocks_data in sorted_sectors:
+            # Determine sector emoji (use worst stock in group)
+            worst = min(c for _, c, _ in stocks_data)
+            best = max(c for _, c, _ in stocks_data)
+            sector_emoji = "🔴" if worst < -2.5 else "🟡" if best > 2.5 else "🟢"
+
+            # Format stock entries
+            stock_parts = []
+            for sym, change, vol_r in stocks_data:
+                vol_str = f" (Vol {vol_r}x)" if vol_r >= 2.0 else ""
+                stock_parts.append(f"{sym} {change:+.1f}%{vol_str}")
+
+            alert_lines.append(f"{sector_emoji} *{sector}:* {', '.join(stock_parts)}")
+
+            # WHY context from news
+            context = sector_context.get(sector)
+            if context:
+                alert_lines.append(f"   ↳ {context}")
+
+        # Volume spikes section
+        if vol_spikes:
+            spike_parts = [f"{sym} {vol_r}x avg" for sym, _, vol_r in vol_spikes]
+            alert_lines.append(f"⚡ *High Volume:* {', '.join(spike_parts)}")
+
+        if alert_lines:
             send_text(
                 "🔔 *Pre-Market Alerts*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                + "\n".join(alerts)
+                + "\n".join(alert_lines)
             )
     except Exception as e:
         print(f"   ⚠️ Alert scan failed: {e}")
@@ -299,6 +387,65 @@ def main():
             print("   → Market State Dashboard sent")
     except Exception as e:
         print(f"   ⚠️ Market State Dashboard: {e}")
+
+    # ── Master Signal Arbitration ─────────────────────────────────
+    try:
+        from src.signal_arbitrator import run_arbitration, format_master_signal_dashboard
+
+        # Collect signals for arbitration
+        arb_signals = {}
+        bb = ctx.get("bull_bear", {})
+        if bb.get("score") is not None:
+            arb_signals["bull_bear"] = bb["score"]
+        fg = ctx.get("fear_greed", {})
+        fg_score = fg.get("score") or fg.get("index")  # handle both key names
+        if fg_score is not None:
+            arb_signals["fear_greed"] = fg_score
+        macro = ctx.get("macro_context", {})
+        if macro.get("vix_price") is not None:
+            arb_signals["vix"] = macro["vix_price"]
+
+        # Wire internals if available
+        try:
+            from src.market_internals import run_internals_analysis
+            from src.db import get_market_breadth
+            breadth = get_market_breadth()
+            if breadth:
+                internals = run_internals_analysis(breadth)
+                if internals.get("ok") and internals.get("composite", {}).get("composite_score") is not None:
+                    arb_signals["internals"] = internals["composite"]["composite_score"]
+        except Exception:
+            pass
+
+        if arb_signals:
+            arbitration = run_arbitration(arb_signals)
+            if arbitration.get("ok"):
+                master_block = format_master_signal_dashboard(arbitration["arbitration"])
+                if master_block:
+                    send_text(master_block)
+                    art = arbitration["arbitration"]
+                    print(f"   → Master Signal: {art['master_score']}/100 ({art['master_label']})")
+    except Exception as e:
+        print(f"   ⚠️ Master Signal: {e}")
+
+    # ── MF Intelligence (daily inferred signals) ──────────────────
+    try:
+        from src.formatters import compute_mf_intelligence
+        # Build macro_data dict from anchors
+        macro_data = {"anchors": anchors} if anchors else {}
+        # Add VIX
+        for a in (anchors or []):
+            if "India VIX" in str(a.get("name", "")) or a.get("symbol") == "^INDIAVIX":
+                macro_data["vix_price"] = a.get("price")
+                macro_data["vix_regime"] = "HIGH" if (a.get("price") or 0) > 20 else "LOW" if (a.get("price") or 0) < 15 else "NORMAL"
+                break
+
+        mf_block = compute_mf_intelligence(ctx=ctx, macro_data=macro_data)
+        if mf_block:
+            send_text(mf_block)
+            print("   → MF Intelligence sent")
+    except Exception as e:
+        print(f"   ⚠️ MF Intelligence: {e}")
 
     print("=" * 50)
     print("✅ MORNING BRIEF COMPLETE")

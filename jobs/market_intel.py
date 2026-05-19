@@ -733,9 +733,10 @@ def main():
         if nifty_closes and len(nifty_closes) >= 252:
             fg_data["momentum_12m"] = ((nifty_closes[-1] / nifty_closes[-252]) - 1) * 100
         fear_greed = compute_fear_greed_index(**fg_data)
-        if fear_greed.get("score") is not None:
-            fear_greed_block = f"\n[Fear & Greed Index: {fear_greed['score']}/100 — {fear_greed.get('label', 'NEUTRAL')}]"
-            print(f"   → Fear/Greed: {fear_greed['score']}/100 ({fear_greed.get('label')})")
+        fg_score = fear_greed.get("score") or fear_greed.get("index")  # handle both key names
+        if fg_score is not None:
+            fear_greed_block = f"\n[Fear & Greed Index: {fg_score}/100 — {fear_greed.get('label', 'NEUTRAL')}]"
+            print(f"   → Fear/Greed: {fg_score}/100 ({fear_greed.get('label')})")
     except Exception as e:
         print(f"   ⚠️ Fear/Greed: {e}")
 
@@ -849,12 +850,17 @@ def main():
         arb_signals = {}
         if snapshot_data.get("bull_bear_score") is not None:
             arb_signals["bull_bear"] = snapshot_data["bull_bear_score"]
-        if fear_greed and fear_greed.get("score") is not None:
-            arb_signals["fear_greed"] = fear_greed["score"]
+        if fear_greed:
+            fg_val = fear_greed.get("score") or fear_greed.get("index")
+            if fg_val is not None:
+                arb_signals["fear_greed"] = fg_val
         if snapshot_data.get("pcr") is not None:
             arb_signals["pcr"] = snapshot_data["pcr"]
         if snapshot_data.get("india_vix") is not None:
             arb_signals["vix"] = snapshot_data["india_vix"]
+        # Wire internals if available
+        if snapshot_data.get("internals_score") is not None:
+            arb_signals["internals"] = snapshot_data["internals_score"]
         # Get signal weights for dynamic weighting
         weights = get_dynamic_signal_weights(days=90)
 

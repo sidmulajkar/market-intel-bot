@@ -57,6 +57,7 @@ src/                       # Library modules (shared)
 ├── valuation_engine.py    # Nifty P/E, P/B, earnings yield, risk premium, reverse DCF
 ├── macro_fetcher.py       # Macro calendar, RBI policy tracker, real rate
 ├── context_engine.py      # Bull/Bear (8 signals), global risk, VIX spread, credit stress, momentum, yield spread, cross-asset regime, market phase classifier
+├── mechanism_map.py       # Macro event → India sector impact mapping (21 mechanisms)
 ├── options_engine.py      # NSE options chain, max pain, PCR, GEX, skew, advanced OI
 ├── fii_derivatives.py     # F&O participant OI data (FII/DII/Client long/short)
 ├── fii_sector.py          # FPI sector-wise data (SEBI/NSE), sector rotation
@@ -71,13 +72,16 @@ src/                       # Library modules (shared)
 └── commodity_heatmap.py   # USDINR/Brent/Gold heatmap
 
 jobs/                      # Entry points (triggered by GitHub Actions)
-├── market_intel.py        # 7:00 AM / 6:00 PM: full 10-block AI analysis
-├── morning_brief.py       # 8:00 AM: heatmaps + short AI brief
-├── evening_report.py      # 8:00 PM: US session heatmap
+├── market_intel.py        # 7:00 AM / 6:00 PM: full 11-block AI analysis + Market State Dashboard
+├── morning_brief.py       # 8:00 AM: heatmaps + short brief + Market State Dashboard
+├── evening_report.py      # 8:00 PM: US session heatmap + Market State Dashboard
+├── midday_scan.py         # 12:30 PM: market regime scanner (not per-stock alerts)
+├── market_open.py         # 9:15 AM: opening briefing with dynamic top movers
+├── market_close.py        # 3:30 PM: EOD summary with dynamic top movers
+├── weekly_digest.py       # Sunday: prediction scorecard, FII pattern, regime shift, institutional signals
 ├── fii_dii_fetch.py       # 5:00 AM: NSE FII/DII → Supabase
 ├── mf_intelligence.py     # 8th monthly: AMFI category flows → Supabase
 ├── mf_flows.py            # Personal MF watchlist (NAV tracking)
-├── market_close.py        # EOD summary + winners/losers
 ├── insider_tracker.py     # Bulk/block deals with AI interpretation
 └── ...
 
@@ -445,9 +449,94 @@ Max 3-4 minutes per runner:
 | `SUPABASE_URL`, `SUPABASE_KEY` | db.py |
 | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` | telegram_sender.py |
 
+## Phase 15: Output Quality & MF Intelligence
+
+### Mechanism Map (`src/mechanism_map.py` — NEW)
+
+Maps macro events to India sector impact. 21 mechanisms defined.
+
+| Function | What It Does |
+|----------|--------------|
+| `detect_triggered_mechanisms()` | Check macro anchors against thresholds, return triggered mechanisms |
+| `format_mechanism_triggers()` | Format triggered mechanisms with BEARISH/BULLISH sectors |
+| `get_mechanism_for_news()` | Word-boundary keyword matching for news headlines |
+| `get_india_linkage_for_event()` | Get concise India impact string for a mechanism |
+
+Mechanisms: oil_spike/crash, dxy_strength/weakness, china_pmi_miss/stimulus, us_yield_rise/fall, gold_rally, vix_spike/collapse, fed_hawkish/dovish, boj_hike, rbi_rate_cut/hike, inr_depreciation/appreciation, copper_rally/crash, hyg_stress.
+
+### Market State Dashboard Redesign (`src/formatters.py`)
+
+| Change | What |
+|--------|------|
+| Always shows lean | Bullish/Bearish/Neutral (never "no edge") |
+| Conviction level | HIGH/MEDIUM/LOW from signal alignment |
+| Key Evidence | FII streak, DII absorption, VIX regime with numbers |
+| Conflicting Signals | PCR contrarian, VIX complacency, FII/DII divergence |
+| Signal Alignment Bar | Text-based progress bar (10 chars) |
+| Phase labels | "Transition — waiting for catalyst" instead of "Mixed signals" |
+
+### News India Linkage (`src/formatters.py` — `_format_news_line()`)
+
+Auto-detects mechanism from headline, adds India impact:
+```
+⦿ Fed signals rate hike (0.25%). (Reuters)
+   → FII outflow risk, INR depreciation | BEARISH: All EM assets | BULLISH: IT
+```
+
+Word-boundary matching prevents false positives ("fed" ≠ "federal"). Exception-safe (catches all exceptions to isolate mechanism failures).
+
+### Pre-Market Alerts Redesign (`jobs/morning_brief.py`)
+
+| Change | What |
+|--------|------|
+| Sector grouping | `🔴 STEEL: TATASTEEL -3.3% (Vol 3.2x), JSWSTEEL -2.8%` |
+| Sector WHY context | News headlines matched to sectors via SECTOR_KEYWORDS |
+| Lowered threshold | 3.0% → 2.5% |
+| Volume ratio | Shows `Vol 2.3x` instead of just "Volume spike!" |
+
+### Morning Brief + News Redesign
+
+| File | Change |
+|------|--------|
+| `src/ai_engine.py` | `morning_brief_prompt()` restructured for editorial ⦿ bullets |
+| `src/formatters.py` | `_format_news_line()` uses ⦿ editorial style + India linkage |
+| `config/master_prompt.txt` | Added editorial news instruction + NEWS section in output format |
+
+### MF Intelligence — Two Layers
+
+**Layer 1: Daily Inferred** (`compute_mf_intelligence()`) — No DB dependency, works on Day 1.
+| Score | Inputs | What It Tells You |
+|-------|--------|-------------------|
+| Retail Participation | Smallcap ratio, VIX, DII net | Retail confidence, SIP additions likely |
+| Institutional Quality | DII absorption, DII net, VIX | MF deploying, redemption pressure |
+| Category Rotation | Smallcap/largecap, VIX, gold | Equity growth vs defensive rotation |
+
+**Layer 2: AMFI Behavior Index** (`compute_mf_behavior_index()`) — Requires 2+ months of DB data.
+| Sub-Signal | What It Measures |
+|------------|-----------------|
+| SIP Momentum | MoM SIP change — retail conviction |
+| Retail Rotation | Small Cap / Large Cap ratio — FOMO vs defensive |
+| Redemption Pressure | Outflow categories + DII selling — forced selling risk |
+| Thematic FOMO | Sectoral fund spike vs 3M avg — contrarian bearish |
+| Defensive Shift | Debt+Gold vs equity ratio — risk-off signal |
+
+**Design principle:** AMFI monthly data is lagging. Infer MF behavior daily from signals already fetched. AMFI confirmed data, when available, prepends to inferred signals.
+
+### MF Flow Signals (`src/formatters.py` — `format_mf_flows()`)
+
+Enhanced AMFI category flow formatter (evening Block 10):
+
+| Signal | What |
+|--------|------|
+| Rotation Index | Small Cap / Large Cap ratio (>2x = bubble signal) |
+| Risk Appetite | Equity vs Debt+Gold flows (risk-on/off) |
+| Streak Detection | 3+ consecutive months inflow/outflow per category |
+
+---
+
 ## Project Status: SHIPPED
 
-**Phase 0-14 complete.** 44 modules, 221+ functions, 14 cron jobs, 15 Supabase tables. Rating: 9.0/10 (structural ceiling with free infrastructure).
+**Phase 0-15 complete.** 45 modules, 230+ functions, 14 cron jobs, 15 Supabase tables. Rating: 9.0/10 (structural ceiling with free infrastructure).
 
 ### What's Built
 | Phase | Modules | Key Features |
@@ -458,12 +547,14 @@ Max 3-4 minutes per runner:
 | 12 | 13 new modules | CFTC, factors, sector RS, earnings, internals, multi-expiry, beta, HHI, vol persistence, turnover, staleness, reversal patterns, API budget |
 | 13 | 7 coherence modules | Signal arbitrator, prompt engine, output validator, FII cross-ref, daily state, temporal context, confidence engine |
 | 14 | Simplicity engine | Emoji-tagged one-liners for new investors |
+| 15 | Output quality + MF intelligence | Mechanism map, dashboard redesign, sector alerts, editorial news, India linkage, MF Behavior Index, daily MF inference |
 
 ### What's Left (Operational)
 - Monitor first week of live runs
 - Fix NSE session duplication (6 modules)
 - Let percentile data accumulate (6+ months)
 - Track prediction accuracy over time
+- Validate MF inference accuracy vs AMFI actuals over 3+ months
 
 ### Structural Ceiling
 Real-time data + alternative data = need paid infrastructure. Not buildable free.

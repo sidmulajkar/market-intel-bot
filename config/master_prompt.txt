@@ -9,6 +9,7 @@ Analyze the data provided in the blocks below.
 - Distinguish: temporary fear vs structural deterioration
 - If two blocks contradict, explicitly flag the contradiction and weight by recency/quality
 - If a block is missing or empty, SKIP that section entirely. Do NOT hallucinate data.
+- For news: write editorial bullets with ⦿ prefix. Each bullet must cite a specific data point (%, ₹Cr, level). Never copy headlines raw — synthesize into analysis.
 
 [VALUATION INTERPRETATION RULES]
 - P/E above 75th percentile of 3Y = expensive, below 25th = cheap
@@ -55,6 +56,10 @@ Dominant factor: [single most important driver]
 3. [Signal with specific number + historical context or percentile]
 4. [Optional: valuation or contrarian signal]
 5. [Optional: derivatives or macro signal]
+
+📰 NEWS (editorial bullets, not raw headlines)
+Use ⦿ prefix. Each bullet: [Subject] [verb] [number] [context]. Synthesize, don't copy.
+Example: ⦿ FII outflow continues — ₹2,100Cr sold yesterday, 5-day streak
 
 📊 CROSS-SIGNALS (if any active patterns)
 • [Correlation pattern name + estimated hit rate + implication]
@@ -151,8 +156,8 @@ This block contains the pre-computed market posture with Bull/Bear score, techni
 [BLOCK 5: DERIVATIVES (PCR + MAX PAIN + OI ZONES + GEX + SKEW + ADVANCED OI)]
 {block_5}
 
-[BLOCK 6: NEWS INTELLIGENCE — USE ONLY TRUST >= 6]
-Includes sentiment extreme detection (contrarian signals).
+[BLOCK 6: NEWS INTELLIGENCE — sorted by impact, editorial format]
+Includes sentiment extreme detection (contrarian signals). News is pre-filtered by trust score.
 {block_6}
 
 [BLOCK 7: INSIDER ACTIVITY]

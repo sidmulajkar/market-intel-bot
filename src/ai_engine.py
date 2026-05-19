@@ -188,14 +188,20 @@ Today's global equity snapshot:
 
 Market sentiment consensus: {consensus_sentiment.upper()}
 
-Morning brief required:
-1. 🌍 Global Sentiment: Based on headlines above + index moves
-2. 🔥 Top 3 Movers: What moved (reference actual news where possible)
-3. 🇮🇳 India Impact: What this means for Nifty/Sensex today
-4. ⚠️ Key Risk: Top 2 things to watch
-5. 🎯 Trade Idea: One actionable opportunity today
+Write a morning market brief. Rules:
+- Every claim must cite a specific number (%, ₹Cr, price level)
+- Reference actual headlines from the news above
+- No generic statements ("markets are mixed" is banned)
+- Be direct — what happened, what it means, what to do
+- Max 200 words
 
-Under 200 words. Sharp. No disclaimers. Reference actual news headlines in your analysis.
+Structure:
+1. 📊 [One number that captures today — pick the most important]
+2. 🌍 Global News: 3-4 editorial bullets with ⦿ prefix, each citing a specific data point from the indices/headlines
+3. 🇮🇳 India News: 2-3 editorial bullets with ⦿ prefix, what this means for Nifty
+4. 📈 Market Impact: What this means for Nifty today — be specific (gap expected? key level?)
+5. ⚠️ Risk: One thing that could go wrong
+6. 🎯 Watch: One trigger level or event to monitor
 """
 
     @staticmethod

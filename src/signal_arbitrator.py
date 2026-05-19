@@ -208,6 +208,67 @@ def format_master_signal(arbitration: Dict) -> str:
     return "\n".join(lines)
 
 
+def format_master_signal_dashboard(arbitration: Dict) -> str:
+    """
+    Format master signal for Telegram dashboard output.
+    Matches the new dashboard style: lean, conviction, evidence, conflicting.
+    """
+    if not arbitration.get("ok"):
+        return ""
+
+    master_score = arbitration["master_score"]
+    master_label = arbitration["master_label"]
+    confidence = arbitration["confidence"]
+    contradiction = arbitration["contradiction_level"]
+    structural = arbitration["structural_score"]
+    structural_signal = arbitration["structural_signal"]
+    sentiment = arbitration["sentiment_score"]
+    sentiment_signal = arbitration["sentiment_signal"]
+    resolution = arbitration["resolution"]
+
+    # Lean from master score
+    if master_score >= 60:
+        lean = "Bullish"
+    elif master_score <= 40:
+        lean = "Bearish"
+    else:
+        lean = "Neutral"
+
+    # Emoji from master score
+    if master_score >= 60:
+        emoji = "🟢"
+    elif master_score <= 40:
+        emoji = "🔴"
+    else:
+        emoji = "⚪"
+
+    lines = [f"{emoji} *MASTER SIGNAL*"]
+    lines.append("━" * 26)
+    lines.append(f"Consensus: {master_score}/100 | {master_label}")
+    lines.append(f"Lean: {lean} | Confidence: {confidence}")
+    lines.append("━" * 26)
+
+    # Cluster scores
+    lines.append(f"📊 Structural: {structural}/100 — {structural_signal}")
+    lines.append(f"📊 Sentiment: {sentiment}/100 — {sentiment_signal}")
+
+    # Contradiction
+    if contradiction in ("HIGH", "VERY HIGH"):
+        lines.append("")
+        lines.append(f"⚠️ *Contradiction: {contradiction}* (spread: {arbitration['spread']}pts)")
+        lines.append(f"   {resolution}")
+
+    # Low confidence warning
+    if confidence == "LOW":
+        lines.append("")
+        lines.append(f"⚠️ LOW CONFIDENCE — signals contradicting")
+        lines.append(f"   Historical accuracy: ~48% (near coin flip)")
+
+    lines.append("━" * 26)
+
+    return "\n".join(lines)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════

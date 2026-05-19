@@ -710,7 +710,7 @@ def save_mf_flows(month: str, category: str, amount_cr: float, sip_amount_cr: fl
             "sip_amount_cr": sip_amount_cr,
             "source":        "AMFI",
             "created_at":    datetime.now().isoformat(),
-            "expires_at":    (datetime.now() + timedelta(days=70)).isoformat(),
+            "expires_at":    (datetime.now() + timedelta(days=124)).isoformat(),
         }).execute()
         return True
     except Exception as e:
@@ -782,7 +782,7 @@ def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
     }
     cutoff_alert    = (datetime.now() - timedelta(days=days_alert)).strftime("%Y-%m-%d")
     cutoff_snapshot = (datetime.now() - timedelta(days=days_snapshot)).strftime("%Y-%m-%d")
-    cutoff_mf       = (datetime.now() - timedelta(days=62)).strftime("%Y-%m-%d")  # 2 months
+    cutoff_mf       = (datetime.now() - timedelta(days=124)).strftime("%Y-%m-%d")  # 4 months
 
     # Delete old sent_alerts
     try:
@@ -820,7 +820,7 @@ def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
     except Exception as e:
         results["errors"].append(f"fii_dii_flows: {e}")
 
-    # ── MF flows: 2 months rolling ──
+    # ── MF flows: 4 months rolling (124 days) ──
     try:
         resp = db.table("mf_flows").delete().lt("month", cutoff_mf).execute()
         results["mf_flows"] = len(resp.data) if resp.data else 0
