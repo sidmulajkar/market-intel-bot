@@ -216,13 +216,14 @@ def _get_severity(abs_change: float, tiers: list) -> tuple:
     return "MILD", "Monitor"
 
 
-def detect_triggered_mechanisms(anchor_data: list) -> list:
+def detect_triggered_mechanisms(anchor_data: list, percentile_data: dict = None) -> list:
     """
     Check macro anchors against mechanism triggers.
     Returns list of triggered mechanism keys with details.
 
     Args:
         anchor_data: list of dicts with symbol, price, change_pct, name
+        percentile_data: optional dict keyed by symbol with {"percentile": 0-100}
     Returns:
         list of dicts: {"key": "oil_spike", "trigger_value": 2.3, "details": {...}}
     """
@@ -253,6 +254,17 @@ def detect_triggered_mechanisms(anchor_data: list) -> list:
 
             if direction == "up" and change >= threshold:
                 severity, label = _get_severity(change, mechanism.get("tiers", []))
+                # Percentile arbitration: override tier if percentile is extreme
+                if percentile_data:
+                    pct_info = percentile_data.get(sym, {})
+                    pct_val = pct_info.get("percentile")
+                    if pct_val is not None and severity in ("MILD", "MODERATE"):
+                        if pct_val >= 85:
+                            severity = "ELEVATED"
+                            label = f"{label} ({pct_val:.0f}th %ile — historically extreme)"
+                        elif pct_val <= 15:
+                            severity = "ELEVATED"
+                            label = f"{label} ({pct_val:.0f}th %ile — historically extreme)"
                 triggered.append({
                     "key": key,
                     "trigger_value": change,
@@ -263,6 +275,17 @@ def detect_triggered_mechanisms(anchor_data: list) -> list:
                 })
             elif direction == "down" and change <= threshold:
                 severity, label = _get_severity(abs(change), mechanism.get("tiers", []))
+                # Percentile arbitration: override tier if percentile is extreme
+                if percentile_data:
+                    pct_info = percentile_data.get(sym, {})
+                    pct_val = pct_info.get("percentile")
+                    if pct_val is not None and severity in ("MILD", "MODERATE"):
+                        if pct_val >= 85:
+                            severity = "ELEVATED"
+                            label = f"{label} ({pct_val:.0f}th %ile — historically extreme)"
+                        elif pct_val <= 15:
+                            severity = "ELEVATED"
+                            label = f"{label} ({pct_val:.0f}th %ile — historically extreme)"
                 triggered.append({
                     "key": key,
                     "trigger_value": change,

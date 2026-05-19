@@ -35,3 +35,7 @@ logs/
 .pytest_cache/
 htmlcov/
 .coverage
+
+# OpenClaude / Claude Code local config — NEVER commit
+.openclaude/
+.claude/

@@ -154,9 +154,9 @@ def format_fii_cross_reference(result: Dict) -> str:
     lines.append(f"  Confidence: {result['confidence']}")
 
     if result.get("fii_net") is not None:
-        lines.append(f"  FII Net: ₹{result['fii_net']:+,.0f}Cr")
+        lines.append(f"  FII Net (Cash): ₹{result['fii_net']:+,.0f}Cr")
     if result.get("fno_net") is not None:
-        lines.append(f"  FII F&O Net: ₹{result['fno_net']:+,.0f}Cr")
+        lines.append(f"  FII F&O Net (Derivatives OI): ₹{result['fno_net']:+,.0f}Cr (notional, not cash)")
 
     return "\n".join(lines)
 

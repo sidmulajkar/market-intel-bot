@@ -168,11 +168,11 @@ def _determine_resolution(structural: float, sentiment: float, spread: float) ->
         return "No significant contradiction — signals aligned."
 
     if structural > sentiment + 20:
-        return ("Fundamentals bullish, sentiment bearish — CONTRARIAN BULLISH. "
-                "Smart money accumulating while retail fears. Historical resolution: 67% bullish.")
+        return ("Fundamentals bullish, sentiment bearish — CONTRARIAN signal. "
+                "Smart money accumulating while retail fears.")
     elif sentiment > structural + 20:
-        return ("Deteriorating fundamentals, complacent sentiment — BEARISH. "
-                "Retail buying into weakness. Historical resolution: 63% bearish.")
+        return ("Deteriorating fundamentals, complacent sentiment — BEARISH signal. "
+                "Retail buying into weakness.")
     elif structural > 60 and sentiment < 40:
         return "Structural strength despite fear — typically resolves bullish within 5-10 days."
     elif structural < 40 and sentiment > 60:
@@ -198,12 +198,24 @@ def format_master_signal(arbitration: Dict) -> str:
     lines.append(f"  Structural: {arbitration['structural_score']}/100 — {arbitration['structural_signal']}")
     lines.append(f"  Sentiment:  {arbitration['sentiment_score']}/100 — {arbitration['sentiment_signal']}")
     lines.append("")
-    lines.append(f"  Resolution: {arbitration['resolution']}")
 
+    # Suppress resolution when confidence is LOW (coin flip accuracy)
     if arbitration["confidence"] == "LOW":
+        lines.append(f"  Resolution: Cannot determine — signals too contradictory for directional call.")
+        lines.append(f"  Structural ({arbitration['structural_score']}) vs Sentiment ({arbitration['sentiment_score']}) — gap too wide.")
         lines.append("")
-        lines.append(f"  ⚠️ LOW CONFIDENCE — signals contradicting. Treat with caution.")
+        lines.append(f"  ⚠️ LOW CONFIDENCE — no directional call warranted.")
         lines.append(f"  Historical accuracy in similar conditions: ~48% (near coin flip)")
+    else:
+        resolution = arbitration.get("resolution", "")
+        # Add bridge when resolution contradicts consensus
+        consensus = arbitration["master_label"]
+        if ("BEARISH" in consensus and "BULLISH" in resolution.upper()) or \
+           ("BULLISH" in consensus and "BEARISH" in resolution.upper()):
+            lines.append(f"  Resolution: {resolution}")
+            lines.append(f"  Why: Consensus {consensus} but sentiment far more extreme than fundamentals — contrarian signal.")
+        else:
+            lines.append(f"  Resolution: {resolution}")
 
     return "\n".join(lines)
 

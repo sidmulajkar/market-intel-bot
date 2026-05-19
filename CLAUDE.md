@@ -536,7 +536,7 @@ Enhanced AMFI category flow formatter (evening Block 10):
 
 ## Project Status: SHIPPED
 
-**Phase 0-15 complete.** 45 modules, 230+ functions, 14 cron jobs, 15 Supabase tables. Rating: 9.0/10 (structural ceiling with free infrastructure).
+**Phase 0-16 P1 complete.** 45 modules, 230+ functions, 14 cron jobs, 15 Supabase tables. Rating: 9.0/10 (structural ceiling with free infrastructure).
 
 ### What's Built
 | Phase | Modules | Key Features |
@@ -548,6 +548,25 @@ Enhanced AMFI category flow formatter (evening Block 10):
 | 13 | 7 coherence modules | Signal arbitrator, prompt engine, output validator, FII cross-ref, daily state, temporal context, confidence engine |
 | 14 | Simplicity engine | Emoji-tagged one-liners for new investors |
 | 15 | Output quality + MF intelligence | Mechanism map, dashboard redesign, sector alerts, editorial news, India linkage, MF Behavior Index, daily MF inference |
+| 16 | P2-P5 + bug fixes | Temporal duration in dashboard, FII cash×derivatives matrix, percentile direction fix, MF pace annualization, 9 critical bug fixes |
+
+### Phase 16: P2-P5 + Bug Fixes
+
+| Feature | What | Key Changes |
+|---------|------|-------------|
+| P2 Temporal Duration | Dashboard shows streak vs historical avg | `temporal_context.py`: circular avg fix, per-signal baselines (FII=9d, VIX=12d, PCR=6d, BB=16d), regime-based icons |
+| P3 FII Cash×Derivatives | 4-regime matrix wired with actual F&O data | `fii_derivatives.py`: `run_fno_analysis_with_data()` returns analysis dict. `market_intel.py`: passes `fno_net` to cross-reference. Unit labels added. |
+| P4 Percentile Arbitration | Extreme percentile overrides magnitude tier | `formatters.py`: `get_percentile_value()` for mechanism_map. `mechanism_map.py`: `detect_triggered_mechanisms(anchor_data, percentile_data)`. >85th or <15th %ile → ELEVATED override. |
+| P5 MF Pace Annualization | Annualized pace for thematic/sectoral funds | `formatters.py`: `format_mf_flows()` computes `(flow/days_elapsed)*22*12`, flags >30% deviation vs 3M avg. |
+| Percentile Direction | FII/VIX percentiles flipped correctly | `formatters.py`: `_METRIC_DIRECTION` dict, `_flip_percentile()` — negative FII outflows get high %ile. |
+| Master Signal | Resolution suppressed at LOW confidence | `signal_arbitrator.py`: LOW conf → "Cannot determine" instead of "CONTRARIAN BULLISH". Hardcoded "67% bullish" removed. |
+| Threshold Alerts | Context from `last_ctx` instead of undefined vars | `market_intel.py`: reads `format_context_block.last_ctx` for bull_bear, fii_context, macro_context. |
+
+### Phase 17 Backlog
+- Threshold alert recompute context at trigger time (last_ctx staleness risk)
+- P3 Hedged Selling regime sample validation
+- Master Signal bridge explanation for MEDIUM confidence case
+- Historical resolution % backed by actual DB data
 
 ### What's Left (Operational)
 - Monitor first week of live runs

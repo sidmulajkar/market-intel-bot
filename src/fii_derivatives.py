@@ -245,3 +245,25 @@ def run_fno_analysis() -> str:
     output = format_fno_positioning(analysis)
     print(f"   → F&O positioning: {len(output)} chars")
     return output
+
+
+def run_fno_analysis_with_data() -> tuple:
+    """
+    Full pipeline: fetch → analyze → format.
+    Returns: (formatted_string, analysis_dict) for downstream use.
+    analysis_dict includes fii.net for cross-reference.
+    """
+    print("📡 Fetching F&O participant data...")
+    data = fetch_fno_participant_oi()
+
+    if not data:
+        print("   ⚠️ No F&O participant data available")
+        return "", {}
+
+    analysis = analyze_fno_positioning(data)
+    if not analysis.get("ok"):
+        return "", {}
+
+    output = format_fno_positioning(analysis)
+    print(f"   → F&O positioning: {len(output)} chars")
+    return output, analysis

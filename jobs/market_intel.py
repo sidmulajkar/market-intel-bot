@@ -132,6 +132,33 @@ def main():
     except Exception as e:
         print(f"   ⚠️ {e}")
 
+    # ── MECHANISM TRIGGERS (macro → sector impact) ─────────────
+    mechanism_block = ""
+    try:
+        from src.mechanism_map import detect_triggered_mechanisms, format_mechanism_triggers
+        from src.formatters import get_percentile_value
+        if anchor_data:
+            # Build percentile data for arbitration
+            mechanism_percentiles = {}
+            symbol_to_metric = {
+                "BZ=F": "brent", "DX-Y.NYB": "dxy", "^TNX": "us_10y",
+                "GC=F": "gold", "HG=F": "copper", "^INDIAVIX": "india_vix",
+                "CL=F": "brent", "^VIX": "cboe_vix", "HYG": "hyg",
+            }
+            for sym, metric in symbol_to_metric.items():
+                for a in anchor_data:
+                    if a.get("symbol") == sym and a.get("ok") and a.get("price"):
+                        pct = get_percentile_value(metric, a["price"], "1Y")
+                        if pct is not None:
+                            mechanism_percentiles[sym] = {"percentile": pct}
+                        break
+            triggered = detect_triggered_mechanisms(anchor_data, percentile_data=mechanism_percentiles)
+            mechanism_block = format_mechanism_triggers(triggered)
+            if mechanism_block:
+                print(f"   → Mechanism triggers: {len(triggered)} triggered")
+    except Exception as e:
+        print(f"   ⚠️ Mechanism triggers: {e}")
+
     # ── VALUATION METRICS (append to Block 2) ────────────────────
     print("🔄 VALUATION (P/E, P/B, Risk Premium)")
     try:
@@ -220,9 +247,10 @@ def main():
 
     # ── FII/DII F&O POSITIONING ──────────────────────────────────
     print("🔄 F&O PARTICIPANT POSITIONING")
+    fno_analysis = {}
     try:
-        from src.fii_derivatives import run_fno_analysis
-        fno_output = run_fno_analysis()
+        from src.fii_derivatives import run_fno_analysis_with_data
+        fno_output, fno_analysis = run_fno_analysis_with_data()
     except Exception as e:
         print(f"   ⚠️ F&O positioning: {e}")
         fno_output = ""
@@ -408,6 +436,10 @@ def main():
             snapshot_data["fii_net"] = fii_ctx.get("fii_net")
             snapshot_data["dii_net"] = fii_ctx.get("dii_net")
 
+        # FII F&O net (from derivatives positioning)
+        if fno_analysis and fno_analysis.get("fii"):
+            snapshot_data["fii_fno_net"] = fno_analysis["fii"].get("net")
+
         # Compute 1D return
         if nifty_closes and len(nifty_closes) >= 2:
             snapshot_data["nifty_return_1d"] = round(
@@ -476,11 +508,13 @@ def main():
     threshold_alert_text = ""
     try:
         from src.threshold_alerts import run_threshold_check
+        # Get context from format_context_block (computed earlier at line 226)
+        _ctx = getattr(format_context_block, 'last_ctx', None) or {}
         threshold_result = run_threshold_check(
             snapshot_data,
-            bull_bear=bull_bear_data if bull_bear_data else None,
-            fii_context=fii_context_data if fii_context_data else None,
-            macro_context=macro_context_data if macro_context_data else None,
+            bull_bear=_ctx.get("bull_bear"),
+            fii_context=_ctx.get("fii_context"),
+            macro_context=_ctx.get("macro_context"),
         )
         if threshold_result.get("has_alerts"):
             threshold_alert_text = threshold_result["alert_text"]
@@ -632,8 +666,9 @@ def main():
         from src.fii_cross_reference import cross_reference_fii, format_fii_cross_reference
         fii_net_val = snapshot_data.get("fii_net")
         pcr_val = snapshot_data.get("pcr")
+        fno_net_val = fno_analysis.get("fii", {}).get("net") if fno_analysis else None
         if fii_net_val is not None:
-            fii_xref = cross_reference_fii(fii_net=fii_net_val, pcr=pcr_val)
+            fii_xref = cross_reference_fii(fii_net=fii_net_val, fno_net=fno_net_val, pcr=pcr_val)
             fii_xref_block = format_fii_cross_reference(fii_xref)
             print(f"   → FII: {fii_xref['signal']} ({fii_xref['direction']})")
     except Exception as e:
@@ -748,6 +783,10 @@ def main():
 
         # Get context from format_context_block
         ctx = getattr(format_context_block, 'last_ctx', None) or {}
+
+        # Inject temporal context for dashboard duration display
+        if 'temporal' in dir() and temporal.get("ok"):
+            ctx["temporal_context"] = temporal
 
         # Get institutional signals
         inst_signals = {}
@@ -960,6 +999,10 @@ def main():
     # ── INJECT TEMPORAL CONTEXT ─────────────────────────────────
     if temporal_block:
         prompt += "\n\n" + temporal_block
+
+    # ── INJECT MECHANISM TRIGGERS ──────────────────────────────
+    if mechanism_block:
+        prompt += "\n\n" + mechanism_block
 
     # ── INJECT CONFIDENCE ───────────────────────────────────────
     if confidence_block:

@@ -35,10 +35,19 @@ def translate_fii_signal(fii_net: float = None, fii_streak: int = None,
     else:
         return None
 
-    if fii_streak and fii_avg_duration and fii_streak > fii_avg_duration * 0.7:
-        return f"{icon} Foreign {'selling' if fii_net < 0 else 'buying'} {fii_streak} days — {'tiring, reversal soon' if fii_net < 0 else 'sustained accumulation'}"
+    if fii_streak and fii_avg_duration and fii_avg_duration > 0:
+        pct_complete = fii_streak / fii_avg_duration
+        direction = "selling" if fii_net < 0 else "buying"
+        if pct_complete >= 1.2:
+            return f"{icon} Foreign {direction} {fii_streak}d — extended (avg {fii_avg_duration:.0f}d), reversal likely"
+        elif pct_complete >= 0.7:
+            return f"{icon} Foreign {direction} {fii_streak}d — mature (avg {fii_avg_duration:.0f}d), watch for turn"
+        else:
+            remaining = max(0, fii_avg_duration - fii_streak)
+            return f"{icon} Foreign {direction} {fii_streak}d — avg {fii_avg_duration:.0f}d streak, ~{remaining:.0f}d remaining historically"
     elif fii_streak and fii_streak >= 5:
-        return f"{icon} Foreign {'selling' if fii_net < 0 else 'buying'} {fii_streak} days straight — {'watch for reversal' if fii_net < 0 else 'strong conviction'}"
+        direction = "selling" if fii_net < 0 else "buying"
+        return f"{icon} Foreign {direction} {fii_streak}d straight — streak ongoing"
     else:
         direction = "selling" if fii_net < 0 else "buying"
         amount = f"₹{abs(fii_net):,.0f}Cr"

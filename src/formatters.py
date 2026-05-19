@@ -14,10 +14,30 @@ from typing import Dict, Optional
 
 _percentile_cache = {}  # in-memory cache per session
 
+# Metrics where negative = extreme (more negative = higher percentile)
+# Default: 1 = higher value = more extreme
+_METRIC_DIRECTION = {
+    "fii_net": -1,      # negative outflow = extreme selling
+    "dii_net": 1,       # positive = extreme buying
+    "india_vix": 1,     # high VIX = extreme fear
+    "cboe_vix": 1,
+    "fear_greed_score": 1,
+    "bull_bear_score": 1,
+    "pcr": 1,           # high PCR = extreme bearish
+}
+
+
+def _flip_percentile(pct: float, metric: str) -> float:
+    """Flip percentile for metrics where negative values are extreme."""
+    if _METRIC_DIRECTION.get(metric, 1) < 0:
+        return 100 - pct
+    return pct
+
+
 def get_percentile(metric: str, current_value: float, window: str = "1Y") -> str:
     """
     Get percentile context for a metric from daily_market_snapshot.
-    Returns: "65th %ile (1Y)" or "" if insufficient data.
+    Returns: "65th %ile (1Y)" or "(%ile: insufficient data)" if < 10 data points.
     Caches results per session to avoid repeated DB queries.
     """
     if not current_value or current_value == 0:
@@ -36,15 +56,48 @@ def get_percentile(metric: str, current_value: float, window: str = "1Y") -> str
             return ""
 
     if not history or len(history) < 10:
-        return ""
+        return "(%ile: insufficient data)"
 
     try:
         from src.rolling_quant import percentile_rank
-        result = percentile_rank(current_value, history)
-        pct = result.get("percentile", 0)
+        history_values = [v for _, v in history if v is not None]
+        result = percentile_rank(current_value, history_values)
+        pct = _flip_percentile(result.get("percentile", 50), metric)
         return f"{pct:.0f}th %ile ({window})"
     except Exception:
         return ""
+
+
+def get_percentile_value(metric: str, current_value: float, window: str = "1Y") -> Optional[float]:
+    """
+    Get raw percentile value (0-100) for mechanism_map arbitration.
+    Returns float or None if insufficient data.
+    """
+    if not current_value or current_value == 0:
+        return None
+
+    cache_key = f"{metric}_{window}"
+    if cache_key in _percentile_cache:
+        history = _percentile_cache[cache_key]
+    else:
+        try:
+            from src.db import get_snapshot_metric_history
+            days = {"1Y": 252, "2Y": 504, "6M": 126}.get(window, 252)
+            history = get_snapshot_metric_history(metric, days=days)
+            _percentile_cache[cache_key] = history
+        except Exception:
+            return None
+
+    if not history or len(history) < 10:
+        return None
+
+    try:
+        from src.rolling_quant import percentile_rank
+        history_values = [v for _, v in history if v is not None]
+        result = percentile_rank(current_value, history_values)
+        return _flip_percentile(result.get("percentile", 50), metric)
+    except Exception:
+        return None
 
 
 def format_4q(what: str, how_big: str, why: str, so_what: str) -> str:
@@ -837,26 +890,61 @@ def format_mf_flows() -> str:
                 anomaly_lines.append(f"{cat}: {curr:+.0f} Cr (insufficient history)")
         anomaly_block = "[Anomaly vs 3M Avg]\n" + "\n".join(anomaly_lines)
 
-        # ── Thematic signals ──
+        # ── Thematic signals (with pace annualization) ──
+        import calendar as _cal
+        from datetime import datetime as _dt
         thematic_lines = []
         sector_df = current_df[current_df["category"].str.contains(
             "Sector|Infra|IT|PSU|Thematic", case=False, na=False
         )]
+        # Days elapsed in current month for pace projection
+        cm_date = current_month.to_pydatetime() if hasattr(current_month, 'to_pydatetime') else current_month
+        days_in_month = _cal.monthrange(cm_date.year, cm_date.month)[1]
+        today = _dt.now()
+        if today.month == cm_date.month and today.year == cm_date.year:
+            days_elapsed = today.day
+        else:
+            days_elapsed = days_in_month  # past month = full month
+
         for _, row in sector_df.iterrows():
             cat  = row["category"]
             curr = row["amount_cr"]
             prior_s = prior_months[prior_months["category"] == cat].sort_values("month", ascending=False)
+
+            # Compute annualized pace for current month
+            pace_str = ""
+            if days_elapsed > 0 and curr != 0:
+                monthly_pace = (curr / days_elapsed) * 22  # 22 avg trading days/month
+                annualized_pace = monthly_pace * 12
+                if len(prior_s) >= 3:
+                    prior_3m_avg = prior_s["amount_cr"].head(3).mean()
+                    prior_annualized = prior_3m_avg * 12
+                    if prior_annualized != 0:
+                        pace_delta_pct = ((annualized_pace / abs(prior_annualized)) - 1) * 100
+                        if abs(pace_delta_pct) > 30:
+                            pace_label = "accelerating" if pace_delta_pct > 0 else "decelerating"
+                            pace_str = f" (pace: ₹{annualized_pace:,.0f}Cr/yr vs avg ₹{prior_annualized:,.0f}Cr/yr → {pace_delta_pct:+.0f}% {pace_label})"
+
             if len(prior_s) >= 2:
                 if curr > 0 and all(prior_s["amount_cr"] > 0):
                     streak = sum(1 for x in prior_s["amount_cr"] if x > 0) + 1
-                    thematic_lines.append(f"{cat}: +{curr:.0f} Cr ({streak}th consecutive inflow)")
+                    if pace_str:
+                        thematic_lines.append(f"{cat}: +₹{curr:.0f}Cr MTD{pace_str}")
+                    else:
+                        thematic_lines.append(f"{cat}: +₹{curr:.0f}Cr ({streak}th consecutive inflow)")
                 elif curr < 0 and all(prior_s["amount_cr"] < 0):
                     streak = sum(1 for x in prior_s["amount_cr"] if x < 0) + 1
-                    thematic_lines.append(f"{cat}: {curr:.0f} Cr ({streak}th consecutive outflow)")
+                    if pace_str:
+                        thematic_lines.append(f"{cat}: ₹{curr:.0f}Cr MTD{pace_str}")
+                    else:
+                        thematic_lines.append(f"{cat}: ₹{curr:.0f}Cr ({streak}th consecutive outflow)")
                 else:
-                    thematic_lines.append(f"{cat}: {curr:+.0f} Cr")
+                    if pace_str:
+                        thematic_lines.append(f"{cat}: {curr:+.0f}Cr MTD{pace_str}")
+                    else:
+                        thematic_lines.append(f"{cat}: {curr:+.0f}Cr")
             else:
-                thematic_lines.append(f"{cat}: {curr:+.0f} Cr")
+                thematic_lines.append(f"{cat}: {curr:+.0f}Cr")
         thematic_block = "[Thematic/Segment Signals]\n" + "\n".join(thematic_lines) if thematic_lines else ""
 
         # ── Top 5 gainers/losers ──
@@ -1497,6 +1585,10 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
     # Key Evidence — real data with context
     evidence = []
 
+    # Temporal context for duration display
+    temporal_ctx = ctx.get("temporal_context", {})
+    temporal_metrics = temporal_ctx.get("metrics", {}) if temporal_ctx.get("ok") else {}
+
     # FII streak + flow
     fii = ctx.get("fii_context", {})
     if fii.get("ok"):
@@ -1505,12 +1597,23 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
         direction = fii.get("fii_streak_direction", "")
         fii_pct = get_percentile("fii_net", fii_net, "1Y")
         pct_str = f" | {fii_pct}" if fii_pct else ""
+        # Temporal duration context
+        fii_temporal = temporal_metrics.get("fii_net", {})
+        temporal_suffix = ""
+        if fii_temporal and streak >= 3:
+            avg_dur = fii_temporal.get("avg_historical_duration", 0)
+            t_label = fii_temporal.get("temporal_label", "")
+            label_word = t_label.split(" — ")[0] if " — " in t_label else ""
+            if avg_dur > 0:
+                temporal_suffix = f" (avg {avg_dur:.0f}d)"
+            if label_word:
+                temporal_suffix += f" → {label_word.lower()}"
         if streak >= 3 and direction == "negative":
             total = fii.get("fii_4w_avg", 0) * streak
-            evidence.append(f"FII: -₹{abs(fii_net):,.0f}Cr | Day {streak}{pct_str} | ₹{abs(total):,.0f}Cr total")
+            evidence.append(f"FII: -₹{abs(fii_net):,.0f}Cr | Day {streak}{temporal_suffix}{pct_str} | ₹{abs(total):,.0f}Cr total")
         elif streak >= 3 and direction == "positive":
             total = fii.get("fii_4w_avg", 0) * streak
-            evidence.append(f"FII: +₹{fii_net:,.0f}Cr | Day {streak}{pct_str} | ₹{total:,.0f}Cr total")
+            evidence.append(f"FII: +₹{fii_net:,.0f}Cr | Day {streak}{temporal_suffix}{pct_str} | ₹{total:,.0f}Cr total")
         elif abs(fii_net) > 1000:
             sign = "-" if fii_net < 0 else "+"
             evidence.append(f"FII: {sign}₹{abs(fii_net):,.0f}Cr{pct_str} yesterday")
@@ -1541,6 +1644,19 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
                 evidence.append(f"VIX: {vix_price:.1f} | complacent{vix_pct_str} — crowded longs risk")
             else:
                 evidence.append(f"VIX: {vix_price:.1f} | calm{vix_pct_str}")
+
+    # VIX regime duration
+    vix_temporal = temporal_metrics.get("india_vix", {})
+    if vix_temporal:
+        vix_streak = vix_temporal.get("streak_days", 0)
+        vix_avg = vix_temporal.get("avg_historical_duration", 0)
+        vix_tlabel = vix_temporal.get("temporal_label", "")
+        if vix_streak >= 3 and vix_avg > 0:
+            vix_label_word = vix_tlabel.split(" — ")[0] if " — " in vix_tlabel else ""
+            vix_dur_str = f"VIX regime: {vix_streak}d (avg {vix_avg:.0f}d)"
+            if vix_label_word:
+                vix_dur_str += f" → {vix_label_word.lower()}"
+            evidence.append(vix_dur_str)
 
     if evidence:
         lines.append("")

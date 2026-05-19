@@ -89,19 +89,18 @@ def compute_temporal_context(snapshots: List[Dict]) -> Dict:
         else:
             change_direction = "STABLE"
 
-        # Historical average duration
-        all_regimes = []
-        current_streak_start = len(values)
-        prev_in_regime = None
+        # Historical average duration (completed streaks only — exclude current)
         streak_lengths = []
         current_len = 0
         for _, val in values:
             if metric == "fii_net":
                 in_r = (val > 200) if regime == "BUYING" else (val < -200) if regime == "SELLING" else False
             elif metric == "india_vix":
-                in_r = (val > 20) if regime == "HIGH" else False
+                in_r = (val > 20) if regime == "HIGH" else (val > 15 and val <= 20) if regime == "ELEVATED" else (val <= 15 and val > 12) if regime == "NORMAL" else (val <= 12)
             elif metric == "bull_bear_score":
                 in_r = (val > 60) if regime == "BULLISH" else (val < 40) if regime == "BEARISH" else False
+            elif metric == "pcr":
+                in_r = (val > 1.3) if regime == "BEARISH" else (val < 0.7) if regime == "BULLISH" else False
             else:
                 in_r = False
 
@@ -110,17 +109,27 @@ def compute_temporal_context(snapshots: List[Dict]) -> Dict:
             else:
                 if current_len > 0:
                     streak_lengths.append(current_len)
-                current_len = 1 if in_r else 0
-        if current_len > 0:
-            streak_lengths.append(current_len)
+                current_len = 0
+        # Do NOT append current_len — it's the active streak (circular if included)
 
         avg_duration = statistics.mean(streak_lengths) if streak_lengths else 0
 
+        # Per-signal baseline defaults (from historical observation)
+        if avg_duration == 0:
+            BASELINE_AVG = {
+                "fii_net": 9,              # FII streak avg ~8-11 days
+                "india_vix": 12,           # VIX HIGH regime ~12-15 days
+                "bull_bear_score": 16,     # Bull/Bear regime ~15-20 days
+                "pcr": 6,                  # PCR extreme ~5-7 days
+                "advance_decline_ratio": 7,
+            }
+            avg_duration = BASELINE_AVG.get(metric, 9)
+
         # Temporal label
-        if streak > avg_duration * 1.5 and avg_duration > 0:
-            temporal_label = f"OVEREXTENDED — {streak}d vs {avg_duration:.0f}d avg. Regime shift likely."
-        elif streak > avg_duration and avg_duration > 0:
-            temporal_label = f"MATURE — {streak}d vs {avg_duration:.0f}d avg. May persist a few more days."
+        if streak > avg_duration * 1.2 and avg_duration > 0:
+            temporal_label = f"EXTENDED — {streak}d vs {avg_duration:.0f}d avg. Mean reversion overdue."
+        elif streak > avg_duration * 0.7 and avg_duration > 0:
+            temporal_label = f"MATURE — {streak}d vs {avg_duration:.0f}d avg. Watch for reversal."
         elif avg_duration > 0:
             temporal_label = f"EARLY — {streak}d vs {avg_duration:.0f}d avg. Regime has room to run."
         else:
@@ -147,8 +156,15 @@ def format_temporal_context(temporal: Dict) -> str:
 
     lines = ["[Temporal Context — Duration & Direction of Signals]"]
 
+    # Icon based on market implication (bearish=🔴, bullish=🟢, neutral=⚪)
+    REGIME_ICON = {
+        "BUYING": "🟢", "BULLISH": "🟢", "BROAD": "🟢", "LOW": "🟢",
+        "SELLING": "🔴", "BEARISH": "🔴", "NARROW": "🔴", "HIGH": "🔴",
+        "ELEVATED": "🔴",  # VIX elevated = bearish market implication
+        "NEUTRAL": "⚪", "NORMAL": "⚪",
+    }
     for metric, data in temporal.get("metrics", {}).items():
-        icon = "🔴" if data["change_direction"] == "ACCELERATING" else "🟢" if data["change_direction"] == "DECELERATING" else "⚪"
+        icon = REGIME_ICON.get(data["regime"], "⚪")
         lines.append(f"  {icon} {data['label']}: {data['regime']} ({data['streak_days']}d)")
         lines.append(f"    → {data['temporal_label']}")
         lines.append(f"    Rate: {data['rate_of_change']:+.1f}% ({data['change_direction']})")
