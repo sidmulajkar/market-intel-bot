@@ -1154,6 +1154,9 @@ def main():
             "nifty_close": snapshot_data.get("nifty_close"),
             "pcr": snapshot_data.get("pcr"),
             "india_vix": snapshot_data.get("india_vix"),
+            "brent": snapshot_data.get("brent"),
+            "gold": snapshot_data.get("gold"),
+            "usdinr": snapshot_data.get("usdinr"),
         }
         validation = validate_output(analysis, ground_truth)
         if not validation["send"]:

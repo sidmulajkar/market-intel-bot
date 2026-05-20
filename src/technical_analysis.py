@@ -274,8 +274,12 @@ def format_technical_analysis(analysis: Dict) -> str:
     sr_parts = []
     if "support_1" in analysis:
         sr_parts.append(f"Support: {analysis['support_1']:,.0f}")
+    if "support_2" in analysis:
+        sr_parts.append(f"Support 2: {analysis['support_2']:,.0f}")
     if "resistance_1" in analysis:
         sr_parts.append(f"Resistance: {analysis['resistance_1']:,.0f}")
+    if "resistance_2" in analysis:
+        sr_parts.append(f"Resistance 2: {analysis['resistance_2']:,.0f}")
     if "psychological_level" in analysis:
         sr_parts.append(f"Psych level: {analysis['psychological_level']:,.0f}")
     if sr_parts:

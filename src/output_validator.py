@@ -163,7 +163,7 @@ def validate_against_ground_truth(claims: Dict, ground_truth: Dict) -> Dict:
         if severity == "OK":
             severity = "MINOR"
 
-    # 4. Consistency check
+    # Consistency check
     if not issues:
         status = "CONSISTENT"
     elif severity == "MAJOR":
@@ -190,6 +190,53 @@ def validate_output(ai_text: str, ground_truth: Dict) -> Dict:
     """
     claims = extract_claims(ai_text)
     validation = validate_against_ground_truth(claims, ground_truth)
+
+    # Additional checks that need raw ai_text
+    extra_issues = []
+    extra_severity = "OK"
+    text_lower = ai_text.lower()
+
+    # Trade recommendation check
+    advice_keywords = [
+        'go long', 'go short', 'buy ', 'sell ', 'long on', 'short on',
+        'enter position', 'exit position', 'take profit', 'stop loss',
+        'long position', 'short position'
+    ]
+    for kw in advice_keywords:
+        if kw in text_lower:
+            extra_issues.append(f"ADVICE VIOLATION: '{kw}' detected — trade recommendation prohibited")
+            extra_severity = "MAJOR"
+            break
+
+    # Hallucinated percentage check
+    hallucinated_pct = re.findall(r'\d+%\s*(?:bull|bear|probability|chance|likely|base)', text_lower)
+    if hallucinated_pct:
+        extra_issues.append(f"HALLUCINATED %: {hallucinated_pct[0]} — probabilities must be Python-computed")
+        extra_severity = "MAJOR"
+
+    # Stale price level check
+    nifty = ground_truth.get("nifty_close")
+    sensex = ground_truth.get("sensex_close")
+    if nifty or sensex:
+        for num_str in claims.get("numbers", []):
+            try:
+                num = int(num_str.replace(",", ""))
+                if nifty and 20000 < num < 30000:
+                    if abs(num - nifty) / nifty > 0.15:
+                        extra_issues.append(f"STALE LEVEL: {num} is {abs(num-nifty)/nifty*100:.0f}% from Nifty {nifty}")
+                        extra_severity = "MAJOR"
+                if sensex and 60000 < num < 90000:
+                    if abs(num - sensex) / sensex > 0.15:
+                        extra_issues.append(f"STALE LEVEL: {num} is {abs(num-sensex)/sensex*100:.0f}% from Sensex {sensex}")
+                        extra_severity = "MAJOR"
+            except ValueError:
+                pass
+
+    # Merge extra issues into validation result
+    if extra_issues:
+        validation["issues"] = validation.get("issues", []) + extra_issues
+        if extra_severity == "MAJOR":
+            validation["status"] = "MAJOR CONTRADICTION"
 
     if validation["status"] == "CONSISTENT":
         return {

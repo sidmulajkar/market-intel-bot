@@ -572,11 +572,25 @@ def format_flows() -> str:
             fii_nets.append(w["fiinet_cr"])
 
         if len(fii_nets) >= 4:
+            import statistics as _st
             neg_count = sum(1 for x in fii_nets if x < 0)
-            if neg_count >= 3 and fii_nets[-1] < fii_nets[-2]:
+            pos_count = sum(1 for x in fii_nets if x > 0)
+            avg = _st.mean(fii_nets)
+            stdev = _st.stdev(fii_nets) if len(fii_nets) > 1 else 0
+            cv = stdev / abs(avg) if avg != 0 else 999  # coefficient of variation
+
+            if neg_count == 4 and cv < 0.15:
+                trend_label = "persistent outflows"
+            elif pos_count == 4 and cv < 0.15:
+                trend_label = "persistent inflows"
+            elif neg_count >= 3 and fii_nets[-1] < fii_nets[-2]:
                 trend_label = "deteriorating"
-            elif neg_count <= 1 and fii_nets[-1] > fii_nets[-2]:
+            elif neg_count >= 3 and fii_nets[-1] > fii_nets[-2]:
+                trend_label = "outflows moderating"
+            elif pos_count >= 3 and fii_nets[-1] > fii_nets[-2]:
                 trend_label = "improving"
+            elif pos_count >= 3 and fii_nets[-1] < fii_nets[-2]:
+                trend_label = "inflows moderating"
             else:
                 trend_label = "mixed"
             trend_str = f"4-week FII trend: " + " | ".join(
@@ -615,13 +629,15 @@ def format_flows() -> str:
         # DII absorption
         lines.append(absorb_label)
 
-        # Net market impact: FII outflow × (1 - absorption ratio)
+        # Net market impact: FII + DII = effective pressure
         if fii_net < 0 and dii_net > 0:
-            absorption_ratio = min(dii_net / abs(fii_net), 1.0)
-            effective_pressure = fii_net * (1 - absorption_ratio)
-            lines.append(f"Net market impact: FII {fii_net:+.0f}Cr × (1 - {absorption_ratio*100:.0f}% absorbed) = {effective_pressure:+.0f}Cr effective selling pressure")
+            effective_pressure = fii_net + dii_net
+            if effective_pressure > 0:
+                lines.append(f"Net market impact: ₹{effective_pressure:+.0f}Cr (net buying — DII more than offset FII)")
+            else:
+                lines.append(f"Net market impact: ₹{effective_pressure:+.0f}Cr effective selling pressure")
         elif fii_net < 0:
-            lines.append(f"Net market impact: FII {fii_net:+.0f}Cr (no DII offset)")
+            lines.append(f"Net market impact: ₹{fii_net:+.0f}Cr (no DII offset)")
 
         # Trend
         lines.append(trend_str)
@@ -1703,21 +1719,28 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
         elif dii_net < -500:
             evidence.append(f"DII: -₹{abs(dii_net):,.0f}Cr — domestic selling pressure")
 
-    # VIX level
+    # VIX level — percentile-aware
     macro = ctx.get("macro_context", {})
     vix_price = macro.get("vix_price")
     if vix_price:
         vix_pct = get_percentile("india_vix", vix_price, "1Y")
+        vix_pct_val = get_percentile_value("india_vix", vix_price, "1Y")
         vix_pct_str = f" | {vix_pct}" if vix_pct else ""
-        if vix_price > 20:
+        if vix_pct_val and vix_pct_val >= 85:
+            evidence.append(f"VIX: {vix_price:.1f} | EXTREME{vix_pct_str} | elevated fear")
+        elif vix_pct_val and vix_pct_val >= 70:
+            evidence.append(f"VIX: {vix_price:.1f} | ELEVATED{vix_pct_str} | caution zone")
+        elif vix_price > 25:
             evidence.append(f"VIX: {vix_price:.1f} | HIGH{vix_pct_str} | elevated fear")
-        elif vix_price > 15:
-            evidence.append(f"VIX: {vix_price:.1f} | NORMAL{vix_pct_str}")
-        else:
+        elif vix_pct_val and vix_pct_val <= 15:
             if mp.get("phase") in ("EXPANSION", "RECOVERY"):
-                evidence.append(f"VIX: {vix_price:.1f} | complacent{vix_pct_str} — crowded longs risk")
+                evidence.append(f"VIX: {vix_price:.1f} | COMPLACENT{vix_pct_str} — crowded longs risk")
             else:
                 evidence.append(f"VIX: {vix_price:.1f} | calm{vix_pct_str}")
+        elif vix_price < 15:
+            evidence.append(f"VIX: {vix_price:.1f} | LOW{vix_pct_str}")
+        else:
+            evidence.append(f"VIX: {vix_price:.1f} | NORMAL{vix_pct_str}")
 
     # VIX regime duration
     vix_temporal = temporal_metrics.get("india_vix", {})
@@ -1772,48 +1795,164 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
         for c in conflicting[:3]:
             lines.append(f"   • {c}")
 
-    # Signal alignment — 3 clear metrics
-    # Count signals that fired
+    # Signal transparency — show each signal with direction
     fii_ok = fii.get("ok", False)
     vix_fired = vix_price is not None
     pcr_fired = pcr is not None
     dii_fired = fii_ok and fii.get("dii_net") is not None
+    breadth_fired = bool(ctx.get("breadth"))
+    momentum_fired = bool(ctx.get("momentum"))
+    cross_asset_fired = bool(ctx.get("cross_asset"))
     total_signals = 7
-    fired = sum([
-        1 if fii_ok else 0,
-        1 if dii_fired else 0,
-        1 if vix_fired else 0,
-        1 if pcr_fired else 0,
-        1 if ctx.get("breadth") else 0,
-        1 if ctx.get("momentum") else 0,
-        1 if ctx.get("cross_asset") else 0,
-    ])
+    fired = sum([fii_ok, dii_fired, vix_fired, pcr_fired, breadth_fired, momentum_fired, cross_asset_fired])
 
-    # Count signals pointing in lean direction
+    signal_details = []
+    unfired_reasons = []
     lean_bearish = lean in ("Bearish", "Slight Bearish")
     aligned = 0
+
+    # FII signal
     if fii_ok:
-        if (fii_net < 0 and lean_bearish) or (fii_net > 0 and not lean_bearish):
+        fii_icon = "🔴" if fii_net < 0 else "🟢"
+        fii_align = (fii_net < 0 and lean_bearish) or (fii_net > 0 and not lean_bearish)
+        if fii_align:
             aligned += 1
-    if vix_fired:
-        if (vix_price > 20 and lean_bearish) or (vix_price < 15 and not lean_bearish):
-            aligned += 1
-    if pcr_fired:
-        if (pcr > 1.3 and not lean_bearish) or (pcr < 0.7 and lean_bearish):
-            aligned += 1  # contrarian
+        streak_str = f" ({streak}d streak)" if streak >= 3 else ""
+        signal_details.append(f"  {fii_icon} FII: ₹{fii_net:+,.0f}Cr{streak_str}")
+    else:
+        unfired_reasons.append("FII data unavailable")
+
+    # DII signal
     if dii_fired:
         dii_val = fii.get("dii_net", 0)
-        if (dii_val > 500 and not lean_bearish) or (dii_val < -500 and lean_bearish):
+        dii_icon = "🟢" if dii_val > 0 else "🔴"
+        dii_align = (dii_val > 500 and not lean_bearish) or (dii_val < -500 and lean_bearish)
+        if dii_align:
             aligned += 1
+        _dii_abs = fii.get('dii_absorbed', 0)
+        try:
+            _dii_abs = float(_dii_abs) if _dii_abs is not None else 0
+        except (ValueError, TypeError):
+            _dii_abs = 0
+        absorb_str = f" (absorption {_dii_abs*100:.0f}%)" if dii_val > 0 and fii_net < 0 else ""
+        signal_details.append(f"  {dii_icon} DII: ₹{dii_val:+,.0f}Cr{absorb_str}")
+    else:
+        unfired_reasons.append("DII data unavailable")
+
+    # VIX signal
+    if vix_fired:
+        vix_icon = "🔴" if vix_price > 20 else "🟢" if vix_price < 15 else "🟡"
+        vix_align = (vix_price > 20 and lean_bearish) or (vix_price < 15 and not lean_bearish)
+        if vix_align:
+            aligned += 1
+        signal_details.append(f"  {vix_icon} VIX: {vix_price:.1f}")
+    else:
+        unfired_reasons.append("VIX data unavailable")
+
+    # PCR signal
+    if pcr_fired:
+        pcr_icon = "🔴" if pcr > 1.3 else "🟢" if pcr < 0.7 else "🟡"
+        pcr_align = (pcr > 1.3 and not lean_bearish) or (pcr < 0.7 and lean_bearish)  # contrarian
+        if pcr_align:
+            aligned += 1
+        signal_details.append(f"  {pcr_icon} PCR: {pcr:.2f}")
+    else:
+        unfired_reasons.append("PCR data unavailable")
+
+    # Breadth signal
+    if breadth_fired:
+        signal_details.append(f"  🟡 Breadth: data available")
+    else:
+        unfired_reasons.append("Breadth data unavailable")
+
+    # Momentum signal
+    if momentum_fired:
+        signal_details.append(f"  🟡 Momentum: data available")
+    else:
+        unfired_reasons.append("Momentum data unavailable")
+
+    # Cross-asset signal
+    if cross_asset_fired:
+        signal_details.append(f"  🟡 Cross-asset: data available")
+    else:
+        unfired_reasons.append("Cross-asset data unavailable")
+
+    # Count directions from signal icons
+    bull_count = sum(1 for sd in signal_details if "🟢" in sd)
+    bear_count = sum(1 for sd in signal_details if "🔴" in sd)
+    neutral_count = sum(1 for sd in signal_details if "🟡" in sd)
 
     lines.append("")
-    lines.append(f"📊 Signals: {fired}/{total_signals} fired | {aligned}/{fired} → {lean}")
+    lines.append(f"📊 Signals: {fired}/{total_signals} fired | 🟢{bull_count} 🔴{bear_count} 🟡{neutral_count}")
+    for sd in signal_details:
+        lines.append(sd)
+    if unfired_reasons:
+        lines.append(f"  ⚪ {len(unfired_reasons)} signals: {', '.join(unfired_reasons)}")
+
+    # Conviction explanation
+    if conviction == "LOW":
+        if aligned <= 1:
+            conv_reason = "signals split — no clear direction"
+        elif fired < 4:
+            conv_reason = "insufficient signal coverage"
+        else:
+            conv_reason = "contradicting signals"
+        lines.append(f"Conviction: {conviction} — {conv_reason}")
+
     lines.append(f"📈 Bull/Bear: {bb_score}/100 ({lean})")
 
     # Earnings context (only if active)
     er = mp.get("earnings_regime", "QUIET")
     if er not in ("QUIET", ""):
         lines.append(f"📅 Earnings: {er}")
+
+    # Global risk mood — computed from actual signals
+    gr = ctx.get("global_risk", {})
+    if gr.get("ok"):
+        risk_signals = []
+        # VIX contribution — percentile-aware
+        if vix_price:
+            vix_pct_val = get_percentile_value("india_vix", vix_price, "1Y")
+            if vix_pct_val and vix_pct_val >= 85:
+                risk_signals.append(f"VIX {vix_price:.0f} (extreme — {vix_pct_val:.0f}th %ile)")
+            elif vix_pct_val and vix_pct_val >= 70:
+                risk_signals.append(f"VIX {vix_price:.0f} (elevated — {vix_pct_val:.0f}th %ile)")
+            elif vix_price > 25:
+                risk_signals.append(f"VIX {vix_price:.0f} (high fear)")
+            elif vix_pct_val and vix_pct_val <= 15:
+                risk_signals.append(f"VIX {vix_price:.0f} (complacent — {vix_pct_val:.0f}th %ile)")
+            elif vix_price < 15:
+                risk_signals.append(f"VIX {vix_price:.0f} (low)")
+            else:
+                risk_signals.append(f"VIX {vix_price:.0f} (normal range)")
+        # DXY from anchor data
+        anchor_data = ctx.get("anchor_data", [])
+        dxy = next((a for a in anchor_data if "DXY" in str(a.get("symbol", "")).upper() or "dollar" in str(a.get("name", "")).lower()), None)
+        if dxy:
+            dxy_change = dxy.get("change_pct", 0)
+            try:
+                dxy_change = float(dxy_change) if dxy_change is not None else 0
+            except (ValueError, TypeError):
+                dxy_change = 0
+            if abs(dxy_change) > 0.5:
+                dxy_label = "dollar strength" if dxy_change > 0 else "dollar weakness"
+                risk_signals.append(f"DXY {dxy_change:+.1f}% ({dxy_label})")
+        # HYG credit stress
+        hyg = next((a for a in anchor_data if "HYG" in str(a.get("symbol", "")).upper()), None)
+        if hyg:
+            hyg_change = hyg.get("change_pct", 0)
+            try:
+                hyg_change = float(hyg_change) if hyg_change is not None else 0
+            except (ValueError, TypeError):
+                hyg_change = 0
+            if hyg_change < -1:
+                risk_signals.append(f"HYG {hyg_change:+.1f}% (credit stress)")
+            elif hyg_change > 1:
+                risk_signals.append(f"HYG {hyg_change:+.1f}% (risk-on credit)")
+
+        composite = gr.get("composite", "MIXED")
+        evidence_str = " | ".join(risk_signals) if risk_signals else "insufficient data"
+        lines.append(f"🌍 Global Risk: {composite} — {evidence_str}")
 
     lines.append("━" * 26)
 

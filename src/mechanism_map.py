@@ -205,6 +205,31 @@ MECHANISM_MAP = {
         "india_impact": "Global liquidity tightening — FII outflow risk",
         "action": "Defensive positioning, reduce leverage",
     },
+    # ── Geopolitical mechanisms (keyword-triggered) ──
+    "hormuz_risk": {
+        "trigger": {"keyword": "hormuz", "keyword2": "strait of hormuz"},
+        "transmission": "20% of global oil transits Hormuz → Brent +$15-25 on restriction → India CAD +$22-37B",
+        "bearish": ["OMC (BPCL, HPCL, IOC)", "Airlines (INDIGO, SPICEJET)", "Paints (ASIANPAINT, BERGER)", "Tyres (MRF, APOLLOTYRE)", "Current Account"],
+        "bullish": ["Oil E&P (ONGC, OIL)", "GAS (GAIL, PETRONET)"],
+        "india_impact": "20% of global oil supply at risk. India imports 85% of crude. Brent spike → CAD stress + INR depreciation + inflation pressure.",
+        "action": "Watch Brent $90+ and USDINR movement. Defensive if Brent >$95.",
+    },
+    "iran_conflict": {
+        "trigger": {"keyword": "iran", "keyword2": "iran war"},
+        "transmission": "Oil price → CAD → INR → inflation → RBI policy tightening",
+        "bearish": ["OMC (BPCL, HPCL, IOC)", "Aviation (INDIGO)", "Auto (MARUTI, TATAMOTORS)", "Current Account"],
+        "bullish": ["Oil E&P (ONGC, OIL)", "Defense (HAL, BEL, SOLARINDS)", "Gold (GOLD, GOLD BEES)"],
+        "india_impact": "Iran conflict → Brent premium 15-25% → India import bill +$15-25B/yr → INR pressure 100-200ps → CPI +30-50bps.",
+        "action": "Monitor Brent and USDINR daily. RBI may delay rate cuts.",
+    },
+    "sanctions_tariff": {
+        "trigger": {"keyword": "sanctions", "keyword2": "tariff"},
+        "transmission": "Trade disruption → supply chain stress → commodity price volatility → India inflation + export impact",
+        "bearish": ["Export-oriented IT (INFY, TCS, WIPRO)", "Pharma (SUNPHARMA, DRREDDY)", "Auto Ancillaries (BOSCHLTD, MOTHERSON)"],
+        "bullish": ["Domestic consumption (HUL, ITC, NESTLEIND)", "Defense (HAL, BEL)"],
+        "india_impact": "Sanctions disrupt global trade flows. India impact depends on target country and commodity exposure. Tariffs on India = direct export hit.",
+        "action": "Monitor affected commodity prices and INR. Diversify export exposure.",
+    },
 }
 
 

@@ -585,5 +585,13 @@ Enhanced AMFI category flow formatter (evening Block 10):
 - FII+DII both-selling case not flagged
 - Percentile doesn't count ties — biased low
 
+### Phase 21 Build Plan (from real failure data)
+- Week 1-2: Let it run, collect real data (failure logs, user feedback, Brier accumulation)
+- Week 3: Build from real evidence:
+  - P1: Graceful degradation (from actual failure logs)
+  - P2: Inline glossary (from actual confusing output)
+  - P3: Weekly self-audit (from 2 weeks of real Brier)
+  - P4: Brier calibration (from real prediction data)
+
 ### Structural Ceiling
 Real-time data + alternative data = need paid infrastructure. Not buildable free.
