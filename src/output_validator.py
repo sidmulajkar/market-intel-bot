@@ -40,6 +40,14 @@ def extract_claims(ai_text: str) -> Dict:
     numbers = re.findall(r'\b\d{1,3},?\d{3}\b', ai_text)  # Indian number format
     numbers += re.findall(r'\b\d+\.\d+%\b', ai_text)  # Percentages
     numbers += re.findall(r'\b\d{4,5}\b', ai_text)  # 4-5 digit numbers (Nifty levels)
+    numbers += re.findall(r'\$\d{1,4}(?:,\d{3})*\.\d{1,2}\b', ai_text)  # Dollar amounts ($64.41, $109.8, $2,300.50)
+    numbers += re.findall(r'₹\d{1,3}\.\d{1,2}\b', ai_text)  # USDINR (₹83.50)
+
+    # Consequence indicators
+    consequence_keywords = ["cad", "current account", "fii outflow", "inr pressure",
+                            "annualized", "import bill", "margin", "subsidy",
+                            "inflation", "depreciation", "appreciation"]
+    has_consequence = any(kw in text_lower for kw in consequence_keywords)
 
     # Flow direction
     flow_words = re.findall(r'(?:fii|dii|foreign|institutional)\s+(?:buying|selling|accumulating|distributing|inflow|outflow)', text_lower)
@@ -55,6 +63,7 @@ def extract_claims(ai_text: str) -> Dict:
         "bearish_count": bearish_count,
         "flow_direction": flow_direction,
         "numbers": numbers,
+        "has_consequence": has_consequence,
     }
 
 
@@ -109,6 +118,50 @@ def validate_against_ground_truth(claims: Dict, ground_truth: Dict) -> Dict:
                     severity = max(severity, "MINOR", key=lambda x: ["OK", "MINOR", "MAJOR"].index(x))
             except ValueError:
                 pass
+
+    # 4. Commodity price validation (Brent, Gold, USDINR)
+    brent_actual = ground_truth.get("brent")
+    if brent_actual:
+        for num_str in claims.get("numbers", []):
+            try:
+                if num_str.startswith("$"):
+                    num = float(num_str[1:])
+                    if abs(num - brent_actual) / brent_actual > 0.15:  # >15% deviation
+                        issues.append(f"COMMODITY MISMATCH: AI says {num_str} but Brent is ${brent_actual:.2f}")
+                        severity = "MAJOR"
+            except ValueError:
+                pass
+
+    gold_actual = ground_truth.get("gold")
+    if gold_actual:
+        for num_str in claims.get("numbers", []):
+            try:
+                if num_str.startswith("$"):
+                    num = float(num_str[1:])
+                    # Gold is typically 1500-3000 range
+                    if 1000 < num < 5000 and abs(num - gold_actual) / gold_actual > 0.10:
+                        issues.append(f"COMMODITY MISMATCH: AI says {num_str} but Gold is ${gold_actual:.2f}")
+                        severity = "MAJOR"
+            except ValueError:
+                pass
+
+    usdinr_actual = ground_truth.get("usdinr")
+    if usdinr_actual:
+        for num_str in claims.get("numbers", []):
+            try:
+                if num_str.startswith("₹"):
+                    num = float(num_str[1:])
+                    if abs(num - usdinr_actual) / usdinr_actual > 0.05:  # >5% deviation
+                        issues.append(f"FX MISMATCH: AI says {num_str} but USDINR is ₹{usdinr_actual:.2f}")
+                        severity = "MAJOR"
+            except ValueError:
+                pass
+
+    # 5. Consequence presence check (soft warning)
+    if not claims.get("has_consequence"):
+        issues.append("CONSEQUENCE ABSENT: No India-impact consequence indicators found")
+        if severity == "OK":
+            severity = "MINOR"
 
     # 4. Consistency check
     if not issues:
@@ -186,6 +239,18 @@ def _generate_fallback(ground_truth: Dict) -> str:
     vix = ground_truth.get("india_vix")
     if vix:
         lines.append(f"  VIX: {vix:.1f}")
+
+    brent = ground_truth.get("brent")
+    if brent:
+        lines.append(f"  Brent: ${brent:.2f}")
+
+    gold = ground_truth.get("gold")
+    if gold:
+        lines.append(f"  Gold: ${gold:.2f}")
+
+    usdinr = ground_truth.get("usdinr")
+    if usdinr:
+        lines.append(f"  USDINR: ₹{usdinr:.2f}")
 
     lines.append("")
     lines.append("  Note: AI brief was discarded due to data contradictions.")

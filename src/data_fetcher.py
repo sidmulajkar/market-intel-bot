@@ -396,6 +396,40 @@ def fetch_macro_anchors() -> list:
     return results
 
 
+def fetch_indian_basket_oil(brent_price: float = None) -> dict:
+    """
+    Approximate Indian Basket crude oil price.
+    Indian Basket = Brent - discount (typically 2-4% below Brent).
+    The discount reflects quality/freight differences.
+
+    Args:
+        brent_price: Current Brent price. If None, returns error.
+
+    Returns:
+        dict with: ok, price, premium_over_brent, source
+    """
+    try:
+        if brent_price is None or brent_price <= 0:
+            return {"ok": False, "error": "No Brent price provided"}
+
+        # Historical average discount: Indian Basket trades ~2-4% below Brent
+        # This is a reasonable approximation when PPAC data is unavailable
+        discount_pct = 0.03  # 3% discount (mid-range of 2-4%)
+        indian_basket = brent_price * (1 - discount_pct)
+        premium_over_brent = indian_basket - brent_price  # negative = discount
+
+        return {
+            "ok": True,
+            "price": round(indian_basket, 2),
+            "brent_price": round(brent_price, 2),
+            "premium_over_brent": round(premium_over_brent, 2),
+            "discount_pct": round(discount_pct * 100, 1),
+            "source": "approximated (Brent - 3%)",
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SMALLCAP / LARGECAPE RATIO — Risk Appetite Indicator
 # ═══════════════════════════════════════════════════════════════════════════════

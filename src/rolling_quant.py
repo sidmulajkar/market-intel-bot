@@ -283,6 +283,35 @@ def detect_divergences(snapshot: dict, prev_snapshots: list = None) -> List[Dict
                 "asset_2": "CBOE VIX", "asset_2_change": round(cboe_vix_5d, 2),
             })
 
+    # 6. Gold-VIX divergence (price vs fear disconnect)
+    gold_now = snapshot.get("gold")
+    if gold_now and vix_now and prev_snapshots and len(prev_snapshots) >= 5:
+        try:
+            from src.formatters import get_percentile_value
+            gold_pct = get_percentile_value("gold", gold_now, "1Y")
+            vix_pct = get_percentile_value("india_vix", vix_now, "1Y")
+            if gold_pct is not None and vix_pct is not None:
+                if gold_pct < 55 and vix_pct > 65:
+                    divergences.append({
+                        "type": "gold_vix_divergence",
+                        "severity": "HIGH",
+                        "description": f"Gold at {gold_pct:.0f}th %ile (middle of range) while VIX at {vix_pct:.0f}th %ile (elevated fear). "
+                                       f"Gold not pricing fear — either fear overstated or gold will catch up.",
+                        "asset_1": "Gold", "asset_1_pct": round(gold_pct),
+                        "asset_2": "India VIX", "asset_2_pct": round(vix_pct),
+                    })
+                elif gold_pct > 60 and vix_pct < 30:
+                    divergences.append({
+                        "type": "gold_vix_divergence",
+                        "severity": "MEDIUM",
+                        "description": f"Gold at {gold_pct:.0f}th %ile (elevated) while VIX at {vix_pct:.0f}th %ile (calm). "
+                                       f"Gold pricing risk VIX doesn't see — possible hidden stress.",
+                        "asset_1": "Gold", "asset_1_pct": round(gold_pct),
+                        "asset_2": "India VIX", "asset_2_pct": round(vix_pct),
+                    })
+        except Exception:
+            pass
+
     return divergences
 
 
@@ -1050,8 +1079,20 @@ def run_rolling_quant_engine(snapshot: dict, snapshots: list) -> Dict:
     # 1. Percentile rankings
     result["percentiles"] = compute_all_percentiles(snapshot, snapshots)
 
-    # 2. Divergence detection
+    # 2. Divergence detection + persist to divergence_log
     result["divergences"] = detect_divergences(snapshot, snapshots)
+    try:
+        from src.db import log_divergence
+        for div in result["divergences"]:
+            log_divergence(
+                divergence_type=div.get("type", "unknown"),
+                asset_1=div.get("asset_1", ""),
+                asset_2=div.get("asset_2", ""),
+                severity=div.get("severity", "MEDIUM"),
+                description=div.get("description", ""),
+            )
+    except Exception:
+        pass  # divergence_log persistence is optional
 
     # 3. Seasonal context
     result["seasonal"] = compute_seasonal_context(snapshot)

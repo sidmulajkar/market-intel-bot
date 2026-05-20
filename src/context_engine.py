@@ -1663,6 +1663,43 @@ def compute_stagflation_signal(anchor_data: List[Dict]) -> Dict:
 
     signals = []
 
+    # Percentile-based stagflation: high oil + low Nifty (price-level detection)
+    # This catches stagflation even when weekly changes are small
+    nifty_close = None
+    oil_price = None
+    for a in anchor_data:
+        if not a.get("ok"):
+            continue
+        name = a.get("name", "")
+        if name == "Brent Crude":
+            oil_price = a.get("price")
+        elif name == "Nifty 50":
+            nifty_close = a.get("close") or a.get("price")
+
+    # Nifty not in anchor_data — try extra_signals or snapshot
+    if not nifty_close:
+        try:
+            from src.db import get_daily_market_snapshots
+            recent = get_daily_market_snapshots(days=5)
+            if recent:
+                nifty_close = recent[-1].get("nifty_close")
+        except Exception:
+            pass
+
+    if nifty_close and oil_price:
+        try:
+            from src.formatters import get_percentile_value
+            nifty_pct = get_percentile_value("nifty_close", nifty_close, "1Y")
+            oil_pct = get_percentile_value("brent", oil_price, "1Y")
+            if nifty_pct is not None and oil_pct is not None:
+                if oil_pct > 80 and nifty_pct < 25:
+                    signals.append(f"Percentile stagflation: Oil {oil_pct}th %ile + Nifty {nifty_pct}th %ile")
+                    regime = "STAGFLATION PRESSURE"
+                    return {"ok": True, "regime": regime, "signals": signals,
+                            "label": f"Oil elevated ({oil_pct}th %ile) + Nifty depressed ({nifty_pct}th %ile) = margin compression"}
+        except Exception:
+            pass
+
     # Gold up + Copper down = either flight-to-safety or stagflation
     if gold_chg > 2 and copper_chg < -2:
         if cpi_rising:

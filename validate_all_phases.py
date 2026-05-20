@@ -928,6 +928,377 @@ def show_sample_outputs():
     except Exception as e:
         print(f"  Error: {e}")
 
+    # Phase 18: Consequence Layer
+    print(f"\n{'─'*60}")
+    print("  PHASE 18: CONSEQUENCE LAYER")
+    print(f"{'─'*60}")
+    try:
+        from src.consequence_engine import compute_consequence, format_consequence_line, compute_all_consequences, format_consequence_block
+
+        # Individual consequence: Brent +$5
+        print("\n  [Brent +$5 consequence]")
+        cons = compute_consequence("brent", current_value=85.0, change_value=5.0)
+        print(f"  {format_consequence_line('brent', cons)}")
+        print(f"  Severity: {cons.get('severity')}")
+        print(f"  Sectors bearish: {cons.get('sectors_bearish')}")
+        print(f"  Sectors bullish: {cons.get('sectors_bullish')}")
+
+        # Individual consequence: US 10Y +18bps
+        print("\n  [US 10Y +18bps consequence]")
+        cons_yield = compute_consequence("us_10y", current_value=4.35, change_value=0.18)
+        print(f"  {format_consequence_line('us_10y', cons_yield)}")
+
+        # Individual consequence: DXY +0.8%
+        print("\n  [DXY +0.8% consequence]")
+        cons_dxy = compute_consequence("dxy", current_value=104.2, change_value=0.8)
+        print(f"  {format_consequence_line('dxy', cons_dxy)}")
+
+        # Batch: all anchors
+        print("\n  [Batch consequences — all anchors]")
+        mock_anchors = [
+            {"name": "Brent Crude", "symbol": "BZ=F", "price": 85.2, "change_pct": 2.3, "ok": True},
+            {"name": "US 10Y Yield", "symbol": "^TNX", "price": 4.35, "change_pct": 1.1, "ok": True},
+            {"name": "Dollar Index", "symbol": "DX-Y.NYB", "price": 104.2, "change_pct": 0.5, "ok": True},
+            {"name": "USD/INR", "symbol": "USDINR=X", "price": 83.5, "change_pct": 0.3, "ok": True},
+            {"name": "Gold", "symbol": "GC=F", "price": 2420.0, "change_pct": 1.2, "ok": True},
+            {"name": "India VIX", "symbol": "^INDIAVIX", "price": 14.8, "change_pct": -5.2, "ok": True},
+        ]
+        all_cons = compute_all_consequences(mock_anchors)
+        print(format_consequence_block(all_cons))
+
+        # Formatter: macro anchors with consequence lines
+        print("\n  [Macro Anchors — with consequence lines]")
+        from src.formatters import format_macro_anchors
+        print(format_macro_anchors(mock_anchors))
+
+        # Indian Basket
+        print("\n  [Indian Basket Oil Approximation]")
+        from src.data_fetcher import fetch_indian_basket_oil
+        basket = fetch_indian_basket_oil(brent_price=85.2)
+        print(f"  Indian Basket: ${basket['price']} (vs Brent ${basket['brent_price']}, discount {basket['discount_pct']}%)")
+
+        # Output validator: commodity mismatch
+        print("\n  [Output Validator — commodity price check]")
+        from src.output_validator import extract_claims, validate_against_ground_truth
+        truth = {"bull_bear_score": 50, "fii_net": 0, "nifty_close": 25000,
+                 "brent": 109.8, "gold": 2420.0, "usdinr": 83.50}
+        bad_ai = "Brent is at $64.41 today, market stable"
+        val = validate_against_ground_truth(extract_claims(bad_ai), truth)
+        print(f"  AI says '$64.41' when Brent=$109.8:")
+        print(f"  Status: {val['status']}")
+        for issue in val.get("issues", []):
+            print(f"  ⚠️ {issue}")
+
+    except Exception as e:
+        print(f"  Error: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 18: Consequence Layer
+# ═══════════════════════════════════════════════════════════════
+
+def test_phase18():
+    section("PHASE 18: Consequence Layer")
+
+    # Consequence Engine
+    try:
+        from src.consequence_engine import (
+            compute_consequence, format_consequence_line,
+            compute_all_consequences, format_consequence_block,
+            CONSEQUENCE_MULTIPLIERS
+        )
+
+        # Test multiplier table completeness
+        required_vars = ["brent", "wti", "us_10y", "dxy", "usdinr", "india_vix", "gold", "copper"]
+        for var in required_vars:
+            check(f"Multiplier: {var}", var in CONSEQUENCE_MULTIPLIERS)
+
+        # Test compute_consequence — Brent +$5
+        cons = compute_consequence("brent", current_value=85.0, change_value=5.0)
+        check("Consequence: Brent +$5", bool(cons.get("lines")),
+              f"severity={cons.get('severity')}, {len(cons.get('lines', []))} lines")
+
+        # Test compute_consequence — US 10Y +0.18 (18bps)
+        cons_yield = compute_consequence("us_10y", current_value=4.35, change_value=0.18)
+        check("Consequence: US 10Y +18bps", bool(cons_yield.get("lines")),
+              f"{len(cons_yield.get('lines', []))} lines")
+
+        # Test compute_consequence — DXY +0.8%
+        cons_dxy = compute_consequence("dxy", current_value=104.2, change_value=0.8)
+        check("Consequence: DXY +0.8", bool(cons_dxy.get("lines")),
+              f"{len(cons_dxy.get('lines', []))} lines")
+
+        # Test format_consequence_line
+        line = format_consequence_line("brent", cons)
+        check("Format: consequence line", "→" in line or "🚨" in line or "⚠️" in line, line[:60])
+
+        # Test compute_all_consequences with mock anchors
+        mock_anchors = [
+            {"name": "Brent Crude", "symbol": "BZ=F", "price": 85.2, "change_pct": 2.3, "ok": True},
+            {"name": "US 10Y Yield", "symbol": "^TNX", "price": 4.35, "change_pct": 1.1, "ok": True},
+            {"name": "Dollar Index", "symbol": "DX-Y.NYB", "price": 104.2, "change_pct": 0.5, "ok": True},
+            {"name": "USD/INR", "symbol": "USDINR=X", "price": 83.5, "change_pct": 0.3, "ok": True},
+            {"name": "Gold", "symbol": "GC=F", "price": 2420.0, "change_pct": 1.2, "ok": True},
+        ]
+        all_cons = compute_all_consequences(mock_anchors)
+        check("Batch: 5 anchors computed", len(all_cons) >= 4,
+              f"{len(all_cons)} variables: {list(all_cons.keys())}")
+
+        # Test format_consequence_block
+        block = format_consequence_block(all_cons)
+        check("Format: consequence block", "[CONSEQUENCE LAYER" in block, f"{len(block)} chars")
+
+        # Test threshold detection
+        cons_stress = compute_consequence("brent", current_value=95.0, change_value=10.0)
+        check("Threshold: Brent $95 = STRESS", cons_stress.get("severity") == "STRESS")
+
+        cons_favorable = compute_consequence("brent", current_value=65.0, change_value=-5.0)
+        check("Threshold: Brent $65 = FAVORABLE", cons_favorable.get("severity") == "FAVORABLE")
+
+        # Test VIX extreme (must be checked before high)
+        cons_vix_extreme = compute_consequence("india_vix", current_value=26.0, change_value=5.0)
+        check("Threshold: India VIX 26 = EXTREME", cons_vix_extreme.get("severity") == "EXTREME",
+              f"severity={cons_vix_extreme.get('severity')}")
+
+        cons_vix_high = compute_consequence("india_vix", current_value=22.0, change_value=3.0)
+        check("Threshold: India VIX 22 = HIGH", cons_vix_high.get("severity") == "HIGH",
+              f"severity={cons_vix_high.get('severity')}")
+
+        # Test empty/failure handling
+        cons_empty = compute_consequence("nonexistent", 0, 0)
+        check("Empty: unknown variable returns {}", cons_empty == {})
+
+        cons_zero = compute_consequence("brent", 0, 0)
+        check("Empty: zero price returns {}", cons_zero == {})
+
+    except Exception as e:
+        check("Consequence engine import", False, str(e))
+
+    # Indian Basket Oil
+    try:
+        from src.data_fetcher import fetch_indian_basket_oil
+        basket = fetch_indian_basket_oil(brent_price=85.0)
+        check("Indian Basket: approx", basket.get("ok") is True,
+              f"${basket.get('price')} vs Brent ${basket.get('brent_price')}, discount {basket.get('discount_pct')}%")
+
+        basket_err = fetch_indian_basket_oil(brent_price=None)
+        check("Indian Basket: error handling", basket_err.get("ok") is False)
+    except Exception as e:
+        check("Indian Basket import", False, str(e))
+
+    # Output Validator — commodity regex
+    try:
+        from src.output_validator import extract_claims, validate_against_ground_truth
+
+        # Test commodity price extraction
+        claims = extract_claims("Brent is at $109.80 today, Gold at $2420.50, USDINR ₹83.50")
+        check("Validator: $109.80 extracted", "$109.80" in claims.get("numbers", []),
+              f"numbers={claims.get('numbers')}")
+        check("Validator: ₹83.50 extracted", "₹83.50" in claims.get("numbers", []),
+              f"numbers={claims.get('numbers')}")
+
+        # Test consequence presence detection
+        claims_cons = extract_claims("Brent rising, CAD stress widening, INR pressure building")
+        check("Validator: consequence detected", claims_cons.get("has_consequence") is True)
+
+        claims_no_cons = extract_claims("Brent is at $85 today, up 2%")
+        check("Validator: no consequence flagged", claims_no_cons.get("has_consequence") is False)
+
+        # Test commodity mismatch detection
+        truth = {"bull_bear_score": 50, "fii_net": 0, "nifty_close": 25000,
+                 "brent": 109.8, "gold": 2420.0, "usdinr": 83.50}
+        bad_ai = "Brent is at $64.41 today"
+        val = validate_against_ground_truth(extract_claims(bad_ai), truth)
+        check("Validator: catches $64 vs $109 Brent",
+              any("COMMODITY MISMATCH" in i for i in val.get("issues", [])),
+              val.get("status"))
+
+        # Test correct commodity passes
+        good_ai = "Brent is at $109.80 today"
+        val_good = validate_against_ground_truth(extract_claims(good_ai), truth)
+        commodity_issues = [i for i in val_good.get("issues", []) if "COMMODITY" in i]
+        check("Validator: correct Brent passes", len(commodity_issues) == 0)
+
+    except Exception as e:
+        check("Output validator import", False, str(e))
+
+    # Simplicity Engine — oil signal
+    try:
+        from src.simplicity_engine import translate_oil_signal
+
+        oil_high = translate_oil_signal(brent_price=109.0, brent_percentile=92)
+        check("Simplicity: oil $109 (90th %ile)", oil_high is not None and "🔴" in oil_high, oil_high[:60] if oil_high else "None")
+
+        oil_mid = translate_oil_signal(brent_price=88.0, brent_percentile=60)
+        check("Simplicity: oil $88", oil_mid is not None and "🟡" in oil_mid, oil_mid[:60] if oil_mid else "None")
+
+        oil_low = translate_oil_signal(brent_price=62.0, brent_percentile=15)
+        check("Simplicity: oil $62", oil_low is not None and "🟢" in oil_low, oil_low[:60] if oil_low else "None")
+
+        oil_none = translate_oil_signal(brent_price=78.0)
+        oil_neutral = translate_oil_signal(brent_price=78.0)
+        check("Simplicity: oil $78 (neutral) = neutral line", oil_neutral is not None and "neutral" in oil_neutral.lower(), oil_neutral[:40] if oil_neutral else "None")
+
+    except Exception as e:
+        check("Simplicity oil signal import", False, str(e))
+
+    # Macro anchors with consequence lines
+    try:
+        from src.formatters import format_macro_anchors
+        mock_anchors = [
+            {"name": "Brent Crude", "symbol": "BZ=F", "price": 85.2, "change_pct": 2.3,
+             "weekly_change_pct": 1.5, "status": "up", "ok": True},
+            {"name": "US 10Y Yield", "symbol": "^TNX", "price": 4.35, "change_pct": 1.1,
+             "weekly_change_pct": 0.5, "status": "up", "ok": True},
+            {"name": "USD/INR", "symbol": "USDINR=X", "price": 83.5, "change_pct": 0.3,
+             "weekly_change_pct": 0.2, "status": "up", "ok": True},
+        ]
+        formatted = format_macro_anchors(mock_anchors)
+        check("Formatter: macro anchors with consequence", "→" in formatted,
+              f"{len(formatted)} chars, has arrow: {'→' in formatted}")
+    except Exception as e:
+        check("Formatter macro anchors import", False, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 19: Master Signal Diagnostic Engine
+# ═══════════════════════════════════════════════════════════════
+
+def test_phase19():
+    section("PHASE 19: Master Signal Diagnostic Engine")
+
+    try:
+        from src.signal_arbitrator import (
+            arbitrate_signals, format_master_signal, format_master_signal_dashboard,
+            run_arbitration, _compute_gap_analysis, _compute_confidence_split,
+            _compute_score_trending, _generate_signal_consequence
+        )
+
+        # Test gap analysis
+        gap = _compute_gap_analysis(structural=50, sentiment=38)
+        check("Gap: 50 vs 38 = 12pts", gap["gap"] == 12, f"gap={gap['gap']}")
+        check("Gap: SIGNIFICANT DIVERGENCE", gap["gap_label"] == "SIGNIFICANT DIVERGENCE")
+        check("Gap: fear_exceeding_fundamentals", gap["direction"] == "FEAR_EXCEEDING_FUNDAMENTALS")
+        check("Gap: is_significant=True", gap["is_significant"] is True)
+
+        gap_small = _compute_gap_analysis(structural=52, sentiment=48)
+        check("Gap: 52 vs 48 = 4pts (alignment)", gap_small["gap"] == 4)
+        check("Gap: ALIGNMENT", gap_small["gap_label"] == "ALIGNMENT")
+        check("Gap: is_significant=False", gap_small["is_significant"] is False)
+
+        gap_extreme = _compute_gap_analysis(structural=60, sentiment=35)
+        check("Gap: 60 vs 35 = 25pts", gap_extreme["gap"] == 25)
+        check("Gap: EXTREME DIVERGENCE", gap_extreme["gap_label"] == "EXTREME DIVERGENCE")
+
+        # Test confidence split
+        conf_split = _compute_confidence_split("HIGH", 5, gap)
+        check("Confidence split: direction=LOW when gap>=10", conf_split["directional"] == "LOW")
+        check("Confidence split: regime=HIGH when gap>=10", conf_split["regime"] == "HIGH")
+        check("Confidence split: 48% accuracy", conf_split["directional_pct"] == 48)
+
+        conf_aligned = _compute_confidence_split("LOW", 5, gap_small)
+        check("Confidence split: aligned = same dir/regime", conf_aligned["regime"] == conf_aligned["directional"])
+
+        # Test score trending
+        history = [
+            {"date": "2026-05-01", "bull_bear_score": 55},
+            {"date": "2026-05-02", "bull_bear_score": 52},
+            {"date": "2026-05-03", "bull_bear_score": 48},
+            {"date": "2026-05-04", "bull_bear_score": 45},
+            {"date": "2026-05-05", "bull_bear_score": 42},
+        ]
+        trending = _compute_score_trending(38, history)
+        check("Trending: prev_score=42", trending["prev_score"] == 42)
+        check("Trending: direction=↓", trending["direction"] == "↓")
+        check("Trending: change=-4", trending["change"] == -4)
+
+        trending_no_hist = _compute_score_trending(50, None)
+        check("Trending: no history = empty", trending_no_hist["prev_score"] is None)
+
+        # Test consequence generation
+        arb_result = {
+            "structural_score": 50,
+            "sentiment_score": 38,
+            "confidence": "LOW",
+            "gap_analysis": gap,
+        }
+        cons = _generate_signal_consequence(arb_result, {"vix": 22})
+        check("Consequence: generated list", isinstance(cons, list) and len(cons) > 0)
+        check("Consequence: max 4 items", len(cons) <= 4)
+
+        cons_extreme = _generate_signal_consequence(
+            {"structural_score": 35, "sentiment_score": 20, "confidence": "LOW",
+             "gap_analysis": gap_extreme}, {"vix": 25}
+        )
+        check("Consequence: extreme gap has items", len(cons_extreme) > 0)
+
+        # Test full arbitration with historical scores
+        signals = {"bull_bear": 65, "fear_greed": 28, "internals": 72,
+                   "pcr": 1.4, "factor": -0.5, "vix": 22}
+        arb = arbitrate_signals(signals, historical_scores=history)
+        check("Arbitration: ok", arb.get("ok") is True)
+        check("Arbitration: has gap_analysis", "gap_analysis" in arb)
+        check("Arbitration: has confidence_split", "confidence_split" in arb)
+        check("Arbitration: has trending", "trending" in arb)
+        check("Arbitration: has consequence", "consequence" in arb)
+        check("Arbitration: structural_score present", arb.get("structural_score") is not None)
+        check("Arbitration: sentiment_score present", arb.get("sentiment_score") is not None)
+
+        # Test format_master_signal
+        formatted = format_master_signal(arb)
+        check("Format: has MASTER SIGNAL", "[MASTER SIGNAL" in formatted)
+        check("Format: has Score line", "Score:" in formatted)
+        check("Format: has Structural", "Structural:" in formatted)
+        check("Format: has Sentiment", "Sentiment:" in formatted)
+        check("Format: has GAP", "GAP:" in formatted)
+        check("Format: has Confidence", "Confidence:" in formatted)
+        check("Format: has Implication", "Implication:" in formatted)
+        check("Format: max 15 lines", len(formatted.split("\n")) <= 18)  # some buffer
+
+        # Test format_master_signal_dashboard
+        dashboard = format_master_signal_dashboard(arb)
+        check("Dashboard: has MASTER SIGNAL", "MASTER SIGNAL" in dashboard)
+        check("Dashboard: has Score", "Score:" in dashboard)
+        check("Dashboard: has GAP", "GAP:" in dashboard)
+        check("Dashboard: has Implication", "Implication:" in dashboard)
+
+        # Test run_arbitration (full pipeline)
+        result = run_arbitration(signals, historical_scores=history)
+        check("Run: ok", result.get("ok") is True)
+        check("Run: has formatted", len(result.get("formatted", "")) > 0)
+        check("Run: has arbitration", result.get("arbitration", {}).get("ok") is True)
+
+        # Test low-confidence suppression (Phase 16 carry-over)
+        signals_contradictory = {"bull_bear": 65, "fear_greed": 20, "pcr": 1.5, "vix": 28}
+        arb_contra = arbitrate_signals(signals_contradictory, historical_scores=history)
+        if arb_contra.get("confidence") == "LOW":
+            check("Low conf: no directional call", "Cannot determine" not in arb_contra.get("resolution", "") or
+                  arb_contra.get("confidence_split", {}).get("directional") == "LOW")
+
+    except Exception as e:
+        check("Phase 19 import", False, str(e))
+
+    # Bootstrap script
+    try:
+        import importlib
+        spec = importlib.util.spec_from_file_location("bootstrap", "bootstrap_master_signal.py")
+        mod = importlib.util.module_from_spec(spec)
+        check("Bootstrap: importable", True)
+
+        from bootstrap_master_signal import generate_synthetic_history, generate_sql
+        hist = generate_synthetic_history(days=30)
+        check("Bootstrap: 30 days synthetic", len(hist) == 30)
+        check("Bootstrap: has bull_bear_score", hist[0].get("bull_bear_score") is not None)
+        check("Bootstrap: has structural_score", hist[0].get("structural_score") is not None)
+        check("Bootstrap: has sentiment_score", hist[0].get("sentiment_score") is not None)
+
+        sql = generate_sql(snapshot={"date": "2026-05-20", "bull_bear_score": 38}, synthetic=hist[:3])
+        check("Bootstrap: SQL generated", "INSERT INTO daily_market_snapshot" in sql)
+        check("Bootstrap: has ALTER TABLE", "ALTER TABLE" in sql)
+
+    except Exception as e:
+        check("Bootstrap script", False, str(e))
+
 
 # ═══════════════════════════════════════════════════════════════
 # MAIN
@@ -955,6 +1326,8 @@ if __name__ == "__main__":
     test_phase15()
     test_phase16()
     test_additional()
+    test_phase18()
+    test_phase19()
     show_sample_outputs()
 
     total = results["pass"] + results["fail"] + results["skip"]

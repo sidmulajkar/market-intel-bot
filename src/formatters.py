@@ -299,12 +299,24 @@ def format_global_indices(index_data: dict) -> str:
 def format_macro_anchors(anchor_data: list) -> str:
     """
     Convert macro anchors to BLOCK 2 string.
-    Includes weekly change and status for each anchor.
+    Includes weekly change, status, and consequence layer for each anchor.
     """
     if not anchor_data:
         return ""
 
     try:
+        from src.consequence_engine import compute_all_consequences, format_consequence_line
+
+        # Pre-compute consequences for all anchors
+        consequences = compute_all_consequences(anchor_data)
+
+        # Map symbol to consequence variable name
+        symbol_to_var = {
+            "BZ=F": "brent", "CL=F": "wti", "^TNX": "us_10y",
+            "DX-Y.NYB": "dxy", "USDINR=X": "usdinr", "^INDIAVIX": "india_vix",
+            "GC=F": "gold", "HG=F": "copper", "^VIX": "cboe_vix", "HYG": "hyg",
+        }
+
         lines = []
         for item in anchor_data:
             if not item.get("ok"):
@@ -315,6 +327,7 @@ def format_macro_anchors(anchor_data: list) -> str:
             change = item.get("change_pct")
             weekly = item.get("weekly_change_pct")
             status = item.get("status", "flat")
+            symbol = item.get("symbol", "")
 
             if price is None or change is None:
                 continue
@@ -338,7 +351,24 @@ def format_macro_anchors(anchor_data: list) -> str:
             # Dollar-denominated
             else:
                 formatted = f"{name}: ${price:,.2f} ({sign}{change:.2f}%){weekly_s} {status_e}"
+
+            # Append consequence line if available
+            var_name = symbol_to_var.get(symbol)
+            if var_name and var_name in consequences:
+                cons_line = format_consequence_line(var_name, consequences[var_name])
+                if cons_line:
+                    formatted += f"\n   {cons_line}"
+
             lines.append(formatted)
+
+        # Compound consequences (USDINR amplifier)
+        try:
+            from src.consequence_engine import compute_compound_consequences
+            compound_lines = compute_compound_consequences(anchor_data)
+            for cline in compound_lines:
+                lines.append(f"   {cline}")
+        except Exception:
+            pass
 
         if not lines:
             return ""
@@ -584,6 +614,14 @@ def format_flows() -> str:
 
         # DII absorption
         lines.append(absorb_label)
+
+        # Net market impact: FII outflow × (1 - absorption ratio)
+        if fii_net < 0 and dii_net > 0:
+            absorption_ratio = min(dii_net / abs(fii_net), 1.0)
+            effective_pressure = fii_net * (1 - absorption_ratio)
+            lines.append(f"Net market impact: FII {fii_net:+.0f}Cr × (1 - {absorption_ratio*100:.0f}% absorbed) = {effective_pressure:+.0f}Cr effective selling pressure")
+        elif fii_net < 0:
+            lines.append(f"Net market impact: FII {fii_net:+.0f}Cr (no DII offset)")
 
         # Trend
         lines.append(trend_str)
@@ -1048,15 +1086,31 @@ def compute_mf_intelligence(ctx: Dict = None, macro_data: Dict = None,
     sc = ctx.get("india_structural", {}).get("smallcap_ratio", {})
     sc_ratio = sc.get("ratio", 0)
     sc_label = sc.get("label", "")
+    try:
+        sc_ratio = float(sc_ratio) if sc_ratio is not None else 0
+    except (ValueError, TypeError):
+        sc_ratio = 0
 
     # VIX (fear gauge)
     vix = macro.get("vix_price")
     vix_regime = macro.get("vix_regime", "UNKNOWN")
+    try:
+        vix = float(vix) if vix is not None else None
+    except (ValueError, TypeError):
+        vix = None
 
     # DII context (domestic MF buying/selling)
     fii_ctx = ctx.get("fii_context", {})
     dii_net = fii_ctx.get("dii_net", 0) if fii_ctx.get("ok") else 0
     dii_absorbed = fii_ctx.get("dii_absorbed", 0) if fii_ctx.get("ok") else 0
+    try:
+        dii_net = float(dii_net) if dii_net is not None else 0
+    except (ValueError, TypeError):
+        dii_net = 0
+    try:
+        dii_absorbed = float(dii_absorbed) if dii_absorbed is not None else 0
+    except (ValueError, TypeError):
+        dii_absorbed = 0
 
     # Gold (defensive proxy)
     gold = None
@@ -1547,6 +1601,10 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
     # Directional lean from bull_bear score
     bull_bear = ctx.get("bull_bear", {})
     bb_score = bull_bear.get("score", 50)  # 0-100, 50=neutral
+    try:
+        bb_score = float(bb_score) if bb_score is not None else 50
+    except (ValueError, TypeError):
+        bb_score = 50
     if bb_score >= 65:
         lean = "Bullish"
     elif bb_score >= 55:
@@ -1595,6 +1653,14 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
         fii_net = fii.get("fii_net", 0)
         streak = fii.get("fii_streak", 0)
         direction = fii.get("fii_streak_direction", "")
+        try:
+            fii_net = float(fii_net) if fii_net is not None else 0
+        except (ValueError, TypeError):
+            fii_net = 0
+        try:
+            streak = int(streak) if streak is not None else 0
+        except (ValueError, TypeError):
+            streak = 0
         fii_pct = get_percentile("fii_net", fii_net, "1Y")
         pct_str = f" | {fii_pct}" if fii_pct else ""
         # Temporal duration context
@@ -1622,6 +1688,14 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
     if fii.get("ok"):
         dii_net = fii.get("dii_net", 0)
         dii_absorbed = fii.get("dii_absorbed", 0)
+        try:
+            dii_net = float(dii_net) if dii_net is not None else 0
+        except (ValueError, TypeError):
+            dii_net = 0
+        try:
+            dii_absorbed = float(dii_absorbed) if dii_absorbed is not None else 0
+        except (ValueError, TypeError):
+            dii_absorbed = 0
         if dii_net > 0 and fii_net < 0:
             evidence.append(f"DII: +₹{dii_net:,.0f}Cr | absorbing {dii_absorbed*100:.0f}% of FII — floor exists")
         elif dii_net > 0:
@@ -1772,10 +1846,35 @@ def format_weekly_digest(scorecard: Dict = None, fii_pattern: Dict = None,
         lines.append(f"{emoji} *This Week: {sc.get('correct', 0)}/{sc.get('total', 0)} predictions correct ({sc.get('accuracy_pct', 0):.0f}%)*")
         if sc.get("cumulative_pct"):
             lines.append(f"📈 Cumulative: {sc['cumulative_pct']:.0f}% ({sc.get('cumulative_total', 0)} predictions)")
+        if sc.get("avg_brier") is not None:
+            brier = sc["avg_brier"]
+            brier_label = "good" if brier < 0.2 else ("fair" if brier < 0.35 else "needs calibration")
+            lines.append(f"🎯 Brier score: {brier:.3f} ({brier_label})")
+        if sc.get("trend"):
+            trend_emoji = "📈" if sc["trend"] == "IMPROVING" else ("📉" if sc["trend"] == "DECLINING" else "➡️")
+            lines.append(f"   Trend: {trend_emoji} {sc['trend']}")
         if sc.get("best_call"):
             lines.append(f"🏆 Best call: {sc['best_call']}")
         if sc.get("worst_call"):
             lines.append(f"❌ Worst call: {sc['worst_call']}")
+
+        # Per-signal hit rates (top 3 best, bottom 3 worst)
+        try:
+            from src.prediction_tracker import get_dynamic_signal_weights
+            weights = get_dynamic_signal_weights(days=7)
+            if weights:
+                sorted_signals = sorted(weights.items(), key=lambda x: x[1].get("hit_rate", 50), reverse=True)
+                best = [(n, d) for n, d in sorted_signals if d.get("occurrences", 0) >= 3][:3]
+                worst = [(n, d) for n, d in sorted_signals if d.get("occurrences", 0) >= 3][-3:]
+                if best:
+                    lines.append("   Top signals: " + ", ".join(
+                        f"{n} ({d['hit_rate']:.0f}%)" for n, d in best))
+                if worst:
+                    lines.append("   Weak signals: " + ", ".join(
+                        f"{n} ({d['hit_rate']:.0f}%)" for n, d in worst))
+        except Exception:
+            pass
+
         lines.append("")
 
     # ── 2. FII Weekly Pattern ──────────────────────────────────────

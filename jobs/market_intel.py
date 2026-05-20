@@ -143,7 +143,7 @@ def main():
             symbol_to_metric = {
                 "BZ=F": "brent", "DX-Y.NYB": "dxy", "^TNX": "us_10y",
                 "GC=F": "gold", "HG=F": "copper", "^INDIAVIX": "india_vix",
-                "CL=F": "brent", "^VIX": "cboe_vix", "HYG": "hyg",
+                "CL=F": "wti", "^VIX": "cboe_vix", "HYG": "hyg",
             }
             for sym, metric in symbol_to_metric.items():
                 for a in anchor_data:
@@ -404,7 +404,7 @@ def main():
             "india_vix": None,
             "pcr": extra_signals.get("pcr"),
             "advance_decline_ratio": extra_signals.get("breadth_ratio"),
-            "bull_bear_score": context_output_data.get("bull_bear", {}).get("normalized_score") if context_output_data else None,
+            "bull_bear_score": ctx.get("bull_bear", {}).get("normalized_score") if ctx else None,
             "fear_greed_score": None,
         }
 
@@ -469,6 +469,7 @@ def main():
 
         # Save snapshot
         from src.db import today_str
+        snapshot_data["data_quality"] = "real"  # Phase 19: mark as real (not estimated)
         save_daily_market_snapshot(today_str(), snapshot_data)
         print(f"   → Snapshot saved for {today_str()}")
 
@@ -716,6 +717,23 @@ def main():
         temporal_data_for_simple = locals().get("temporal", {})
         conf_data_for_simple = locals().get("confidence", {})
 
+        # Extract brent data for oil signal
+        brent_price_simple = None
+        brent_change_simple = None
+        brent_pct_simple = None
+        for a in (anchor_data or []):
+            if a.get("symbol") == "BZ=F" and a.get("ok"):
+                brent_price_simple = a.get("price")
+                brent_change_simple = a.get("change_pct")
+                break
+        # Get brent percentile if available
+        try:
+            from src.formatters import get_percentile_value
+            if brent_price_simple:
+                brent_pct_simple = get_percentile_value("brent", brent_price_simple, "1Y")
+        except Exception:
+            pass
+
         simple_lines = generate_simple_lines(
             arbitration=arb_data_for_simple.get("arbitration", {}) if arb_data_for_simple else None,
             temporal=temporal_data_for_simple,
@@ -723,9 +741,12 @@ def main():
             factor_dominant=factor.get("attribution", {}).get("dominant") if 'factor' in dir() and factor else None,
             confidence_score=conf_data_for_simple.get("confidence_score") if conf_data_for_simple else None,
             pcr=snapshot_data.get("pcr"),
-            vix_regime=persistence.get("current_regime") if 'persistence' in dir() and persistence else None,
-            vix_streak=persistence.get("current_streak_days") if 'persistence' in dir() and persistence else None,
-            vix_avg_duration=persistence.get("avg_historical_duration") if 'persistence' in dir() and persistence else None,
+            vix_regime=vol_persist.get("current_regime") if 'vol_persist' in dir() and vol_persist else None,
+            vix_streak=vol_persist.get("current_streak_days") if 'vol_persist' in dir() and vol_persist else None,
+            vix_avg_duration=vol_persist.get("avg_historical_duration") if 'vol_persist' in dir() and vol_persist else None,
+            brent_price=brent_price_simple,
+            brent_change_pct=brent_change_simple,
+            brent_percentile=brent_pct_simple,
         )
         if simple_lines:
             simple_block = format_simple_block(simple_lines)
@@ -756,6 +777,7 @@ def main():
     # ── FEAR & GREED INDEX (from quant_enrichment) ───────────────
     print("🔄 FEAR & GREED INDEX")
     fear_greed_block = ""
+    fear_greed = None
     try:
         from src.quant_enrichment import compute_fear_greed_index
         fg_data = {}
@@ -906,12 +928,46 @@ def main():
         weights = get_dynamic_signal_weights(days=90)
 
         if arb_signals:
-            arbitration = run_arbitration(arb_signals, weights)
+            # Query historical scores for trending (Phase 19)
+            historical_scores = []
+            try:
+                from src.db import get_daily_market_snapshots
+                hist = get_daily_market_snapshots(days=252)
+                historical_scores = [
+                    {"date": s.get("date"), "bull_bear_score": s.get("bull_bear_score"),
+                     "structural_score": s.get("structural_score"),
+                     "sentiment_score": s.get("sentiment_score"),
+                     "data_quality": s.get("data_quality", "real")}
+                    for s in hist if s.get("bull_bear_score") is not None
+                ]
+            except Exception:
+                pass
+
+            # Get nifty percentile for accumulation/distribution detection
+            nifty_pct_arb = None
+            try:
+                from src.formatters import get_percentile_value
+                if snapshot_data.get("nifty_close"):
+                    nifty_pct_arb = get_percentile_value("nifty_close", snapshot_data["nifty_close"], "1Y")
+            except Exception:
+                pass
+
+            arbitration = run_arbitration(arb_signals, weights, historical_scores=historical_scores, nifty_percentile=nifty_pct_arb)
             if arbitration.get("ok"):
                 master_signal_block = arbitration["formatted"]
                 art = arbitration["arbitration"]
                 print(f"   → Master: {art['master_score']}/100 ({art['master_label']})")
                 print(f"   → Contradiction: {art['contradiction_level']}, Confidence: {art['confidence']}")
+
+                # Persist cluster scores to snapshot (Phase 19)
+                snapshot_data["structural_score"] = art.get("structural_score")
+                snapshot_data["sentiment_score"] = art.get("sentiment_score")
+                snapshot_data["cluster_gap"] = art.get("spread")
+                # Re-save with cluster scores
+                try:
+                    save_daily_market_snapshot(today_str(), snapshot_data)
+                except Exception:
+                    pass
     except Exception as e:
         print(f"   ⚠️ Arbitration: {e}")
 
@@ -1022,6 +1078,16 @@ def main():
     if market_state_block:
         prompt += "\n\n" + market_state_block
 
+    # ── INJECT SIGNAL WEIGHTS (accuracy feedback) ──────────────
+    try:
+        from src.prediction_tracker import format_signal_weights
+        if weights:
+            signal_weights_block = format_signal_weights(weights)
+            if signal_weights_block:
+                prompt += "\n\n" + signal_weights_block
+    except Exception:
+        pass
+
     # ── INJECT SIMPLE LINES (Block -1, always first) ────────────
     if simple_block:
         prompt = simple_block + "\n\n" + prompt
@@ -1049,6 +1115,14 @@ def main():
         send_text("🚨 *Market Intel Unavailable*\n\nNo data from any source.")
         return
 
+    # ── BLOCK VALIDATION (pre-AI quality check) ───────────────────
+    try:
+        from src.block_validator import validate_all_blocks, format_validation_report
+        block_validation = validate_all_blocks(blocks)
+        print(format_validation_report(block_validation))
+    except Exception as e:
+        print(f"   ⚠️ Block validation: {e}")
+
     # ── AI Analysis ───────────────────────────────────────────────
     print(f"   ⏱️ Data + Quant: {_time.time()-_t0:.1f}s")
     _t0 = _time.time()
@@ -1061,6 +1135,14 @@ def main():
         analysis = "⚠️ AI analysis temporarily unavailable."
         send_text(f"🚨 *Market Intel*\n\n{analysis}")
         return
+
+    # ── PRE-SEND CHECKLIST (10 hard gates) ───────────────────────
+    try:
+        from src.block_validator import pre_send_checklist, format_checklist_report
+        checklist = pre_send_checklist(blocks, snapshot_data, analysis)
+        print(format_checklist_report(checklist))
+    except Exception as e:
+        print(f"   ⚠️ Pre-send checklist: {e}")
 
     # ── OUTPUT VALIDATION (pre-send consistency check) ───────────
     print("🔄 VALIDATING OUTPUT")

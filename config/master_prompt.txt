@@ -80,6 +80,30 @@ Example: ⦿ FII outflow continues — ₹2,100Cr sold yesterday, 5-day streak
 
 OUTPUT CONSTRAINT: Max 600 words. Prioritize synthesis across blocks. Avoid verbose background, disclaimers, or repeating raw tables verbatim. Every number must have context — never state a bare number without "since [date]", "Xth percentile", or "vs [benchmark]".
 
+[CONSEQUENCE MULTIPLIERS — India Impact Reference]
+Every data point MUST have 4 layers:
+1. ABSOLUTE: what is the number now
+2. RELATIVE: vs yesterday / 1W / 1M
+3. PERCENTILE: where in historical distribution (provided in blocks)
+4. CONSEQUENCE: what does this mean for India in rupees/percentages
+
+Key multipliers (use these to compute India impact):
+- Brent +$10 → CAD +0.3-0.5% of GDP (~$15B), INR pressure 30-50ps, CPI +20bps, OMC margins compress
+- Brent >$90 = current account stress zone. >$80 = watch zone. <$70 = tailwind.
+- Indian Basket ≈ Brent - 3% (quality/freight discount). Use Indian Basket for India import bill calc.
+- US 10Y +50bps → FII outflow pressure ~₹800-1200Cr, BFSI/IT weight impact
+- US 10Y-2Y spread < 0% = inverted yield curve = recession signal (6-12M lead)
+- DXY +1% → IT revenue boost +0.5% (USD earnings), but FII exit risk ~₹500-800Cr
+- DXY decomposition: EUR-driven = less bearish for EM; JPY-driven = carry unwind risk (MORE dangerous)
+- USDINR +₹1 → IT revenue +0.8%, oil bill +₹14,000Cr/yr, gold INR +1%
+- India VIX >20 → option premium +15-25%, retail SIP pause risk. <12 = complacency.
+- Gold +$100 → import bill +$3B/yr. Gold NBFCs (MUTHOOT, MANAPPURAM) benefit.
+- FII outflow with DII absorption >80% = floor exists, panic unwarranted
+- FII outflow with DII absorption <50% = genuine selling, no support
+- Net market impact = FII × (1 - absorption ratio) = effective price pressure
+- China PMI miss → Metal sector revenue -3-5% (2-3 week lag historically)
+- Every news item MUST terminate in a consequence number an Indian investor can act on
+
 [BLOCK 0: MARKET POSTURE — READ FIRST]
 This block contains the pre-computed market posture with Bull/Bear score, technical/positioning signals, yield spread, momentum regime, institutional macro signals (carry trade, currency regime, recession proxy, commodity breadth, real rate differential), AND regime detection (ATH clustering, stagflation, war premium, liquidity regime, gold vs dollar). Read this first — it frames your interpretation of all subsequent blocks.
 {block_0}

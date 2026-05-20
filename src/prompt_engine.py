@@ -45,7 +45,14 @@ def score_block_relevance(block_name: str, block_text: str,
     if any(ind in block_text.lower() for ind in confirmation_indicators):
         score += 1
 
-    return min(4, score)
+    # 5. Does block contain consequence layer? (India-impact framing)
+    consequence_indicators = ["cad stress", "inr pressure", "annualized", "import bill",
+                              "effective selling", "fii outflow", "margin compress",
+                              "current account", "subsidy", "depreciation pressure"]
+    if any(ind in block_text.lower() for ind in consequence_indicators):
+        score += 1
+
+    return min(5, score)
 
 
 def rank_blocks(blocks: Dict[str, str], signals: Dict = None) -> List[Tuple[str, int, str]]:

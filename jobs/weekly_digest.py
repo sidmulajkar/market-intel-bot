@@ -32,6 +32,8 @@ def compute_scorecard() -> dict:
             "correct": stats["correct"],
             "total": stats["total"],
             "accuracy_pct": stats["hit_rate"],
+            "avg_brier": stats.get("avg_brier"),
+            "trend": stats.get("trend"),
             "best_call": f"{best.get('date','')} {'✅' if best.get('correct') else '❌'} ({best.get('change',0):+.1f}%)",
             "worst_call": f"{worst.get('date','')} {'✅' if worst.get('correct') else '❌'} ({worst.get('change',0):+.1f}%)",
         }

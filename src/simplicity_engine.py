@@ -54,6 +54,40 @@ def translate_fii_signal(fii_net: float = None, fii_streak: int = None,
         return f"{icon} Foreign money {direction} {amount} today"
 
 
+def translate_oil_signal(brent_price: float = None, brent_change_pct: float = None,
+                         brent_percentile: float = None) -> str:
+    """Translate oil data into a rupee consequence one-liner."""
+    if brent_price is None:
+        return None
+
+    # India imports ~5M barrels/day = ~1.8B barrels/yr
+    # Every $10 rise = ~$18B additional import bill
+    annual_import_bill_usd = brent_price * 1.8  # rough: price × barrels in billions
+    import_bill_display = f"${annual_import_bill_usd:.0f}B/yr"
+
+    # INR pressure: ~3ps per $1 above $70 baseline
+    inr_pressure_ps = max(0, (brent_price - 70) * 3)
+
+    # Percentile context
+    pct_str = ""
+    if brent_percentile is not None:
+        if brent_percentile >= 90:
+            pct_str = f" ({brent_percentile:.0f}th %ile — extreme)"
+        elif brent_percentile >= 75:
+            pct_str = f" ({brent_percentile:.0f}th %ile — elevated)"
+        elif brent_percentile <= 25:
+            pct_str = f" ({brent_percentile:.0f}th %ile — low)"
+
+    if brent_price >= 100:
+        return f"🔴 Brent ${brent_price:.0f}{pct_str} → India pays ~{import_bill_display}, INR pressure ~{inr_pressure_ps:.0f}ps"
+    elif brent_price >= 85:
+        return f"🟡 Brent ${brent_price:.0f}{pct_str} → oil bill {import_bill_display}, INR pressure ~{inr_pressure_ps:.0f}ps"
+    elif brent_price >= 70:
+        return f"⚪ Brent ${brent_price:.0f}{pct_str} → oil neutral, no major India impact"
+    else:
+        return f"🟢 Brent ${brent_price:.0f}{pct_str} → tailwind for CAD, OMC margins healthy"
+
+
 def translate_contradiction(contradiction_level: str, spread: int = 0) -> str:
     """Translate contradiction into simple line."""
     if contradiction_level in ("VERY HIGH", "HIGH"):
@@ -167,7 +201,9 @@ def generate_simple_lines(arbitration: Dict = None, temporal: Dict = None,
                            confidence_score: int = None, hhi: int = None,
                            turnover_ratio: float = None, pcr: float = None,
                            vix_regime: str = None, vix_streak: int = None,
-                           vix_avg_duration: float = None) -> List[str]:
+                           vix_avg_duration: float = None,
+                           brent_price: float = None, brent_change_pct: float = None,
+                           brent_percentile: float = None) -> List[str]:
     """
     Generate simple human-readable lines from complex signals.
     Max 4 lines. No jargon. Action-oriented.
@@ -195,12 +231,17 @@ def generate_simple_lines(arbitration: Dict = None, temporal: Dict = None,
             if fii_line:
                 lines.append(fii_line)
 
-    # Priority 3: Market health
+    # Priority 3: Oil (India's biggest macro sensitivity)
+    oil_line = translate_oil_signal(brent_price, brent_change_pct, brent_percentile)
+    if oil_line:
+        lines.append(oil_line)
+
+    # Priority 4: Market health
     internals_line = translate_internals(internals_score)
     if internals_line:
         lines.append(internals_line)
 
-    # Priority 4: Factor direction
+    # Priority 5: Factor direction
     factor_line = translate_factor(factor_dominant)
     if factor_line:
         lines.append(factor_line)
