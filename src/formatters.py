@@ -550,16 +550,16 @@ def format_flows() -> str:
         dii_net = last_week["diinet_cr"]
         net     = fii_net + dii_net
 
-        # ── DII absorption ratio ──
-        if fii_net < 0 and dii_net > 0:
-            absorption = (dii_net / abs(fii_net)) * 100
+        # ── DII absorption ratio (same-day only) ──
+        if fii_latest < 0 and dii_latest > 0:
+            absorption = (dii_latest / abs(fii_latest)) * 100
             if absorption > 80:
                 absorb_label = f"DII absorbing {absorption:.0f}% of FII sell — strong floor"
             elif absorption > 50:
                 absorb_label = f"DII absorbing {absorption:.0f}% of FII sell — partial support"
             else:
                 absorb_label = f"DII absorbing {absorption:.0f}% of FII sell — weak support"
-        elif fii_net > 0:
+        elif fii_latest > 0:
             absorb_label = "FII buying — DII absorption not relevant"
         else:
             absorb_label = "Both FII/DII direction unclear"
@@ -596,11 +596,12 @@ def format_flows() -> str:
             trend_str = f"4-week FII trend: " + " | ".join(
                 [f"Wk-{4-len(fii_nets)+i+1}: {x:+.0f}" for i, x in enumerate(fii_nets)
             ]) + f" ({trend_label})"
+        elif len(fii_nets) >= 2:
+            trend_str = f"FII weekly: " + " | ".join(
+                [f"Wk-{i+1}: {x:+.0f}" for i, x in enumerate(fii_nets)]
+            ) + " (accumulating)"
         else:
-            wks = len(fii_nets)
-            trend_str = f"4-week trend: ({wks} weeks) " + " | ".join(
-                [f"Wk-{i+1}: {x:+.0f}" for i, x in enumerate(reversed(fii_nets))]
-            )
+            trend_str = None
 
         # ── Build output ──
         lines = [
@@ -622,25 +623,29 @@ def format_flows() -> str:
             z_label = "sharp outflow" if fii_z < 0 else "sharp inflow"
             lines.append(f"FII z-score: {fii_z:+.1f} ({z_label} vs 20D avg)")
 
-        # 5-day stats
-        lines.append(f"5-day FII: total {fii_5d_total:+.0f} Cr | avg {fii_5d_avg:+.0f} Cr | "
-                     f"range [{largest_sell_day:+.0f}, {largest_buy_day:+.0f}]")
+        # 5-day stats — require ≥3 days
+        if len(df) >= 3:
+            lines.append(f"5-day FII: total {fii_5d_total:+.0f} Cr | avg {fii_5d_avg:+.0f} Cr | "
+                         f"range [{largest_sell_day:+.0f}, {largest_buy_day:+.0f}]")
+        else:
+            lines.append(f"5-day FII: accumulating ({len(df)}/5 days)")
 
         # DII absorption
         lines.append(absorb_label)
 
-        # Net market impact: FII + DII = effective pressure
-        if fii_net < 0 and dii_net > 0:
-            effective_pressure = fii_net + dii_net
+        # Net market impact (same-day flows)
+        if fii_latest < 0 and dii_latest > 0:
+            effective_pressure = fii_latest + dii_latest
             if effective_pressure > 0:
                 lines.append(f"Net market impact: ₹{effective_pressure:+.0f}Cr (net buying — DII more than offset FII)")
             else:
                 lines.append(f"Net market impact: ₹{effective_pressure:+.0f}Cr effective selling pressure")
-        elif fii_net < 0:
-            lines.append(f"Net market impact: ₹{fii_net:+.0f}Cr (no DII offset)")
+        elif fii_latest < 0:
+            lines.append(f"Net market impact: ₹{fii_latest:+.0f}Cr (no DII offset)")
 
-        # Trend
-        lines.append(trend_str)
+        # Trend (suppress if insufficient data)
+        if trend_str:
+            lines.append(trend_str)
 
         return "\n".join(lines)
 
@@ -1690,12 +1695,23 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
                 temporal_suffix = f" (avg {avg_dur:.0f}d)"
             if label_word:
                 temporal_suffix += f" → {label_word.lower()}"
+        fii_4w_avg = fii.get("fii_4w_avg", 0)
+        try:
+            fii_4w_avg = float(fii_4w_avg) if fii_4w_avg is not None else 0
+        except (ValueError, TypeError):
+            fii_4w_avg = 0
         if streak >= 3 and direction == "negative":
-            total = fii.get("fii_4w_avg", 0) * streak
-            evidence.append(f"FII: -₹{abs(fii_net):,.0f}Cr | Day {streak}{temporal_suffix}{pct_str} | ₹{abs(total):,.0f}Cr total")
+            if fii_4w_avg and abs(fii_4w_avg) > 0:
+                total = fii_4w_avg * streak
+                evidence.append(f"FII: -₹{abs(fii_net):,.0f}Cr | Day {streak}{temporal_suffix}{pct_str} | ₹{abs(total):,.0f}Cr total")
+            else:
+                evidence.append(f"FII: -₹{abs(fii_net):,.0f}Cr | Day {streak}{temporal_suffix}{pct_str} | 4W avg accumulating")
         elif streak >= 3 and direction == "positive":
-            total = fii.get("fii_4w_avg", 0) * streak
-            evidence.append(f"FII: +₹{fii_net:,.0f}Cr | Day {streak}{temporal_suffix}{pct_str} | ₹{total:,.0f}Cr total")
+            if fii_4w_avg and abs(fii_4w_avg) > 0:
+                total = fii_4w_avg * streak
+                evidence.append(f"FII: +₹{fii_net:,.0f}Cr | Day {streak}{temporal_suffix}{pct_str} | ₹{total:,.0f}Cr total")
+            else:
+                evidence.append(f"FII: +₹{fii_net:,.0f}Cr | Day {streak}{temporal_suffix}{pct_str} | 4W avg accumulating")
         elif abs(fii_net) > 1000:
             sign = "-" if fii_net < 0 else "+"
             evidence.append(f"FII: {sign}₹{abs(fii_net):,.0f}Cr{pct_str} yesterday")
@@ -1818,6 +1834,16 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
         if fii_align:
             aligned += 1
         streak_str = f" ({streak}d streak)" if streak >= 3 else ""
+        # Add streak maturity from temporal context
+        if streak >= 3:
+            fii_temporal = temporal_metrics.get("fii_net", {})
+            avg_dur = fii_temporal.get("avg_historical_duration", 0)
+            if avg_dur and avg_dur > 0:
+                pct_of_avg = streak / avg_dur * 100
+                if pct_of_avg > 80:
+                    streak_str += " — mature"
+                elif pct_of_avg < 40:
+                    streak_str += " — early"
         signal_details.append(f"  {fii_icon} FII: ₹{fii_net:+,.0f}Cr{streak_str}")
     else:
         unfired_reasons.append("FII data unavailable")

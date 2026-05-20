@@ -83,6 +83,8 @@ def main():
         return
 
     blocks = {}
+    source_health = {}  # Track which sources succeeded/failed
+    anchor_data = None  # Initialized for health check
 
     # ── BLOCK 1: Global Indices ───────────────────────────────────
     _t0 = _time.time()
@@ -756,23 +758,52 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Simplicity: {e}")
 
-    # ── STALENESS DETECTION ──────────────────────────────────────
-    print("🔄 STALENESS CHECK")
+    # ── SOURCE HEALTH CHECK ──────────────────────────────────────
+    print("🔄 SOURCE HEALTH CHECK")
+    source_health = {}
+    try:
+        # Check which blocks have content (non-empty)
+        block_checks = {
+            "Global Indices": bool(blocks.get("block_1", "").strip()),
+            "Macro Anchors": bool(blocks.get("block_2", "").strip()),
+            "Sector FPI": bool(blocks.get("block_3", "").strip()),
+            "FII/DII Flows": bool(blocks.get("block_4", "").strip()),
+            "Options": bool(blocks.get("block_5", "").strip()),
+            "News": bool(blocks.get("block_6", "").strip()),
+            "Insider": bool(blocks.get("block_7", "").strip()),
+            "Watchlist": bool(blocks.get("block_8", "").strip()),
+            "Calendar": bool(blocks.get("block_9", "").strip()),
+        }
+        # Check critical data objects (use locals().get for safety)
+        _anchor = locals().get("anchor_data")
+        _fii_ctx = locals().get("fii_ctx")
+        data_checks = {
+            "Breadth": breadth is not None,
+            "Anchor Data": _anchor is not None and len(_anchor) > 0,
+            "FII Context": _fii_ctx is not None,
+        }
+        source_health = {**block_checks, **data_checks}
+        failed = [k for k, v in source_health.items() if not v]
+        if failed:
+            print(f"   ⚠️ Sources missing: {', '.join(failed)}")
+        else:
+            print(f"   ✅ All sources healthy")
+    except Exception as e:
+        print(f"   ⚠️ Health check: {e}")
+
+    # Build health block for AI prompt
     staleness_block = ""
     try:
-        from src.staleness_detector import check_batch_staleness, format_staleness
-        from datetime import datetime
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        staleness_items = [
-            {"source": "NSE Options", "timestamp": now_str, "max_age": 30},
-            {"source": "FII Data", "timestamp": now_str, "max_age": 60},
-        ]
-        staleness = check_batch_staleness(staleness_items)
-        if staleness.get("stale_count", 0) > 0:
-            staleness_block = format_staleness(staleness)
-            print(f"   → Staleness: {staleness['stale_count']} sources stale")
+        failed_sources = [k for k, v in source_health.items() if not v]
+        if failed_sources:
+            lines = ["[Data Source Status]"]
+            for src in failed_sources:
+                lines.append(f"  ⚠️ {src}: data unavailable — analysis may be incomplete")
+            lines.append(f"  {len(failed_sources)} source(s) missing. Context based on available data only.")
+            staleness_block = "\n".join(lines)
+            print(f"   → Health: {len(failed_sources)} sources missing")
     except Exception as e:
-        print(f"   ⚠️ Staleness: {e}")
+        print(f"   ⚠️ Health block: {e}")
 
     # ── FEAR & GREED INDEX (from quant_enrichment) ───────────────
     print("🔄 FEAR & GREED INDEX")
@@ -1148,15 +1179,36 @@ def main():
     print("🔄 VALIDATING OUTPUT")
     try:
         from src.output_validator import validate_output
+        # Compute absorption % for fallback context
+        _fii_net = snapshot_data.get("fii_net", 0) or 0
+        _dii_net = snapshot_data.get("dii_net", 0) or 0
+        _absorption_pct = None
+        if _fii_net < 0 and _dii_net > 0:
+            _absorption_pct = (_dii_net / abs(_fii_net)) * 100
+
+        # Compute VIX percentile for consistency check
+        _vix_pct = None
+        try:
+            from src.formatters import get_percentile_value
+            _vix_val = snapshot_data.get("india_vix")
+            if _vix_val:
+                _vix_pct = get_percentile_value("india_vix", _vix_val, "1Y")
+        except Exception:
+            pass
+
         ground_truth = {
             "bull_bear_score": snapshot_data.get("bull_bear_score"),
             "fii_net": snapshot_data.get("fii_net"),
+            "dii_net": snapshot_data.get("dii_net"),
             "nifty_close": snapshot_data.get("nifty_close"),
             "pcr": snapshot_data.get("pcr"),
             "india_vix": snapshot_data.get("india_vix"),
+            "vix_percentile": _vix_pct,
             "brent": snapshot_data.get("brent"),
             "gold": snapshot_data.get("gold"),
             "usdinr": snapshot_data.get("usdinr"),
+            "cross_asset_regime": snapshot_data.get("cross_asset_regime"),
+            "absorption_pct": _absorption_pct,
         }
         validation = validate_output(analysis, ground_truth)
         if not validation["send"]:

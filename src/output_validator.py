@@ -200,7 +200,9 @@ def validate_output(ai_text: str, ground_truth: Dict) -> Dict:
     advice_keywords = [
         'go long', 'go short', 'buy ', 'sell ', 'long on', 'short on',
         'enter position', 'exit position', 'take profit', 'stop loss',
-        'long position', 'short position'
+        'long position', 'short position', 'short the',
+        'consider adding', 'should outperform', 'recommend',
+        'investors should', 'expect nifty to', 'expect market to'
     ]
     for kw in advice_keywords:
         if kw in text_lower:
@@ -209,10 +211,23 @@ def validate_output(ai_text: str, ground_truth: Dict) -> Dict:
             break
 
     # Hallucinated percentage check
-    hallucinated_pct = re.findall(r'\d+%\s*(?:bull|bear|probability|chance|likely|base)', text_lower)
+    hallucinated_pct = re.findall(
+        r'\d+\s*(?:%|percent)\s*(?:bull|bear|bullish|bearish|probability|chance|likely|upside|downside)'
+        r'|(?:bull|bear|bullish|bearish|probability|chance).*\d+\s*(?:%|percent)',
+        text_lower
+    )
     if hallucinated_pct:
         extra_issues.append(f"HALLUCINATED %: {hallucinated_pct[0]} — probabilities must be Python-computed")
         extra_severity = "MAJOR"
+
+    # Hallucinated confidence check (unsubstantiated probability language)
+    confidence_phrases = ['high probability', 'likely to', 'very likely', 'unlikely to',
+                          'expected to rise', 'expected to fall', 'will rise', 'will fall']
+    for phrase in confidence_phrases:
+        if phrase in text_lower:
+            extra_issues.append(f"HALLUCINATED CONFIDENCE: '{phrase}' — predictions must be conditional (If X → Y)")
+            extra_severity = "MAJOR"
+            break
 
     # Stale price level check
     nifty = ground_truth.get("nifty_close")
@@ -221,7 +236,7 @@ def validate_output(ai_text: str, ground_truth: Dict) -> Dict:
         for num_str in claims.get("numbers", []):
             try:
                 num = int(num_str.replace(",", ""))
-                if nifty and 20000 < num < 30000:
+                if nifty and 15000 < num < 30000:
                     if abs(num - nifty) / nifty > 0.15:
                         extra_issues.append(f"STALE LEVEL: {num} is {abs(num-nifty)/nifty*100:.0f}% from Nifty {nifty}")
                         extra_severity = "MAJOR"
@@ -231,6 +246,42 @@ def validate_output(ai_text: str, ground_truth: Dict) -> Dict:
                         extra_severity = "MAJOR"
             except ValueError:
                 pass
+
+    # Cross-block consistency checks
+    consistency_issues = []
+    fii_net = ground_truth.get("fii_net", 0) or 0
+    nifty = ground_truth.get("nifty_close", 0) or 0
+    dii_net = ground_truth.get("dii_net", 0) or 0
+    absorption_pct = ground_truth.get("absorption_pct") or 0
+
+    # Q1: Net impact direction vs Nifty direction
+    if fii_net < 0 and dii_net > 0:
+        effective = fii_net + dii_net
+        if effective > 0 and claims.get("tone") == "BEARISH":
+            consistency_issues.append("CONSISTENCY: Net FII+DII is positive but narrative is bearish")
+        elif effective < 0 and claims.get("tone") == "BULLISH":
+            consistency_issues.append("CONSISTENCY: Net FII+DII is negative but narrative is bullish")
+
+    # Q2: Absorption vs regime label
+    if absorption_pct > 100 and "weak" in text_lower:
+        consistency_issues.append("CONSISTENCY: DII absorption >100% but narrative calls it 'weak'")
+    elif absorption_pct < 50 and "strong floor" in text_lower:
+        consistency_issues.append("CONSISTENCY: DII absorption <50% but narrative calls it 'strong floor'")
+
+    # Q3: VIX vs volatility tone
+    vix = ground_truth.get("india_vix", 0) or 0
+    vix_percentile = ground_truth.get("vix_percentile") or 0
+    if vix > 25 and "complacent" in text_lower:
+        consistency_issues.append("CONSISTENCY: VIX >25 but narrative calls market 'complacent'")
+    elif vix_percentile >= 70 and "complacent" in text_lower:
+        consistency_issues.append(f"CONSISTENCY: VIX at {vix_percentile:.0f}th percentile but narrative calls market 'complacent'")
+    elif vix < 15 and "fear" in text_lower and "no fear" not in text_lower:
+        consistency_issues.append("CONSISTENCY: VIX <15 but narrative mentions 'fear'")
+
+    if consistency_issues:
+        extra_issues.extend(consistency_issues)
+        if extra_severity != "MAJOR":  # Don't downgrade from MAJOR
+            extra_severity = "MINOR"
 
     # Merge extra issues into validation result
     if extra_issues:
@@ -298,6 +349,28 @@ def _generate_fallback(ground_truth: Dict) -> str:
     usdinr = ground_truth.get("usdinr")
     if usdinr:
         lines.append(f"  USDINR: ₹{usdinr:.2f}")
+
+    # Regime context — makes fallback actionable
+    regime = ground_truth.get("cross_asset_regime")
+    if regime:
+        lines.append(f"  Regime: {regime}")
+
+    absorption = ground_truth.get("absorption_pct")
+    if absorption:
+        try:
+            absorption = float(absorption)
+            lines.append(f"  Key: DII absorbing {absorption:.0f}% of FII outflow")
+        except (ValueError, TypeError):
+            pass
+
+    bb = ground_truth.get("bull_bear_score")
+    if bb is not None:
+        if bb >= 60:
+            lines.append("  Signal: Bullish lean — AI output rejected for data contradictions")
+        elif bb <= 40:
+            lines.append("  Signal: Bearish lean — AI output rejected for data contradictions")
+        else:
+            lines.append("  Signal: Mixed — no directional call")
 
     lines.append("")
     lines.append("  Note: AI brief was discarded due to data contradictions.")
