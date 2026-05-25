@@ -6,6 +6,7 @@ Used by formatters to add WHY and SO WHAT to every data point.
 
 Design: Static dict, zero computation cost. Just look up triggered mechanisms.
 """
+from src.formatters import _ordinal
 
 # ═══════════════════════════════════════════════════════════════════════
 # MECHANISM MAP: Event → Transmission → Sector Impact → Action
@@ -286,10 +287,10 @@ def detect_triggered_mechanisms(anchor_data: list, percentile_data: dict = None)
                     if pct_val is not None and severity in ("MILD", "MODERATE"):
                         if pct_val >= 85:
                             severity = "ELEVATED"
-                            label = f"{label} ({pct_val:.0f}th %ile — historically extreme)"
+                            label = f"{label} ({_ordinal(int(pct_val))} %ile — historically extreme)"
                         elif pct_val <= 15:
                             severity = "ELEVATED"
-                            label = f"{label} ({pct_val:.0f}th %ile — historically extreme)"
+                            label = f"{label} ({_ordinal(int(pct_val))} %ile — historically extreme)"
                 triggered.append({
                     "key": key,
                     "trigger_value": change,
@@ -307,10 +308,10 @@ def detect_triggered_mechanisms(anchor_data: list, percentile_data: dict = None)
                     if pct_val is not None and severity in ("MILD", "MODERATE"):
                         if pct_val >= 85:
                             severity = "ELEVATED"
-                            label = f"{label} ({pct_val:.0f}th %ile — historically extreme)"
+                            label = f"{label} ({_ordinal(int(pct_val))} %ile — historically extreme)"
                         elif pct_val <= 15:
                             severity = "ELEVATED"
-                            label = f"{label} ({pct_val:.0f}th %ile — historically extreme)"
+                            label = f"{label} ({_ordinal(int(pct_val))} %ile — historically extreme)"
                 triggered.append({
                     "key": key,
                     "trigger_value": change,

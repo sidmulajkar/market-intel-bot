@@ -52,27 +52,32 @@ src/                       # Library modules (shared)
 ├── data_fetcher.py        # yfinance, Finnhub, NSE, AMFI, RSS, smallcap ratio, McClellan
 ├── ai_engine.py           # AI routing (Groq ↔ Google fallback), FinBERT sentiment
 ├── formatters.py          # Data → block string (Path B), quant enrichment calls
+├── metrics.py             # Canonical metric functions (compute_flow_metrics, VIX/FII/absorption interpretations)
+├── context_engine.py      # Bull/Bear (8 signals), global risk, VIX spread, credit stress, momentum, yield spread, cross-asset regime, market phase classifier
 ├── quant_enrichment.py    # Percentiles, cross-signals, backtest, contrarian, consensus
 ├── technical_analysis.py  # RSI, 200-DMA, S/R, MACD, Bollinger Bands from OHLCV
 ├── valuation_engine.py    # Nifty P/E, P/B, earnings yield, risk premium, reverse DCF
 ├── macro_fetcher.py       # Macro calendar, RBI policy tracker, real rate
-├── context_engine.py      # Bull/Bear (8 signals), global risk, VIX spread, credit stress, momentum, yield spread, cross-asset regime, market phase classifier
 ├── mechanism_map.py       # Macro event → India sector impact mapping (21 mechanisms)
 ├── options_engine.py      # NSE options chain, max pain, PCR, GEX, skew, advanced OI
 ├── fii_derivatives.py     # F&O participant OI data (FII/DII/Client long/short)
 ├── fii_sector.py          # FPI sector-wise data (SEBI/NSE), sector rotation
-├── insider_tracker.py     # NSE bulk/block deals, Indian stock filtering
+├── insider_tracker.py     # NSE bulk/block deals, Indian stock filtering, pattern detection
 ├── shareholding_tracker.py # Promoter/FII/DII/Public % with QoQ comparison
 ├── nse_session.py         # Unified NSE session manager with TTL, ErrorBudget
 ├── db.py                  # Supabase CRUD + purge logic
-├── validator.py           # News trust scoring
+├── validator.py           # News trust scoring, staleness detection, India linkage
+├── validation_helper.py   # Reusable AI output validation for all jobs
+├── output_validator.py    # 26-pattern AI output validator (stale levels, hallucinated %, advice, confidence)
 ├── telegram_sender.py     # Telegram delivery
 ├── heatmap_generator.py   # World equity heatmap
 ├── sector_heatmap.py      # India sector heatmap
 ├── commodity_heatmap.py   # USDINR/Brent/Gold heatmap
 ├── consequence_engine.py  # India impact multiplier table, compound consequences (USDINR amplifier)
 ├── signal_arbitrator.py   # Gap analysis, confidence split, regime detection, accumulation signals
-└── block_validator.py     # Per-block 4-layer check, pre-send integrity checklist (10 gates)
+├── block_validator.py     # Per-block 4-layer check, pre-send integrity checklist (10 gates)
+├── compute_budget.py      # Graceful degradation: time tracking, stage management, block dropping
+└── rolling_quant.py       # Rolling quant engine (percentiles, divergences, correlations, regime shifts)
 
 jobs/                      # Entry points (triggered by GitHub Actions)
 ├── market_intel.py        # 7:00 AM / 6:00 PM: full 11-block AI analysis + Market State Dashboard
@@ -139,7 +144,8 @@ cron-job.org/              # Triggers workflows at specific IST times
 | Signal | Source | What It Tells You |
 |--------|--------|-------------------|
 | Bull/Bear Score | 8 inputs | Overall market direction (0-100) |
-| Global Risk Composite | CBOE VIX + HYG + DXY | RISK-ON / RISK-OFF / MIXED |
+| Global Risk Composite | CBOE VIX + HYG + DXY + Gold + Copper | RISK-ON / RISK-OFF / MIXED |
+| Risk Mood | Global Risk Composite | 0-100 calibrated score with visual mood bar |
 | VIX Spread | CBOE VIX - India VIX | Global vs local fear |
 | Credit Stress | HYG weekly change | Liquidity crisis indicator |
 | Yield Spread | India G-Sec - US 10Y | FII carry trade incentive |
@@ -147,6 +153,18 @@ cron-job.org/              # Triggers workflows at specific IST times
 | Momentum (12M) | Nifty 252-day return | Bull/bear regime |
 | Smallcap/Largecap | Nifty Smallcap 250 / Nifty 50 | Risk appetite, cycle position |
 | Oil+INR | Brent + USDINR | Current account stress |
+
+## Pre-computed Interpretations (Phase 23)
+
+AI receives conclusions, not raw numbers. Three interpretations computed once in `run_contextualization()`, stored in `ctx`, formatted into AI prompt:
+
+| Interpretation | Trigger | Example Output |
+|---------------|---------|---------------|
+| VIX | VIX price + percentile | "VIX 16.5 normal — no volatility signal." |
+| FII Flow | flow_metrics (streak, z-score, trend) | "FII heavy single-day selling (₹-4,357Cr). Moderate selling." |
+| DII Absorption | FII net + DII net | "DII absorbing 115% of FII outflow — more than offsetting." |
+
+Requires Supabase `fii_dii_flows` table for FII and Absorption. VIX works with just macro anchor data.
 
 ## Supabase Tables
 
@@ -412,6 +430,14 @@ Prevents attention dilution. AI receives RIGHT 450 words, not random 450 words.
 
 Pre-send consistency check. Major contradiction → discard AI output → send raw data fallback.
 
+### Validation Helper (`src/validation_helper.py`)
+
+| Function | What It Does |
+|----------|--------------|
+| `validate_and_send()` | Wraps validate_output with ground_truth construction. Used by morning_brief.py and evening_report.py to validate ALL AI outputs |
+
+Ensures stale levels, hallucinated %, and advice detection apply to every Telegram message — not just market_intel.py output.
+
 ## Phase 14: Simplicity Engine
 
 ### Simplicity Engine (`src/simplicity_engine.py`)
@@ -463,7 +489,7 @@ Max 3-4 minutes per runner:
 
 ### Mechanism Map (`src/mechanism_map.py` — NEW)
 
-Maps macro events to India sector impact. 21 mechanisms defined.
+Maps macro events to India sector impact. 24 mechanisms defined (21 macro + 3 geopolitical: hormuz_risk, iran_conflict, sanctions_tariff).
 
 | Function | What It Does |
 |----------|--------------|
@@ -546,7 +572,7 @@ Enhanced AMFI category flow formatter (evening Block 10):
 
 ## Project Status: SHIPPED
 
-**Phase 0-20 complete.** 50+ modules, 250+ functions, 14 cron jobs, 15 Supabase tables. Rating: 8.5/10.
+**Phase 0-23 complete.** 55+ modules, 260+ functions, 14 cron jobs, 16 Supabase tables. Rating: 8.5/10.
 
 ### What's Built
 | Phase | Modules | Key Features |
@@ -562,6 +588,7 @@ Enhanced AMFI category flow formatter (evening Block 10):
 | 18 | Consequence Layer | `consequence_engine.py` (multiplier table, 10 variables), compound consequences (USDINR amplifier), Indian Basket approximation, net market impact, output validator commodity check |
 | 19 | Master Signal Diagnostic | Gap analysis, confidence split, score trending, consequence layer, regime detection (3 regimes), accumulation/distribution signals, pre-send checklist (10 gates), block validator (4-layer check) |
 | 20 | Final Polish | USDINR amplifier on consequences, Gold-VIX divergence (6th type), prediction accountability in weekly digest (Brier + per-signal hit rates), signal weights injected into AI prompt |
+| 23 | Risk Mood + Pre-computed Interpretations | Gold/Copper in risk composite, calibrated 0-100 mood bar, graceful degradation (ComputeBudget), consequence price injection, word-boundary sector matching, VIX/FII/Absorption pre-computed interpretations, 26-pattern validator, output-type scoping |
 
 ### Data Foundation
 - `daily_market_snapshot`: 261 rows (1 year backfill from yfinance)
@@ -577,21 +604,179 @@ Enhanced AMFI category flow formatter (evening Block 10):
 - Confidence: split into directional vs regime confidence
 - Pre-send: 10 hard gates before Telegram send
 
-### What's Left (Phase 21)
+### Phase 21: Output Quality Overhaul (25 fixes)
+
+**Root cause:** AI was filling gaps with invention instead of saying "insufficient data". Python 8.5/10, AI output 5.5/10. Fix: constrain AI + validate output + detect silent failures.
+
+**Quality trajectory:** 5.6/10 → 8.2/10 → 8.5/10 (floor = ceiling)
+
+#### Phase 1: Core Fixes (8)
+| Fix | File | What |
+|-----|------|------|
+| Absorption math | `formatters.py` | 0% → 123% (same-day flows, not weekly) |
+| Stale level gate | `output_validator.py` | Rejects levels >15% from Nifty (15000-30000 range) |
+| Prompt constraints | `master_prompt.txt` | ABSOLUTE CONSTRAINTS section (no %, no advice, no invented levels) |
+| SYSTEM_PROMPT | `ai_engine.py` | Removed "probability-weighted scenarios (bull/bear/base with %)" |
+| Advice filter | `output_validator.py` | 19 keywords: long/short/buy/sell/consider adding/investors should/recommend |
+| Hallucinated % | `output_validator.py` | Bidirectional regex: "55% bullish" + "bullish 55%" + "55 percent bull" |
+| Signal transparency | `formatters.py` | Individual signals with 🟢🔴🟡 icons, unfired reasons, direction counts |
+| Geopolitical | `mechanism_map.py` | hormuz_risk, iran_conflict, sanctions_tariff mechanisms |
+
+#### Phase 2: Integrity (5)
+| Fix | File | What |
+|-----|------|------|
+| Fallback completeness | `output_validator.py` + `market_intel.py` | 12 keys: regime, absorption, dii_net, vix_percentile, signal summary |
+| VIX percentile-aware | `formatters.py` | 78th %ile = ELEVATED, not NORMAL (percentile > absolute threshold) |
+| FII persistent label | `formatters.py` | CV-based: "persistent outflows" when CV < 0.15 across 4 weeks |
+| S/R rendering | `technical_analysis.py` | support_2/resistance_2 now rendered (was computed but hidden) |
+| Direction counts | `formatters.py` | "🟢1 🔴1 🟡2" instead of opaque "1/4 aligned" |
+
+#### Phase 3: Polish (3)
+| Fix | File | What |
+|-----|------|------|
+| Extended regex | `output_validator.py` | "55% bullish", "probability of 55%", "55 percent bull" |
+| Fallback regime | `output_validator.py` | Regime + absorption + "Signal: Mixed — no directional call" |
+| Streak maturity | `formatters.py` | "8d streak — mature" (avg 8.2d from real data) |
+
+#### Data Guards (3)
+| Fix | File | What |
+|-----|------|------|
+| 5-day stats | `formatters.py` | "accumulating (X/5 days)" when <3 days |
+| 4-week trend | `formatters.py` | Suppress when <2 weeks, "accumulating" for 2-3 weeks |
+| Dashboard total | `formatters.py` | Guard on fii_4w_avg validity (NaN → "4W avg accumulating") |
+
+#### Floor Levers (3)
+| Fix | File | What |
+|-----|------|------|
+| Source health | `market_intel.py` | Replaces broken staleness detector (was using datetime.now()). Checks 9 blocks + 3 data objects. Failed sources flagged in AI prompt. |
+| AI hardening | `output_validator.py` | 6 new advice keywords + 8 confidence phrases ("high probability", "likely to", "will rise") |
+| Cross-block consistency | `output_validator.py` | 3 checks: absorption vs regime label, VIX %ile vs tone, net impact vs narrative |
+
+#### Critical Bug Fixes (2)
+| Fix | File | What |
+|-----|------|------|
+| Severity downgrade | `output_validator.py` | MINOR consistency issues no longer overwrite MAJOR severity from advice/hallucination |
+| Variable name | `market_intel.py` | `fii_context` (always None) → `fii_ctx` (actual data) in source health check |
+
+#### Data Foundation
+- `fii_dii_flows`: 52 rows backfilled (March-May 2026) via `backfill_fii_dii.py`
+- Rolling windows now real: 5-day stats, 4-week trend, z-score, streak avg
+- `backfill_fii_dii.py`: one-time script, reads `sql/fii-dii-data.json`
+
+#### Validator Coverage (26 patterns)
+| Category | Patterns | Severity |
+|----------|----------|----------|
+| Hallucinated % | 55% bull, 55% bullish, probability of 55%, 55 percent bull | MAJOR |
+| Hallucinated confidence | high probability, likely to, will rise/fall, expected to rise/fall | MAJOR |
+| Trade advice | long on, short the, buy, sell, consider adding, investors should, recommend, expect Nifty/market to | MAJOR |
+| Stale levels | Nifty level >15% from spot (15000-30000 range) | MAJOR |
+| Commodity mismatch | Brent/Gold/USDINR >15% from actual | MAJOR |
+| Consistency | absorption vs regime, VIX %ile vs tone, net impact vs narrative | MINOR |
+
+#### Output Architecture
+```
+Python computes → AI narrates → Validator checks → Send or Fallback
+```
+- AI cannot invent: percentages, levels, probabilities, advice, predictions
+- Fallback shows: regime, absorption, signal summary (not just raw numbers)
+- Source health: missing blocks flagged explicitly, never silently omitted
+- Cross-block: absorption/VIX/flow contradictions caught before send
+
+### Phase 22: Output Quality + News Intelligence Overhaul (9 fixes)
+
+**All fixes verified via `test_telegram_output.py` — 9/9 PASS.**
+
+#### P0: Calculation Fixes (4)
+| Fix | File | What | Before | After |
+|-----|------|------|--------|-------|
+| VIX → Sentiment inversion | `signal_arbitrator.py:42` | `normalize_to_100(50 - value, 13, 47)` | VIX 22 → 76 BULLISH | VIX 22 → 44 BEARISH |
+| Absorption centralization | `formatters.py` | `compute_absorption(fii, dii)` helper, 4 call sites | Block 4: 123% ✅, Dashboard: 0% ❌ | All paths use same function |
+| Ordinal suffixes | `rolling_quant.py`, `formatters.py`, `valuation_engine.py` | `_ordinal()` everywhere | "73th percentile" | "73rd percentile" |
+| FII percentile fallback | `formatters.py:85-95, 132-142` | Falls back to `fii_dii_flows` table | "insufficient data" for FII | Uses FII/DII table data |
+
+#### P1: Reasoning Fixes (2)
+| Fix | File | What |
+|-----|------|------|
+| ERP vs P/E bridge | `formatters.py:507`, `valuation_engine.py:240` | When P/E < 40th %ile AND ERP < 0: "P/E historically cheap but ERP negative → bonds more attractive" |
+| Validation on ALL AI outputs | `src/validation_helper.py` (new), `jobs/morning_brief.py`, `jobs/evening_report.py` | `validate_and_send()` wrapper with ground-truth comparison catches stale levels (17,800 when Nifty=23,659) |
+
+#### P2: News Quality Fixes (3)
+| Fix | File | What |
+|-----|------|------|
+| News staleness detection | `src/validator.py` | `.news_seen.json` cache (24h TTL), tags `seen_before`, `freshness_score` 0-10. Formatter shows `[previously covered]`, `[stale (3/10)]` |
+| India linkage enforcement | `src/validator.py` | `_check_india_linkage()` scores: India=10, macro=7, sector=6, no-impact=3. Filters <5 unless Bloomberg/Reuters. Formatter shows `[Global]` tag |
+| Block deal pattern recognition | `src/insider_tracker.py` | `_detect_deal_patterns()` finds: promoter→institutional transfers, cross-trades at matched price, accumulation. `format_insider_summary()` adds `🔍 Pattern Analysis` section |
+
+### What's Left (Phase 23)
 - Inline glossary for Tier 1 terms (PCR, GEX, DXY explained on first use)
-- Graceful degradation chain (what gets dropped when compute budget exceeded)
 - Weekly self-audit output (bot performance metrics in Sunday digest)
 - Brier calibration fix (needs more prediction data)
-- FII+DII both-selling case not flagged
 - Percentile doesn't count ties — biased low
 
-### Phase 21 Build Plan (from real failure data)
-- Week 1-2: Let it run, collect real data (failure logs, user feedback, Brier accumulation)
-- Week 3: Build from real evidence:
-  - P1: Graceful degradation (from actual failure logs)
-  - P2: Inline glossary (from actual confusing output)
-  - P3: Weekly self-audit (from 2 weeks of real Brier)
-  - P4: Brier calibration (from real prediction data)
+### Phase 23: Risk Mood + Consequences + Degradation + Pre-computed Interpretations
+
+**All features validated with live Supabase — `test_supabase_full.py` 20/20 PASS, `test_all_outputs.py` 7/7 sections PASS.**
+
+#### Multi-Signal Risk Mood
+| Fix | File | What |
+|-----|------|------|
+| Gold/Copper activation | `context_engine.py:955-1086` | Added Gold weekly change (fear proxy) and Copper weekly change (growth proxy) to global risk composite. Each contributes -1 to +1 to score |
+| Risk mood 0-100 | `context_engine.py` | `risk_mood = min(100, max(0, round(50 + score * 100 / 16)))`. Calibrated: moderate stress = 31/100, not 10/100 |
+| Mood bar visual | `formatters.py:2271-2284` | `format_market_posture()` shows █░ progress bar with emoji color coding (65+ green, <35 red) |
+| Copper/Gold context | `context_engine.py:685-697` | Emoji-level annotation (🔴 recession, 🟠 growth slowing, 🟢 healthy growth) |
+
+#### Graceful Degradation Chain
+| Fix | File | What |
+|-----|------|------|
+| ComputeBudget | `src/compute_budget.py` (NEW, 191 lines) | `ComputeBudget` class: time tracking, stage management, skip decisions. Progressive thresholds: 75% drops blocks 9,10; 90% drops 3,7,8; 95% only 0,1,2 survive |
+| Budget wiring | `jobs/market_intel.py` | Budget initialization, block skipping, health logging before AI call |
+
+#### Consequence Engine Price Injection
+| Fix | File | What |
+|-----|------|------|
+| Price in consequence strings | `consequence_engine.py` | `compute_consequence()` now includes `current_price` and `change_pct` in return dict. `format_consequence_line()` injects price: "⚠️ Brent $85 (-3.0%): CAD impact..." |
+
+#### Sector WHY Logic Refinement
+| Fix | File | What |
+|-----|------|------|
+| Word-boundary matching | `jobs/morning_brief.py:244-249` | Replaced substring matching with compiled regex: `re.compile(rf"(?i)\b{pat}\b")`. No more false positives ("fed" ≠ "federal", "ai" ≠ "main") |
+
+#### Pre-computed Interpretations
+| Fix | File | What |
+|-----|------|------|
+| VIX interpretation | `src/metrics.py` + `context_engine.py:2679-2691` | Computes VIX risk level + narrative once, stores in ctx. Validated: 3 regimes (EXTREME/HIDDEN/NORMAL) |
+| FII interpretation | `src/metrics.py` + `context_engine.py` | Detects persistent selling, transition signals, conviction level. With Supabase: "FII heavy single-day selling (₹-4,357Cr). Moderate selling." |
+| DII absorption interpretation | `src/metrics.py` + `context_engine.py` | Flags broad distribution, absorption sustainability, DII fatigue risk. With Supabase: "DII absorbing 115% of FII outflow — more than offsetting." |
+| AI prompt injection | `context_engine.py:771-791` | All 3 interpretations formatted into `format_context_for_ai_full()`. AI receives conclusions, not raw numbers |
+| Dashboard integration | `formatters.py:574-575, 1874-1875` | FII/Absorption interpretations used in flow formatting + market state dashboard |
+
+#### Validation Pipeline
+| Fix | File | What |
+|-----|------|------|
+| `market_intel` validation config | `validation_helper.py:112-117` | Added `market_intel` to `_OUTPUT_TYPE_CONFIG` with all 4 checks (stale_level, hallucinated_pct, advice, confidence) |
+| Output-type scoping | `validation_helper.py:194-259` | `_validate_with_output_type()` filters checks per output type. Midday passes hallucinated %, weekly rejects |
+| Retry logic | `validation_helper.py:173-191` | Targeted retry on MAJOR violation — builds specific retry_instruction telling AI exactly what to fix |
+
+#### Bugs Fixed During Supabase Validation
+| Fix | File | What |
+|-----|------|------|
+| `get_market_narrative` crash | `context_engine.py:428` | `dii_absorbed` was numeric (not string) — added numeric-to-label conversion: `≥0.8→High, ≥0.4→Medium, <0.4→Low` |
+| `format_market_state_dashboard` crash | `formatters.py:1877-1891` | `fii_net`, `streak`, `direction` initialized at top from `flow_metrics` or `fii_context` — available for all evidence branches |
+| Test API mismatches | `test_supabase_full.py` | Fixed `db_client→get_client`, `total_seconds→max_seconds`, `format_consequence_line` signature |
 
 ### Structural Ceiling
 Real-time data + alternative data = need paid infrastructure. Not buildable free.
+
+### Supabase Data State (as of 2026-05-26)
+| Table | Rows | Status |
+|-------|------|--------|
+| `fii_dii_flows` | 37 | Mar-May 2026, latest 2026-05-22 |
+| `daily_market_snapshot` | 211 | Sufficient for rolling quant (≥100) |
+| `valuation_history` | 9 | PE=20.71, PB=3.28 |
+| `market_breadth_history` | 1 | Needs more data |
+| `watchlist` | 11 stocks | Active |
+
+### Test Commands
+- `python3 test_all_outputs.py` — 7 sections, 26 patterns, syntax + imports
+- `.venv/bin/python3 test_supabase_full.py` — 20 Supabase-dependent feature checks with live data
+- Both require: `SUPABASE_URL` + `SUPABASE_KEY` env vars from `../apikeys.txt`

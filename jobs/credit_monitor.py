@@ -39,7 +39,14 @@ Under 80 words.
 """
             try:
                 analysis = ai.analyze("fast", prompt)
-                send_text(f"🚨 *CRITICAL RATING ALERT*\n\n{e['action']} — {e['agency']}\n{e['subject'][:150]}\n\n🤖 *Impact:*\n{analysis}")
+                # Basic validation: length check + no advice
+                if analysis and len(analysis.split()) >= 20:
+                    text_lower = analysis.lower()
+                    advice_kw = ['buy ', 'sell ', 'go long', 'go short', 'recommend']
+                    has_advice = any(kw in text_lower for kw in advice_kw)
+                    if has_advice:
+                        analysis = analysis + "\n\n[Note: Trade recommendations removed — structural analysis only]"
+                    send_text(f"🚨 *CRITICAL RATING ALERT*\n\n{e['action']} — {e['agency']}\n{e['subject'][:150]}\n\n🤖 *Impact:*\n{analysis}")
                 log_alert_sent(sym, key)
             except Exception as ex:
                 print(f"⚠️ AI failed: {ex}")

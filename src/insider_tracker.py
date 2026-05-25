@@ -300,7 +300,135 @@ def get_market_insider_activity(days: int = 10) -> Dict:
         "symbols":      list(symbol_agg.keys()),
         "top_deals":    top_deals,
         "symbol_flows": symbol_flows[:15],
+        "patterns":     _detect_deal_patterns(unique),
     }
+
+
+# ── Deal Pattern Detection ──────────────────────────────────────
+def _detect_deal_patterns(deals: List[Dict]) -> List[Dict]:
+    """
+    Detect intelligent patterns in bulk/block deals:
+    - Related-party transfer: same symbol, same price (±1%), same day, buy ≈ sell
+    - Institutional redistribution: multiple MFs buying what a single entity sold
+    - Accumulation: same entity buying same stock across multiple days
+    """
+    if not deals:
+        return []
+
+    patterns = []
+
+    # Group by symbol + date
+    from collections import defaultdict
+    by_symbol_date = defaultdict(list)
+    for d in deals:
+        key = (d["symbol"], d["date"])
+        by_symbol_date[key].append(d)
+
+    # Pattern 1: Related-party transfer / cross-trade
+    # Same symbol, same day, same price (±1%), both buy and sell sides present
+    for (symbol, date), day_deals in by_symbol_date.items():
+        buys = [d for d in day_deals if d["side"] == "BUY"]
+        sells = [d for d in day_deals if d["side"] == "SELL"]
+        if not buys or not sells:
+            continue
+
+        # Check if buy and sell prices match (±1%)
+        buy_prices = set(round(d["price"], 2) for d in buys)
+        sell_prices = set(round(d["price"], 2) for d in sells)
+
+        matched_price = None
+        for bp in buy_prices:
+            for sp in sell_prices:
+                if sp > 0 and abs(bp - sp) / sp <= 0.01:
+                    matched_price = bp
+                    break
+            if matched_price:
+                break
+
+        if not matched_price:
+            continue
+
+        total_buy_qty = sum(d["qty"] for d in buys)
+        total_sell_qty = sum(d["qty"] for d in sells)
+        total_value = sum(d["value_cr"] for d in buys + sells)
+
+        # Determine if quantities are roughly equal (±25%)
+        qty_ratio = total_buy_qty / total_sell_qty if total_sell_qty > 0 else 999
+        if 0.75 <= qty_ratio <= 1.25:
+            buy_entities = [d["client"] for d in buys]
+            sell_entities = [d["client"] for d in sells]
+
+            # Check if any seller is a promoter/promoter group entity
+            promoter_keywords = ["promoter", "js w", "family", "trust", "holding", "ventures"]
+            is_promoter_selling = any(
+                any(kw in s.lower() for kw in promoter_keywords)
+                for s in sell_entities
+            )
+
+            # Check if buyers are institutional
+            inst_keywords = ["gqg", "sbi", "mf", "mutual fund", "hdfc mf", "icici prudential",
+                           "axis mf", "nippon", "dsp", "kotak mf", "mirae", "parag parikh",
+                           "foreign", "fii", "government"]
+            is_inst_buying = any(
+                any(kw in b.lower() for kw in inst_keywords)
+                for b in buy_entities
+            )
+
+            if is_promoter_selling and is_inst_buying:
+                pattern_type = "PROMOTER → INSTITUTION TRANSFER"
+                insight = (
+                    f"Promoter group sold ₹{total_value:.0f}Cr at ₹{matched_price:,.2f} to "
+                    f"institutional investors ({', '.join(buy_entities[:3])}) — "
+                    f"stake redistribution, not market selling. "
+                    f"Watch for further promoter dilution."
+                )
+            else:
+                pattern_type = "CROSS-TRADE (matched price)"
+                insight = (
+                    f"₹{total_value:.0f}Cr changed hands at ₹{matched_price:,.2f} "
+                    f"between {', '.join(sell_entities[:2])} and {', '.join(buy_entities[:2])} — "
+                    f"negotiated block deal, not market activity."
+                )
+
+            patterns.append({
+                "symbol": symbol,
+                "company": buys[0].get("company", ""),
+                "date": date,
+                "type": pattern_type,
+                "price": matched_price,
+                "total_value_cr": total_value,
+                "insight": insight,
+            })
+
+    # Pattern 2: Accumulation — same entity buying same stock across 3+ days
+    entity_symbol_days = defaultdict(list)
+    for d in deals:
+        if d["side"] == "BUY":
+            key = (d["client"], d["symbol"])
+            entity_symbol_days[key].append(d)
+
+    for (entity, symbol), entity_deals in entity_symbol_days.items():
+        unique_dates = set(d["date"] for d in entity_deals)
+        if len(unique_dates) >= 3:
+            total_value = sum(d["value_cr"] for d in entity_deals)
+            total_qty = sum(d["qty"] for d in entity_deals)
+            avg_price = sum(d["price"] * d["qty"] for d in entity_deals) / total_qty if total_qty > 0 else 0
+
+            patterns.append({
+                "symbol": symbol,
+                "company": entity_deals[0].get("company", ""),
+                "date": f"{min(unique_dates)} to {max(unique_dates)}",
+                "type": "ACCUMULATION",
+                "price": round(avg_price, 2),
+                "total_value_cr": total_value,
+                "insight": (
+                    f"{entity} accumulated {total_qty:,} shares (₹{total_value:.0f}Cr) "
+                    f"across {len(unique_dates)} sessions at avg ₹{avg_price:,.2f} — "
+                    f"building position."
+                ),
+            })
+
+    return patterns
 
 
 # ── Format for Telegram ─────────────────────────────────────────
@@ -348,6 +476,12 @@ def format_insider_summary(data: Dict) -> str:
                     f"  • {d['symbol']}: {d['qty']:,} shares @ ₹{d['price']:,.2f}"
                     f" | ₹{d['value_cr']} Cr | {client_short}"
                 )
+
+    # Detected patterns
+    if data.get("patterns"):
+        lines.append("\n🔍 *Pattern Analysis:*")
+        for p in data["patterns"]:
+            lines.append(f"  • {p['symbol']} ({p['type']}): {p['insight']}")
 
     lines.append(f"\n_Source: NSE Bulk/Block Deals (SEBI data)_")
     return "\n".join(lines)

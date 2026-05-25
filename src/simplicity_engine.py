@@ -7,6 +7,7 @@ New investor reads 4 lines → understands market mood.
 Power user reads everything → gets full depth.
 """
 from typing import Dict, List
+from src.formatters import _ordinal
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -72,11 +73,11 @@ def translate_oil_signal(brent_price: float = None, brent_change_pct: float = No
     pct_str = ""
     if brent_percentile is not None:
         if brent_percentile >= 90:
-            pct_str = f" ({brent_percentile:.0f}th %ile — extreme)"
+            pct_str = f" ({_ordinal(int(brent_percentile))} %ile — extreme)"
         elif brent_percentile >= 75:
-            pct_str = f" ({brent_percentile:.0f}th %ile — elevated)"
+            pct_str = f" ({_ordinal(int(brent_percentile))} %ile — elevated)"
         elif brent_percentile <= 25:
-            pct_str = f" ({brent_percentile:.0f}th %ile — low)"
+            pct_str = f" ({_ordinal(int(brent_percentile))} %ile — low)"
 
     if brent_price >= 100:
         return f"🔴 Brent ${brent_price:.0f}{pct_str} → India pays ~{import_bill_display}, INR pressure ~{inr_pressure_ps:.0f}ps"

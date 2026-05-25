@@ -6,6 +6,7 @@ from src.data_fetcher    import fetch_global_indices, fetch_top_movers, fetch_ge
 from src.ai_engine       import AIEngine
 from src.telegram_sender import send_text
 from src.validator       import validate_articles, assess_sentiment_consensus
+from src.validation_helper import ai_generate_and_validate, build_ground_truth_from_index
 
 def main():
     print("=" * 50)
@@ -35,12 +36,14 @@ def main():
             sentiments.append(sent)
     consensus = assess_sentiment_consensus(sentiments) if sentiments else "neutral"
 
-    # ── Get bull/bear context ──────────────────────────────────────
+    # ── Get bull/bear context + macro anchors ──────────────────────
     bull_bear = {}
+    macro_anchors = []
     try:
         from src.context_engine import run_contextualization
         anchor_data = fetch_macro_anchors()
         if anchor_data:
+            macro_anchors = anchor_data
             ctx = run_contextualization(anchor_data)
             bull_bear = ctx.get("bull_bear", {})
     except Exception as e:
@@ -85,23 +88,58 @@ def main():
         source   = top.get("source", "unknown")
         lines.append(f"📰 {headline} ({source}, Trust:{trust}/10)")
 
-    # ── AI opening brief ───────────────────────────────────────────
+    # ── Build ground truth for validation ──────────────────────────
+    gt_extra = {}
+    if bull_bear.get("score") is not None:
+        gt_extra["bull_bear_score"] = bull_bear["score"]
+    for a in macro_anchors:
+        name = a.get("name", "")
+        if name == "India VIX" and a.get("ok") and a.get("price"):
+            gt_extra["india_vix"] = a["price"]
+        elif name == "Brent Crude" and a.get("ok") and a.get("price"):
+            gt_extra["brent"] = a["price"]
+    ground_truth = build_ground_truth_from_index(valid_index, gt_extra if gt_extra else None)
+
+    # ── AI opening brief (with universal validation) ───────────────
     print("🤖 Running AI opening analysis...")
     try:
-        prompt   = AIEngine.market_open_prompt(valid_index, movers, validated_news, bull_bear)
-        analysis = ai.analyze("fast", prompt)
+        prompt = AIEngine.market_open_prompt(valid_index, movers, validated_news, bull_bear)
     except Exception as e:
-        print(f"   ⚠️ AI failed: {e}")
-        analysis = ""
+        print(f"   ⚠️ Prompt build failed: {e}")
+        prompt = ""
 
-    # ── Send message ───────────────────────────────────────────────
-    msg = "📈 *MARKET OPEN — 9:15 AM IST*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    msg += "\n".join(lines)
-    if analysis:
-        msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{analysis}"
-    msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━"
+    def make_fallback():
+        fb = "📈 *MARKET OPEN — 9:15 AM IST*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        fb += "\n".join(lines)
+        if not ground_truth.get("nifty_close"):
+            india = valid_index.get("India", {})
+            if india.get("price"):
+                fb += f"\n\n📍 Nifty: {india['price']:,.0f}"
+        fb += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━"
+        return fb
 
-    send_text(msg)
+    if prompt and ground_truth.get("nifty_close"):
+        ai_generate_and_validate(
+            ai, "fast", prompt, ground_truth,
+            output_type="market_open",
+            fallback_fn=make_fallback,
+            send_fn=lambda text: send_text(
+                "📈 *MARKET OPEN — 9:15 AM IST*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                + "\n".join(lines)
+                + f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            max_retries=1,
+        )
+    else:
+        if not ground_truth.get("nifty_close"):
+            print("   ⚠️ No Nifty price — skipping AI validation")
+        send_text(
+            "📈 *MARKET OPEN — 9:15 AM IST*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            + "\n".join(lines)
+            + (f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{analysis}" if 'analysis' in dir() and analysis else "")
+            + "\n\n━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+
     print("✅ MARKET OPEN COMPLETE")
 
 if __name__ == "__main__":

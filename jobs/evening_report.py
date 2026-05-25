@@ -8,6 +8,7 @@ from src.ai_engine         import AIEngine
 from src.telegram_sender   import send_image, send_text
 from src.db                import get_watchlist
 from src.validator        import validate_articles, assess_sentiment_consensus
+from src.validation_helper import validate_and_send
 
 
 def validate_ai_response(response: str, min_words: int = 50) -> bool:
@@ -121,18 +122,30 @@ Under 200 words. Reference actual headlines provided.
             sign = "+" if nifty_change >= 0 else ""
             closing_lines.append(f"Nifty closed at {nifty_close:,.0f} ({sign}{nifty_change:.2f}%)")
             break
-    
+
     closing_summary = ""
     if closing_lines:
         closing_summary = "\n\n📊 *EOD Summary:*\n" + "\n".join(closing_lines)
-    
-    send_text(
-        "🌃 *EVENING GLOBAL REPORT*\n_US Session Now Live_\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        + analysis
-        + closing_summary
-        + "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_India outlook for tomorrow ↑_"
+
+    # ── Validate AI output before sending ──────────────────────────
+    def send_evening(text):
+        send_text(
+            "🌃 *EVENING GLOBAL REPORT*\n_US Session Now Live_\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            + text
+            + closing_summary
+            + "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_India outlook for tomorrow ↑_"
+        )
+
+    sent = validate_and_send(
+        analysis, valid_index,
+        fallback_fn=lambda: get_fallback_evening(valid_index, validated_news, consensus_sentiment),
+        send_fn=send_evening,
     )
+    if sent:
+        print("   ✅ AI evening report sent")
+    else:
+        print("   ⚠️ AI evening report failed validation — sent fallback")
 
     # ── Market State Dashboard ─────────────────────────────────────
     try:

@@ -441,7 +441,7 @@ def record_signals_that_fired(fii_context: Dict, macro_context: Dict,
         signals_fired.append(("dxy_falling", macro_context.get("dxy", {}).get("change_pct", 0)))
 
     # DII absorption
-    if fii_context.get("dii_absorbed") == "High":
+    if fii_context.get("dii_absorbed", 0) >= 0.8:
         signals_fired.append(("dii_absorbing", 1))
 
     # PCR signals

@@ -27,6 +27,8 @@ from src.ai_engine      import AIEngine
 from src.telegram_sender import send_text
 from src.db             import get_client, save_macro_snapshots_batch
 from src.validator      import validate_articles
+from src.validation_helper import _validate_with_output_type, _OUTPUT_TYPE_CONFIG
+from src.compute_budget import ComputeBudget, should_skip_block, get_block_fallback, BLOCK_PRIORITY
 
 
 
@@ -85,6 +87,10 @@ def main():
     blocks = {}
     source_health = {}  # Track which sources succeeded/failed
     anchor_data = None  # Initialized for health check
+
+    # ── Compute budget tracking (Phase 23) ────────────────────────
+    budget = ComputeBudget(max_seconds=200)  # 3m20s (GitHub Actions limit ~3-4m)
+    budget.start()
 
     # ── BLOCK 1: Global Indices ───────────────────────────────────
     _t0 = _time.time()
@@ -262,7 +268,8 @@ def main():
     _t0 = _time.time()
     print("🔄 BLOCK 4: Flow Intelligence")
     try:
-        blocks["block_4"] = format_flows()
+        ctx_for_flows = getattr(format_context_block, 'last_ctx', None) or {}
+        blocks["block_4"] = format_flows(ctx_for_flows)
         # Append F&O positioning to Block 4
         if fno_output:
             blocks["block_4"] = blocks["block_4"] + "\n\n" + fno_output
@@ -337,14 +344,19 @@ def main():
             print(f"   ⚠️ Shareholding: {e}")
 
     # ── BLOCK 3: Sector FPI Activity ─────────────────────────────
-    print("🔄 BLOCK 3: Sector FPI Activity")
-    try:
-        from src.fii_sector import run_sector_fpi_analysis
-        blocks["block_3"] = run_sector_fpi_analysis()
-        print(f"   → {len(blocks['block_3'])} chars")
-    except Exception as e:
-        print(f"   ⚠️ {e}")
-        blocks["block_3"] = ""
+    budget.start_stage("formatters")
+    if budget.should_skip_block("block_3"):
+        print("  ⏭️ BLOCK 3: Skipped (budget tight)")
+        blocks["block_3"] = get_block_fallback("block_3")
+    else:
+        print("🔄 BLOCK 3: Sector FPI Activity")
+        try:
+            from src.fii_sector import run_sector_fpi_analysis
+            blocks["block_3"] = run_sector_fpi_analysis()
+            print(f"   → {len(blocks['block_3'])} chars")
+        except Exception as e:
+            print(f"   ⚠️ {e}")
+            blocks["block_3"] = ""
 
     # ── FII INSTITUTION TRACKER (SWF/Pension Fund Activity) ──────
     print("🔄 FII INSTITUTION TRACKER")
@@ -358,34 +370,46 @@ def main():
         print(f"   ⚠️ FII tracker: {e}")
 
     # ── BLOCK 7: Insider Activity ────────────────────────────────
-    print("🔄 BLOCK 7: Insider Activity")
-    try:
-        blocks["block_7"] = format_insider_activity()
-        print(f"   → {len(blocks['block_7'])} chars")
-    except Exception as e:
-        print(f"   ⚠️ {e}")
-        blocks["block_7"] = ""
+    if budget.should_skip_block("block_7"):
+        print("  ⏭️ BLOCK 7: Skipped (budget tight)")
+        blocks["block_7"] = get_block_fallback("block_7")
+    else:
+        print("🔄 BLOCK 7: Insider Activity")
+        try:
+            blocks["block_7"] = format_insider_activity()
+            print(f"   → {len(blocks['block_7'])} chars")
+        except Exception as e:
+            print(f"   ⚠️ {e}")
+            blocks["block_7"] = ""
 
     # ── BLOCK 9: Macro Calendar ─────────────────────────────────────
-    print("🔄 BLOCK 9: Macro Calendar")
-    try:
-        from src.macro_fetcher import format_macro_block
-        blocks["block_9"] = format_macro_block()
-        if blocks["block_9"]:
-            print(f"   → Macro: {len(blocks['block_9'])} chars")
-    except Exception as e:
-        print(f"   ⚠️ Macro calendar: {e}")
-        blocks["block_9"] = ""
+    if budget.should_skip_block("block_9"):
+        print("  ⏭️ BLOCK 9: Skipped (budget tight)")
+        blocks["block_9"] = get_block_fallback("block_9")
+    else:
+        print("🔄 BLOCK 9: Macro Calendar")
+        try:
+            from src.macro_fetcher import format_macro_block
+            blocks["block_9"] = format_macro_block()
+            if blocks["block_9"]:
+                print(f"   → Macro: {len(blocks['block_9'])} chars")
+        except Exception as e:
+            print(f"   ⚠️ Macro calendar: {e}")
+            blocks["block_9"] = ""
 
     if mode == "evening":
         # BLOCK 10: MF Flows
-        print("🔄 BLOCK 10: MF Flows")
-        try:
-            blocks["block_10"] = format_mf_flows()
-            print(f"   → {len(blocks['block_10'])} chars")
-        except Exception as e:
-            print(f"   ⚠️ {e}")
-            blocks["block_10"] = ""
+        if budget.should_skip_block("block_10"):
+            print("  ⏭️ BLOCK 10: Skipped (budget tight)")
+            blocks["block_10"] = get_block_fallback("block_10")
+        else:
+            print("🔄 BLOCK 10: MF Flows")
+            try:
+                blocks["block_10"] = format_mf_flows()
+                print(f"   → {len(blocks['block_10'])} chars")
+            except Exception as e:
+                print(f"   ⚠️ {e}")
+                blocks["block_10"] = ""
     else:
         blocks["block_10"] = ""
 
@@ -1154,6 +1178,12 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Block validation: {e}")
 
+    # ── Budget health check before AI call ────────────────────────
+    budget.end_stage("formatters")
+    budget_warning = budget.check_budget_health()
+    if budget_warning:
+        print(f"  ⚠️ {budget_warning}")
+
     # ── AI Analysis ───────────────────────────────────────────────
     print(f"   ⏱️ Data + Quant: {_time.time()-_t0:.1f}s")
     _t0 = _time.time()
@@ -1175,18 +1205,19 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Pre-send checklist: {e}")
 
-    # ── OUTPUT VALIDATION (pre-send consistency check) ───────────
+    # ── OUTPUT VALIDATION (pre-send consistency check with retry) ──
     print("🔄 VALIDATING OUTPUT")
     try:
         from src.output_validator import validate_output
-        # Compute absorption % for fallback context
+        from src.validation_helper import _validate_with_output_type, _OUTPUT_TYPE_CONFIG, _build_retry_instruction
+
+        # Build ground truth from all available data
         _fii_net = snapshot_data.get("fii_net", 0) or 0
         _dii_net = snapshot_data.get("dii_net", 0) or 0
         _absorption_pct = None
         if _fii_net < 0 and _dii_net > 0:
             _absorption_pct = (_dii_net / abs(_fii_net)) * 100
 
-        # Compute VIX percentile for consistency check
         _vix_pct = None
         try:
             from src.formatters import get_percentile_value
@@ -1198,8 +1229,8 @@ def main():
 
         ground_truth = {
             "bull_bear_score": snapshot_data.get("bull_bear_score"),
-            "fii_net": snapshot_data.get("fii_net"),
-            "dii_net": snapshot_data.get("dii_net"),
+            "fii_net": _fii_net,
+            "dii_net": _dii_net,
             "nifty_close": snapshot_data.get("nifty_close"),
             "pcr": snapshot_data.get("pcr"),
             "india_vix": snapshot_data.get("india_vix"),
@@ -1210,14 +1241,43 @@ def main():
             "cross_asset_regime": snapshot_data.get("cross_asset_regime"),
             "absorption_pct": _absorption_pct,
         }
-        validation = validate_output(analysis, ground_truth)
-        if not validation["send"]:
-            print(f"   ⚠️ OUTPUT REJECTED: {validation['reason']}")
-            for issue in validation["issues"]:
-                print(f"      → {issue}")
-            analysis = validation["fallback_text"] or analysis
+
+        # Run validation with output-type scoping (Phase 23: universal validator)
+        config = _OUTPUT_TYPE_CONFIG.get("market_intel", _OUTPUT_TYPE_CONFIG["market_close"])
+        result = _validate_with_output_type(analysis, ground_truth, config)
+
+        if result["send"]:
+            print(f"   ✅ Output validated: {result['reason']}")
         else:
-            print(f"   ✅ Output validated: {validation['reason']}")
+            # MAJOR contradiction — attempt targeted retry
+            print(f"   ⚠️ OUTPUT REJECTED: {result['reason']}")
+            for issue in result["issues"]:
+                print(f"      → {issue}")
+
+            retry_instruction = result.get("retry_instruction", "")
+            if retry_instruction and len(analysis.split()) >= 50:
+                print(f"   🔄 Retrying with targeted correction...")
+                retry_prompt = (
+                    f"Rewrite your previous Market Intel output. Your response contained these errors:\n"
+                    f"{retry_instruction}\n\n"
+                    f"Original context:\n{prompt[:3000]}"
+                )
+                try:
+                    retry_analysis = ai.analyze("volume", retry_prompt)
+                    if retry_analysis and len(retry_analysis.split()) >= 50:
+                        retry_result = _validate_with_output_type(retry_analysis, ground_truth, config)
+                        if retry_result["send"]:
+                            print(f"   ✅ Retry passed — using corrected output")
+                            analysis = retry_analysis
+                        else:
+                            print(f"   ⚠️ Retry also rejected — using fallback")
+                            analysis = retry_result.get("fallback_text") or analysis
+                    else:
+                        print(f"   ⚠️ Retry output too short — using fallback")
+                        analysis = result.get("fallback_text") or analysis
+                except Exception as e:
+                    print(f"   ⚠️ Retry AI failed: {e}")
+                    analysis = result.get("fallback_text") or analysis
     except Exception as e:
         print(f"   ⚠️ Validation: {e}")
 
@@ -1255,7 +1315,12 @@ def main():
 
     # ── Execution time summary ──────────────────────────────────
     total_time = _time.time() - _job_start
-    print(f"\n⏱️ Total execution: {total_time:.1f}s ({total_time/60:.1f}min)")
+    budget_status = budget.get_status()
+    print(f"\n⏱️ Total execution: {total_time:.1f}s ({total_time/60:.1f}min) | Budget: {budget_status['pct_used']:.0f}%")
+    if budget_status["stage_times"]:
+        for stage, t in budget_status["stage_times"].items():
+            if isinstance(t, (int, float)):
+                print(f"   {stage}: {t:.1f}s")
     if total_time > 240:
         print(f"⚠️ EXCEEDED 4-MIN LIMIT — consider splitting into separate jobs")
 

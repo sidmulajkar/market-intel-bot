@@ -41,7 +41,8 @@ Under 150 words.
 """
         try:
             analysis = ai.analyze("volume", prompt)
-            send_text(f"🤖 *AI — MF Flow Analysis:*\n\n{analysis}")
+            if analysis and len(analysis.split()) >= 30:
+                send_text(f"🤖 *AI — MF Flow Analysis:*\n\n{analysis}")
         except Exception as e:
             print(f"⚠️ AI failed: {e}")
 

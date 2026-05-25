@@ -7,6 +7,7 @@ Phase 19: Diagnostic Engine upgrade — gap analysis, confidence split,
 score trending, consequence layer. Turns the block from a label into
 an institutional-grade diagnostic.
 """
+from src.formatters import _ordinal
 import statistics
 from typing import Dict, List, Optional
 
@@ -37,8 +38,9 @@ def normalize_signal(name: str, value: float) -> float:
         # Factor: -1 = bearish (0), 0 = neutral (50), +1 = bullish (100)
         return normalize_to_100(value, -1, 1)
     elif name == "vix":
-        # VIX: high = bearish, low = bullish (wider range for crisis differentiation)
-        return normalize_to_100(50 - value, 0, 50)
+        # VIX: high = bearish, low = bullish. Pivot at VIX 20 = score 50.
+        # VIX 10→79 BULLISH, VIX 15→65 BULLISH, VIX 20→50 NEUTRAL, VIX 22→44 BEARISH, VIX 25→35 BEARISH, VIX 30→21 BEARISH, VIX 40→clamped 0
+        return normalize_to_100(50 - value, 13, 47)
     elif name == "options_flow":
         # Options flow: -1 = bearish, 0 = neutral, +1 = bullish
         return normalize_to_100(value, -1, 1)
@@ -530,7 +532,7 @@ def format_master_signal(arbitration: Dict) -> str:
                 score_line += f" | 30D avg: {trending['avg_30d']}"
             if trending.get("percentile_1y") is not None:
                 pct = trending["percentile_1y"]
-                score_line += f" | {pct}th %ile"
+                score_line += f" | {_ordinal(int(pct))} %ile"
                 if trending.get("is_historically_weak"):
                     score_line += " — weak"
                 elif trending.get("is_historically_strong"):
@@ -563,9 +565,9 @@ def format_master_signal(arbitration: Dict) -> str:
     if arbitration.get("nifty_percentile") is not None:
         nifty_pct = arbitration["nifty_percentile"]
         if nifty_pct < 20 and composite > 55:
-            lines.append(f"NOTE: Nifty at {nifty_pct}th %ile while structural bullish = accumulation zone")
+            lines.append(f"NOTE: Nifty at {_ordinal(int(nifty_pct))} %ile while structural bullish = accumulation zone")
         elif nifty_pct > 80 and composite < 45:
-            lines.append(f"NOTE: Nifty at {nifty_pct}th %ile while structural bearish = distribution zone")
+            lines.append(f"NOTE: Nifty at {_ordinal(int(nifty_pct))} %ile while structural bearish = distribution zone")
 
     # Confidence split (compact)
     conf_split = arbitration.get("confidence_split", {})
@@ -629,7 +631,7 @@ def format_master_signal_dashboard(arbitration: Dict) -> str:
                 score_line += f" | 30D avg: {trending['avg_30d']}"
             if trending.get("percentile_1y") is not None:
                 pct = trending["percentile_1y"]
-                score_line += f" | {pct}th %ile"
+                score_line += f" | {_ordinal(int(pct))} %ile"
                 if trending.get("is_historically_weak"):
                     score_line += " — historically weak"
                 elif trending.get("is_historically_strong"):

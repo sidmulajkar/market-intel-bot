@@ -113,7 +113,7 @@ def validate_against_ground_truth(claims: Dict, ground_truth: Dict) -> Dict:
         for num_str in claims.get("numbers", []):
             try:
                 num = int(num_str.replace(",", ""))
-                if abs(num - nifty) / nifty > 0.02 and 20000 < num < 30000:
+                if abs(num - nifty) / nifty > 0.02 and 15000 <= num <= 30000:
                     issues.append(f"NUMBER MISMATCH: AI mentions {num} but Nifty is {nifty}")
                     severity = max(severity, "MINOR", key=lambda x: ["OK", "MINOR", "MAJOR"].index(x))
             except ValueError:
@@ -236,7 +236,7 @@ def validate_output(ai_text: str, ground_truth: Dict) -> Dict:
         for num_str in claims.get("numbers", []):
             try:
                 num = int(num_str.replace(",", ""))
-                if nifty and 15000 < num < 30000:
+                if nifty and 15000 <= num <= 30000:
                     if abs(num - nifty) / nifty > 0.15:
                         extra_issues.append(f"STALE LEVEL: {num} is {abs(num-nifty)/nifty*100:.0f}% from Nifty {nifty}")
                         extra_severity = "MAJOR"

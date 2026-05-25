@@ -7,6 +7,7 @@ Every data point needs 4 layers: ABSOLUTE → RELATIVE → PERCENTILE → CONSEQ
 Design: Static lookup table, zero DB dependency, lightweight arithmetic.
 Returns empty dict on any failure (consistent with project pattern).
 """
+from src.formatters import _ordinal
 
 # ═══════════════════════════════════════════════════════════════════════
 # CONSEQUENCE MULTIPLIERS — India Impact Reference
@@ -248,6 +249,8 @@ def compute_consequence(variable: str, current_value: float, change_value: float
             "sectors_bearish": spec.get("sectors_bearish", []),
             "sectors_bullish": spec.get("sectors_bullish", []),
             "details": details,
+            "current_price": current_value,
+            "change_pct": change_pct,
         }
 
     except Exception:
@@ -257,8 +260,9 @@ def compute_consequence(variable: str, current_value: float, change_value: float
 def format_consequence_line(variable: str, consequence: dict) -> str:
     """
     Format a consequence dict into a single human-readable line.
+    Includes actual price level for geopolitical context (Phase 23).
 
-    Returns: "→ CAD stress +$3.5B annualized, INR pressure ~7-15ps, OMC margins compress"
+    Returns: "→ Brent $85 (+2.1%): CAD +$3.5B annualized, INR pressure ~7-15ps"
     Or "" if consequence is empty.
     """
     try:
@@ -267,6 +271,8 @@ def format_consequence_line(variable: str, consequence: dict) -> str:
 
         summary = consequence["summary"]
         severity = consequence.get("severity", "NEUTRAL")
+        price = consequence.get("current_price")
+        change_pct = consequence.get("change_pct")
 
         prefix = "→"
         if severity in ("STRESS", "EXTREME"):
@@ -274,6 +280,31 @@ def format_consequence_line(variable: str, consequence: dict) -> str:
         elif severity in ("ELEVATED", "HIGH"):
             prefix = "⚠️"
 
+        # Inject price level if available (Phase 23: geopolitical price context)
+        price_context = ""
+        if price is not None:
+            if variable == "brent":
+                price_context = f"Brent ${price:.0f}"
+            elif variable == "gold":
+                price_context = f"Gold ${price:.0f}"
+            elif variable == "copper":
+                price_context = f"Copper ${price:.2f}"
+            elif variable == "usdinr":
+                price_context = f"USDINR ₹{price:.2f}"
+            elif variable == "us_10y":
+                price_context = f"US10Y {price:.2f}%"
+            elif variable == "dxy":
+                price_context = f"DXY {price:.1f}"
+            elif variable == "wti":
+                price_context = f"WTI ${price:.0f}"
+            else:
+                price_context = f"{variable}: {price:.1f}"
+
+            if change_pct is not None and abs(change_pct) > 0.1:
+                price_context += f" ({change_pct:+.1f}%)"
+
+        if price_context:
+            return f"{prefix} {price_context}: {summary}"
         return f"{prefix} {summary}"
 
     except Exception:
@@ -377,7 +408,7 @@ def compute_compound_consequences(anchor_data: list) -> list:
                     # At 100th %ile USDINR, every barrel costs more in INR
                     effective_amplifier_pct = round((amplifier - 1) * 100)
                     lines.append(
-                        f"⚠️ COMPOUNDED: Rupee at {usdinr_pct:.0f}th %ile (₹{usdinr_price:.1f}) "
+                        f"⚠️ COMPOUNDED: Rupee at {_ordinal(int(usdinr_pct))} %ile (₹{usdinr_price:.1f}) "
                         f"amplifies oil import cost by ~{effective_amplifier_pct}%"
                     )
                     break
@@ -390,7 +421,7 @@ def compute_compound_consequences(anchor_data: list) -> list:
                     gold_pct = get_percentile_value("gold", gold_price, "1Y")
                     if gold_pct and gold_pct > 70:
                         lines.append(
-                            f"⚠️ Gold at {gold_pct:.0f}th %ile in USD → even higher in INR "
+                            f"⚠️ Gold at {_ordinal(int(gold_pct))} %ile in USD → even higher in INR "
                             f"due to rupee weakness"
                         )
                     break

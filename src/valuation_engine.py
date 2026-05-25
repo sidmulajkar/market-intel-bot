@@ -7,6 +7,7 @@ import os
 import requests
 from datetime import datetime
 from typing import Dict, List, Optional
+from src.formatters import _ordinal
 
 NSE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -225,10 +226,18 @@ def format_valuation(val: Dict, g_sec_yield: float = None,
         lines.append(f"  → {rdcf['assessment']}")
 
     # Historical percentile
+    pe_pct = None
     if historical_pe and len(historical_pe) >= 5:
         from src.quant_enrichment import compute_percentile
         pct = compute_percentile(val["pe"], historical_pe)
         if pct.get("percentile") is not None:
-            lines.append(f"P/E percentile: {pct['percentile']}th ({pct['label']})")
+            pe_pct = pct["percentile"]
+            lines.append(f"P/E percentile: {_ordinal(int(pe_pct))} ({pct['label']})")
+
+    # ERP vs P/E bridge — explain when they conflict
+    if g_sec_yield is not None:
+        erp_val = erp.get("premium", 0)
+        if pe_pct is not None and pe_pct < 40 and erp_val < 0:
+            lines.append("  Note: P/E historically cheap but ERP negative → bonds more attractive than equities at current rates")
 
     return "\n".join(lines)

@@ -7,6 +7,7 @@ from src.ai_engine       import AIEngine
 from src.telegram_sender import send_text
 from src.validator       import validate_articles, assess_sentiment_consensus
 from src.db              import was_alert_sent, log_alert_sent
+from src.validation_helper import ai_generate_and_validate, build_ground_truth_from_index
 
 def main():
     print("=" * 50)
@@ -95,34 +96,74 @@ def main():
                 alerts.append(f"{emoji} *{sym}* {m['change_pct']:+.1f}% — extreme move")
                 log_alert_sent(sym, key)
 
-    # ── AI midday brief ────────────────────────────────────────────
+    # ── AI midday brief (with universal validation) ────────────────
     print("🤖 Running AI midday analysis...")
+    analysis = ""
+    ground_truth = {}
     try:
         # Get bull/bear context
         from src.context_engine import run_contextualization, get_fii_dii_context, get_macro_context
+        from src.data_fetcher import fetch_macro_anchors
         fii_ctx  = get_fii_dii_context(days=30)
         macro_ctx = get_macro_context()
-        from src.data_fetcher import fetch_macro_anchors
         anchor_data = fetch_macro_anchors()
         ctx = run_contextualization(anchor_data) if anchor_data else {}
         bull_bear = ctx.get("bull_bear", {})
 
-        prompt   = AIEngine.midday_market_prompt(valid_index, movers, validated_news, bull_bear)
-        analysis = ai.analyze("fast", prompt)
+        # Build ground truth
+        gt_extra = {}
+        if bull_bear.get("score") is not None:
+            gt_extra["bull_bear_score"] = bull_bear["score"]
+        if fii_ctx.get("ok"):
+            gt_extra["fii_net"] = fii_ctx.get("fii_net")
+        for a in (anchor_data or []):
+            name = a.get("name", "")
+            if name == "India VIX" and a.get("ok") and a.get("price"):
+                gt_extra["india_vix"] = a["price"]
+            elif name == "Brent Crude" and a.get("ok") and a.get("price"):
+                gt_extra["brent"] = a["price"]
+        ground_truth = build_ground_truth_from_index(valid_index, gt_extra if gt_extra else None)
+
+        prompt = AIEngine.midday_market_prompt(valid_index, movers, validated_news, bull_bear)
     except Exception as e:
         print(f"   ⚠️ AI or context failed: {e}")
-        analysis = ""
+        prompt = ""
 
-    # ── Send message ───────────────────────────────────────────────
-    msg = "📊 *MIDDAY MARKET SCAN*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    msg += "\n".join(lines)
-    if analysis:
-        msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{analysis}"
-    if alerts:
-        msg += f"\n\n⚠️ *Extreme Moves:*\n" + "\n".join(alerts)
-    msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_Mid-session check_"
+    def make_fallback():
+        fb = "📊 *MIDDAY MARKET SCAN*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        fb += "\n".join(lines)
+        fb += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_Mid-session check_"
+        if alerts:
+            fb += f"\n\n⚠️ *Extreme Moves:*\n" + "\n".join(alerts)
+        return fb
 
-    send_text(msg)
+    if prompt and ground_truth.get("nifty_close"):
+        def send_midday(text):
+            msg = "📊 *MIDDAY MARKET SCAN*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            msg += "\n".join(lines)
+            msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{text}"
+            if alerts:
+                msg += f"\n\n⚠️ *Extreme Moves:*\n" + "\n".join(alerts)
+            msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_Mid-session check_"
+            send_text(msg)
+
+        ai_generate_and_validate(
+            ai, "fast", prompt, ground_truth,
+            output_type="midday_scan",
+            fallback_fn=make_fallback,
+            send_fn=send_midday,
+            max_retries=1,
+        )
+    else:
+        # No ground truth or no prompt — send unvalidated (degraded)
+        msg = "📊 *MIDDAY MARKET SCAN*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        msg += "\n".join(lines)
+        if analysis:
+            msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{analysis}"
+        if alerts:
+            msg += f"\n\n⚠️ *Extreme Moves:*\n" + "\n".join(alerts)
+        msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_Mid-session check_"
+        send_text(msg)
     print("✅ MIDDAY SCAN COMPLETE")
 
 if __name__ == "__main__":

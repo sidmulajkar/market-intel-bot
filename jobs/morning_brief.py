@@ -26,6 +26,7 @@ from src.telegram_sender   import send_image, send_text, fmt_morning_report
 from src.db                import save_daily_snapshot, get_watchlist, purge_old_data
 
 from src.validator         import validate_articles, assess_sentiment_consensus
+from src.validation_helper import validate_and_send
 
 
 def validate_ai_response(response: str, min_words: int = 50) -> bool:
@@ -188,15 +189,19 @@ def main():
         prompt = AIEngine.morning_brief_prompt(valid_index, validated_news, consensus_sentiment)
         brief  = ai.analyze("fast", prompt)
 
-        # Validate AI response - never send blank
-        if validate_ai_response(brief, min_words=50):
-            send_text(fmt_morning_report(brief))
+        def make_fallback():
+            return get_fallback_brief(valid_index, validated_news, consensus_sentiment)
+
+        sent = validate_and_send(
+            brief, valid_index,
+            fallback_fn=make_fallback,
+            send_fn=send_text,
+            fmt_fn=fmt_morning_report,
+        )
+        if sent:
             print("   ✅ AI brief sent")
         else:
-            # Fallback to raw data
-            fallback = get_fallback_brief(valid_index, validated_news, consensus_sentiment)
-            send_text(fallback)
-            print("   ⚠️ AI response too short - sent fallback")
+            print("   ⚠️ AI brief failed validation — sent fallback")
     except Exception as e:
         print(f"   ⚠️ AI brief failed: {e}")
         fallback = get_fallback_brief(valid_index, validated_news, consensus_sentiment)
@@ -222,18 +227,25 @@ def main():
         "MSFT": "US-TECH", "AMZN": "US-TECH", "GOOGL": "US-TECH",
     }
 
-    # Sector keywords for matching news to sectors
+    # Sector keywords for matching news to sectors (Phase 23: word-boundary matching)
     SECTOR_KEYWORDS = {
-        "METAL": ["iron ore", "steel", "metal", "china pmi", "commodity", "copper", "aluminium"],
-        "IT": ["tech", "software", "h1b", "outsourcing", "digital", "ai ", "cloud"],
-        "BANKING": ["bank", "rbi", "rate cut", "rate hike", "credit", "npa", "repo"],
-        "AUTO": ["auto", "car", "vehicle", "ev ", "sales data", "dispatch"],
-        "PHARMA": ["pharma", "drug", "fda", "healthcare", "medicine"],
-        "ENERGY": ["oil", "crude", "opec", "energy", "fuel", "petrol", "diesel"],
-        "FMCG": ["fmcg", "consumer", "retail", "demand", "rural"],
-        "INFRA": ["infra", "construction", "cement", "capex", "government spending"],
-        "NBFC": ["nbfc", "finance", "lending", "credit growth"],
-        "STEEL": ["steel", "iron ore", "china demand", "metal"],
+        "METAL": [r"iron ore", r"steel", r"metal", r"china pmi", r"commodit", r"copper", r"aluminium"],
+        "IT": [r"tech", r"software", r"h1b", r"outsourcing", r"digital", r"\bai\b", r"cloud"],
+        "BANKING": [r"bank", r"rbi", r"rate cut", r"rate hike", r"credit", r"npa", r"repo"],
+        "AUTO": [r"auto", r"car", r"vehicle", r"\bev\b", r"sales data", r"dispatch"],
+        "PHARMA": [r"pharma", r"drug", r"fda", r"healthcare", r"medicine"],
+        "ENERGY": [r"oil", r"crude", r"opec", r"energy", r"fuel", r"petrol", r"diesel"],
+        "FMCG": [r"fmcg", r"consumer", r"retail", r"demand", r"rural"],
+        "INFRA": [r"infra", r"construction", r"cement", r"capex", r"government spending"],
+        "NBFC": [r"nbfc", r"finance", r"lending", r"credit growth"],
+        "STEEL": [r"steel", r"iron ore", r"china demand", r"metal"],
+    }
+    # Compile regex patterns for word-boundary matching
+    import re
+    _SECTOR_PATTERNS = {
+        sector: [re.compile(rf"(?i)\b{pat}\b" if not pat.endswith(r"\b") else rf"(?i){pat}")
+                 for pat in pats]
+        for sector, pats in SECTOR_KEYWORDS.items()
     }
 
     print("📈 Checking watchlist alerts...")
@@ -262,15 +274,15 @@ def main():
                 # High volume without big price move — unusual
                 vol_spikes.append((clean_sym, change, vol_ratio))
 
-        # Match news headlines to sectors for WHY context
+        # Match news headlines to sectors for WHY context (Phase 23: word-boundary regex)
         sector_context = {}
         for article in (validated_news or [])[:5]:
-            headline = article.get("headline", "").lower()
-            for sector in sector_alerts:
-                keywords = SECTOR_KEYWORDS.get(sector, [])
-                if any(kw in headline for kw in keywords):
-                    if sector not in sector_context:  # first match wins
-                        sector_context[sector] = article.get("headline", "")[:60]
+            headline = article.get("headline", "")
+            for sector, patterns in _SECTOR_PATTERNS.items():
+                if sector in sector_context:
+                    continue  # first match wins
+                if any(p.search(headline) for p in patterns):
+                    sector_context[sector] = headline[:60]
 
         # Format sector-grouped alerts
         alert_lines = []

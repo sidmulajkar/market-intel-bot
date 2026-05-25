@@ -10,6 +10,7 @@ import statistics
 import math
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+from src.formatters import _ordinal
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -165,7 +166,7 @@ def format_percentile_block(percentiles: Dict) -> str:
         elif abs(z) > 2.0:
             z_note = " (elevated z-score)"
 
-        lines.append(f"  {label}: {current:.2f} ({pct}th pct, range: {rng}){z_note}")
+        lines.append(f"  {label}: {current:.2f} ({_ordinal(int(pct))} pct, range: {rng}){z_note}")
 
     return "\n".join(lines)
 
@@ -295,7 +296,7 @@ def detect_divergences(snapshot: dict, prev_snapshots: list = None) -> List[Dict
                     divergences.append({
                         "type": "gold_vix_divergence",
                         "severity": "HIGH",
-                        "description": f"Gold at {gold_pct:.0f}th %ile (middle of range) while VIX at {vix_pct:.0f}th %ile (elevated fear). "
+                        "description": f"Gold at {_ordinal(int(gold_pct))} %ile (middle of range) while VIX at {_ordinal(int(vix_pct))} %ile (elevated fear). "
                                        f"Gold not pricing fear — either fear overstated or gold will catch up.",
                         "asset_1": "Gold", "asset_1_pct": round(gold_pct),
                         "asset_2": "India VIX", "asset_2_pct": round(vix_pct),
@@ -304,7 +305,7 @@ def detect_divergences(snapshot: dict, prev_snapshots: list = None) -> List[Dict
                     divergences.append({
                         "type": "gold_vix_divergence",
                         "severity": "MEDIUM",
-                        "description": f"Gold at {gold_pct:.0f}th %ile (elevated) while VIX at {vix_pct:.0f}th %ile (calm). "
+                        "description": f"Gold at {_ordinal(int(gold_pct))} %ile (elevated) while VIX at {_ordinal(int(vix_pct))} %ile (calm). "
                                        f"Gold pricing risk VIX doesn't see — possible hidden stress.",
                         "asset_1": "Gold", "asset_1_pct": round(gold_pct),
                         "asset_2": "India VIX", "asset_2_pct": round(vix_pct),
@@ -782,14 +783,16 @@ def compute_relative_value(snapshot: dict, snapshots: list,
     pe = snapshot.get("nifty_pe")
     us_10y = snapshot.get("us_10y")
     if pe and pe > 0:
+        from src.valuation_engine import compute_equity_risk_premium
         earnings_yield = (1 / pe) * 100
-        # India G-Sec ~7.1% (approximate)
+        # India G-Sec ~7.1% (approximate; matches valuation_engine default)
         india_gsec = 7.1
-        erp = round(earnings_yield - india_gsec, 2)
+        erp_result = compute_equity_risk_premium(earnings_yield, india_gsec)
         result["erp"] = {
-            "value": erp,
+            "value": erp_result["premium"],
             "earnings_yield": round(earnings_yield, 2),
             "risk_free_rate": india_gsec,
+            "label": erp_result["label"],
         }
 
         # ERP percentile from stored data
@@ -800,7 +803,7 @@ def compute_relative_value(snapshot: dict, snapshots: list,
                 if s_pe and s_pe > 0:
                     erp_history.append(round((1 / s_pe) * 100 - india_gsec, 2))
             if len(erp_history) >= 20:
-                result["erp"]["percentile"] = percentile_rank(erp, erp_history)
+                result["erp"]["percentile"] = percentile_rank(erp_result["premium"], erp_history)
 
     # 2. ERP vs Global (India vs US)
     if us_10y and pe and pe > 0:
@@ -874,7 +877,7 @@ def format_relative_value(rv: Dict) -> str:
     erp = rv.get("erp", {})
     if erp.get("value") is not None:
         pctile = erp.get("percentile", {})
-        pct_str = f" ({pctile.get('percentile', '?')}th percentile)" if pctile.get("percentile") else ""
+        pct_str = f" ({_ordinal(int(pctile.get('percentile', 0)))} percentile)" if pctile.get("percentile") else ""
         lines.append(f"  Equity Risk Premium: {erp['value']:+.2f}%{pct_str}")
         lines.append(f"    Earnings yield: {erp['earnings_yield']:.2f}% | Risk-free: {erp['risk_free_rate']:.2f}%")
         if erp["value"] < 2:
@@ -897,7 +900,7 @@ def format_relative_value(rv: Dict) -> str:
     # Gold/Nifty ratio
     if rv.get("gold_nifty_ratio"):
         pctile = rv.get("gold_nifty_pctile", {})
-        pct_str = f" ({pctile.get('percentile', '?')}th percentile)" if pctile.get("percentile") else ""
+        pct_str = f" ({_ordinal(int(pctile.get('percentile', 0)))} percentile)" if pctile.get("percentile") else ""
         lines.append(f"  Gold/Nifty ratio: {rv['gold_nifty_ratio']:.4f}{pct_str}")
 
     return "\n".join(lines)

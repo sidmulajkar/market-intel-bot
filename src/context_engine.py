@@ -71,8 +71,9 @@ def get_fii_dii_context(days: int = 30) -> Dict:
     # DII absorption (how much DII offset FII)
     dii_current = latest["diinet_cr"]
     net_current = fii_current + dii_current
-    dii_absorbed = "High" if abs(dii_current) > abs(fii_current) * 0.8 else \
-                   "Medium" if abs(dii_current) > abs(fii_current) * 0.4 else "Low"
+    # Float ratio: what fraction of |FII| does DII cover? Cap at 200%
+    ratio = abs(dii_current) / abs(fii_current) if fii_current != 0 else 0
+    dii_absorbed = min(ratio, 2.0)
 
     # Determine confidence based on data quality
     confidence = "HIGH" if row_count >= 20 else "MEDIUM" if row_count >= 10 else "LOW"
@@ -314,7 +315,7 @@ def compute_bull_bear_score(fii_context: Dict, macro_context: Dict,
 
     # BULL SIGNALS (weight: 40%)
     # DII high absorption
-    if fii_context.get("dii_absorbed") == "High":
+    if fii_context.get("dii_absorbed", 0) >= 0.8:
         score += 10
         signals.append(f"DII absorption: HIGH (offsetting FII)")
 
@@ -424,7 +425,12 @@ def get_market_narrative(fii_context: Dict = None, macro_context: Dict = None, b
     fii_z = fii_context.get("fii_z_score", 0)
     fii_streak = fii_context.get("fii_streak", 0)
     fii_direction = fii_context.get("fii_streak_direction", "neutral")
-    dii_absorb = fii_context.get("dii_absorbed", "Low")
+    dii_absorb_raw = fii_context.get("dii_absorbed", "Low")
+    if isinstance(dii_absorb_raw, (int, float)):
+        v = float(dii_absorb_raw)
+        dii_absorb = "High" if v >= 0.8 else "Medium" if v >= 0.4 else "Low"
+    else:
+        dii_absorb = str(dii_absorb_raw)
     
     vix_regime = macro_context.get("vix_regime", "NORMAL")
     dxy_dir = macro_context.get("dxy", {}).get("direction", "FLAT")
@@ -682,7 +688,19 @@ def format_context_for_ai_full(ctx: Dict) -> str:
         lines.append(f"┌─ Recession Proxy ──────────────────")
         lines.append(f"│ Risk: {rec['level']} — {rec['label']}")
         if rec.get("copper_gold_ratio"):
-            lines.append(f"│ Copper/Gold: {rec['copper_gold_ratio']:.5f}")
+            ratio_val = rec["copper_gold_ratio"]
+            # Derive ratio-specific level (same thresholds as compute_recession_proxy)
+            if ratio_val < 0.0012:
+                ratio_note = "🔴 recession territory"
+            elif ratio_val < 0.0015:
+                ratio_note = "🟠 growth slowing"
+            elif ratio_val > 0.0020:
+                ratio_note = "🟢 reflation signal"
+            elif ratio_val > 0.0017:
+                ratio_note = "🟢 healthy growth"
+            else:
+                ratio_note = "neutral"
+            lines.append(f"│ Copper/Gold: {ratio_val:.5f} | {ratio_note}")
         if rec.get("term_spread") is not None:
             lines.append(f"│ Term Spread: {rec['term_spread']:+.2f}%")
         for sig in rec.get("signals", []):
@@ -754,6 +772,27 @@ def format_context_for_ai_full(ctx: Dict) -> str:
         lines.append(f"│ Recession risk: {emp.get('recession_level', '?')} (score: {emp.get('recession_score', 0)}/10)")
         for s in emp.get("signals", []):
             lines.append(f"│ • {s}")
+
+    # Pre-computed interpretations — AI receives conclusions, not raw signals
+    vix_interp = ctx.get("vix_interpretation", {})
+    if vix_interp.get("ok"):
+        lines.append(f"┌─ VIX Interpretation ───────────────")
+        lines.append(f"│ {vix_interp['interpretation']}")
+        if vix_interp.get("contradictions"):
+            for c in vix_interp['contradictions']:
+                lines.append(f"│ ⚠️ {c}")
+
+    fii_interp = ctx.get("fii_interpretation", {})
+    if fii_interp.get("ok"):
+        lines.append(f"┌─ FII Flow Interpretation ──────────")
+        lines.append(f"│ {fii_interp['interpretation']}")
+        if fii_interp.get("transition_signal"):
+            lines.append(f"│ {fii_interp['transition_signal']}")
+
+    absorb_interp = ctx.get("absorption_interpretation", {})
+    if absorb_interp.get("ok"):
+        lines.append(f"┌─ DII Absorption Interpretation ────")
+        lines.append(f"│ {absorb_interp['interpretation']}")
 
     return "\n".join(lines)
 
@@ -932,14 +971,18 @@ def compute_credit_stress(anchor_data: List[Dict]) -> Dict:
 
 def compute_global_risk_composite(anchor_data: List[Dict]) -> Dict:
     """
-    Combine CBOE VIX, S&P 500 trend, HYG credit stress, DXY into
-    a single GLOBAL RISK-ON / RISK-OFF / MIXED signal.
+    Combine CBOE VIX, DXY, HYG, Gold, Copper into a single
+    GLOBAL RISK-ON / RISK-OFF / MIXED signal with 0-100 risk_mood score.
+
+    Components: CBOE VIX, DXY, HYG credit, Gold regime, Copper growth signal.
+    risk_mood: 0 = extreme fear, 50 = neutral, 100 = extreme greed
     """
     if not anchor_data:
         return {"ok": False}
 
     signals = []
     score = 0  # Positive = risk-on, negative = risk-off
+    mood_adjustments = []  # Track gold/copper mood contributions
 
     # CBOE VIX
     for a in anchor_data:
@@ -957,7 +1000,7 @@ def compute_global_risk_composite(anchor_data: List[Dict]) -> Dict:
             else:
                 signals.append(f"CBOE VIX {vix:.0f} (normal)")
 
-    # S&P 500 (from global indices, not in anchor_data — use DXY as proxy)
+    # Dollar Index
     for a in anchor_data:
         if a.get("name") == "Dollar Index" and a.get("ok"):
             dxy_chg = a.get("change_pct", 0) or 0
@@ -979,7 +1022,61 @@ def compute_global_risk_composite(anchor_data: List[Dict]) -> Dict:
             score += 1
         signals.append(f"HYG {credit['hyg_weekly_change']:+.1f}% ({credit['level']})")
 
-    # Composite
+    # Gold regime — flight-to-safety detector (Phase 23)
+    gold = None
+    for a in anchor_data:
+        if a.get("name") == "Gold" and a.get("ok"):
+            gold = a
+            break
+    if gold:
+        gold_chg = gold.get("change_pct", 0) or 0
+        gold_weekly = gold.get("weekly_change_pct", 0) or 0
+        gold_weekly_chg = gold_weekly
+        # Gold rallying = potential fear/flight-to-safety
+        if gold_weekly_chg > 3:
+            score -= 1
+            mood_adjustments.append("Gold surge — fear/wealth-hedging demand")
+            signals.append(f"Gold {gold['price']:.0f} ({gold_weekly_chg:+.1f}% week) — rally (fear signal)")
+        elif gold_weekly_chg > 1.5:
+            score -= 0.5
+            mood_adjustments.append("Gold rising — mild caution")
+            signals.append(f"Gold {gold['price']:.0f} ({gold_weekly_chg:+.1f}% week) — rising (caution)")
+        elif gold_weekly_chg < -2:
+            score += 0.5
+            mood_adjustments.append("Gold falling — risk appetite")
+            signals.append(f"Gold {gold['price']:.0f} ({gold_weekly_chg:+.1f}% week) — declining (risk-on)")
+        else:
+            signals.append(f"Gold {gold['price']:.0f} ({gold_weekly_chg:+.1f}% week) — stable")
+
+    # Copper — growth proxy (Phase 23)
+    copper = None
+    for a in anchor_data:
+        if a.get("name") == "Copper" and a.get("ok"):
+            copper = a
+            break
+    if copper:
+        copper_weekly = copper.get("weekly_change_pct", 0) or 0
+        # Copper rallying = growth optimism
+        if copper_weekly > 3:
+            score += 1
+            mood_adjustments.append("Copper surge — strong growth demand")
+            signals.append(f"Copper {copper['price']:.2f} ({copper_weekly:+.1f}% week) — growth optimism")
+        elif copper_weekly > 1:
+            score += 0.5
+            mood_adjustments.append("Copper rising — growth steady")
+            signals.append(f"Copper {copper['price']:.2f} ({copper_weekly:+.1f}% week) — steady growth")
+        elif copper_weekly < -3:
+            score -= 1
+            mood_adjustments.append("Copper crash — recession fear")
+            signals.append(f"Copper {copper['price']:.2f} ({copper_weekly:+.1f}% week) — recession fear")
+        elif copper_weekly < -1:
+            score -= 0.5
+            mood_adjustments.append("Copper falling — growth slowing")
+            signals.append(f"Copper {copper['price']:.2f} ({copper_weekly:+.1f}% week) — slowing")
+        else:
+            signals.append(f"Copper {copper['price']:.2f} ({copper_weekly:+.1f}% week) — neutral")
+
+    # Composite label
     if score >= 2:
         composite = "GLOBAL RISK-ON"
     elif score >= 1:
@@ -991,11 +1088,20 @@ def compute_global_risk_composite(anchor_data: List[Dict]) -> Dict:
     else:
         composite = "MIXED"
 
+    # risk_mood: 0-100 score (50 = neutral)
+    # Score theoretical range: -7 to +7 (5 signals, max -2 each for VIX+HYG)
+    # Use divisor 16 so normal stress (-3) = 31/100, extreme (-7) = 6/100
+    # Avoids "every risk-off day = 🔴10/100" calibration break
+    risk_mood = min(100, max(0, round(50 + score * 100 / 16)))
+
     return {
         "ok": True,
         "score": score,
         "composite": composite,
+        "risk_mood": round(risk_mood),
         "signals": signals,
+        "mood_adjustments": mood_adjustments,
+        "credit": credit,
     }
 
 
@@ -1688,15 +1794,15 @@ def compute_stagflation_signal(anchor_data: List[Dict]) -> Dict:
 
     if nifty_close and oil_price:
         try:
-            from src.formatters import get_percentile_value
+            from src.formatters import get_percentile_value, _ordinal
             nifty_pct = get_percentile_value("nifty_close", nifty_close, "1Y")
             oil_pct = get_percentile_value("brent", oil_price, "1Y")
             if nifty_pct is not None and oil_pct is not None:
                 if oil_pct > 80 and nifty_pct < 25:
-                    signals.append(f"Percentile stagflation: Oil {oil_pct}th %ile + Nifty {nifty_pct}th %ile")
+                    signals.append(f"Percentile stagflation: Oil {_ordinal(oil_pct)} %ile + Nifty {_ordinal(nifty_pct)} %ile")
                     regime = "STAGFLATION PRESSURE"
                     return {"ok": True, "regime": regime, "signals": signals,
-                            "label": f"Oil elevated ({oil_pct}th %ile) + Nifty depressed ({nifty_pct}th %ile) = margin compression"}
+                            "label": f"Oil elevated ({_ordinal(oil_pct)} %ile) + Nifty depressed ({_ordinal(nifty_pct)} %ile) = margin compression"}
         except Exception:
             pass
 
@@ -2503,6 +2609,96 @@ def run_contextualization(anchor_data: List[Dict], extra_signals: Dict = None) -
         "bull_bear": bull_bear,
     })
 
+    # ── Enrich: flow metrics (single computation for all blocks) ────
+    flow_metrics = {"ok": False, "message": "Not computed"}
+    try:
+        from src.metrics import compute_flow_metrics, compute_vix_context, compute_valuation_metrics
+        from src.db import get_fii_dii_flows
+
+        flow_rows = get_fii_dii_flows(days=45)
+        if flow_rows:
+            flow_metrics = compute_flow_metrics(flow_rows)
+        else:
+            flow_metrics = {"ok": False, "message": "No flow rows"}
+    except Exception as e:
+        flow_metrics = {"ok": False, "message": str(e)}
+
+    # ── Enrich: VIX context (regime + label + icon) ────────────────
+    vix_context = {"ok": False, "message": "Not computed"}
+    vix_price = macro_context.get("vix_price")
+    if vix_price:
+        # Pre-compute VIX percentile if DB available
+        vix_pct_val = None
+        try:
+            from src.formatters import get_percentile_value
+            vix_pct_val = get_percentile_value("india_vix", vix_price, "1Y")
+        except Exception:
+            pass
+        vix_context = compute_vix_context(vix_price, vix_pct_val)
+
+    # ── Enrich: valuation metrics (single NSE fetch) ───────────────
+    valuation = {"ok": False, "message": "Not computed"}
+    try:
+        from src.valuation_engine import fetch_nifty_valuation
+        val = fetch_nifty_valuation()
+        if val.get("ok"):
+            # Save snapshot (same as format_valuation_block does)
+            from src.db import save_valuation_snapshot, get_valuation_history
+            today = datetime.now().strftime("%Y-%m-%d")
+            save_valuation_snapshot(
+                today, val["index"], val["pe"],
+                pb=val.get("pb"), div_yield=val.get("dividend_yield"),
+                earnings_yield=val.get("earnings_yield"),
+            )
+
+            # Historical P/E for percentile
+            history = get_valuation_history(val["index"], days=1095)
+            historical_pe = [h["pe"] for h in history if h.get("pe")]
+
+            # G-Sec yield (same logic as format_valuation_block)
+            g_sec_yield = 7.1
+            try:
+                import yfinance as yf
+                gsec = yf.Ticker("^NSEIGS").history(period="5d")
+                if not gsec.empty:
+                    g_sec_yield = float(gsec["Close"].iloc[-1])
+            except Exception:
+                pass
+
+            valuation = compute_valuation_metrics(
+                pe=val["pe"], pb=val.get("pb"),
+                earnings_yield=val["earnings_yield"],
+                g_sec_yield=g_sec_yield,
+                historical_pe=historical_pe,
+            )
+        else:
+            valuation = {"ok": False, "message": val.get("error", "NSE fetch failed")}
+    except Exception as e:
+        valuation = {"ok": False, "message": str(e)}
+
+    # ── Enrich: pre-computed interpretations (AI receives conclusions) ──
+    vix_interpretation = {"ok": False, "message": "Not computed"}
+    fii_interpretation = {"ok": False, "message": "Not computed"}
+    absorption_interpretation = {"ok": False, "message": "Not computed"}
+    try:
+        from src.metrics import (compute_vix_interpretation,
+                                 compute_fii_interpretation,
+                                 compute_absorption_interpretation)
+
+        # Build minimal ctx for cross-signal checks
+        interp_ctx = {
+            "cross_asset_regime": cross_asset_regime,
+            "bull_bear": bull_bear,
+        }
+
+        vix_interpretation = compute_vix_interpretation(vix_context, macro_context, interp_ctx)
+        fii_interpretation = compute_fii_interpretation(flow_metrics, interp_ctx)
+        absorption_interpretation = compute_absorption_interpretation(flow_metrics, interp_ctx)
+    except Exception as e:
+        vix_interpretation = {"ok": False, "message": str(e)}
+        fii_interpretation = {"ok": False, "message": str(e)}
+        absorption_interpretation = {"ok": False, "message": str(e)}
+
     return {
         "fii_context": fii_context,
         "macro_context": macro_context,
@@ -2512,6 +2708,7 @@ def run_contextualization(anchor_data: List[Dict], extra_signals: Dict = None) -
         "vix_spread": vix_spread,
         "credit_stress": credit_stress,
         "global_risk": global_risk,
+        "risk_mood": global_risk.get("risk_mood", 50),
         "india_structural": india_structural,
         # Phase 8 additions
         "carry_trade": carry_trade,
@@ -2529,6 +2726,14 @@ def run_contextualization(anchor_data: List[Dict], extra_signals: Dict = None) -
         "inst_context": inst_context,
         "us_employment": us_employment,
         "cross_asset_regime": cross_asset_regime,
+        # Enriched single-computation metrics
+        "flow_metrics": flow_metrics,
+        "vix_context": vix_context,
+        "valuation": valuation,
+        # Pre-computed interpretations — AI receives conclusions, not raw signals
+        "vix_interpretation": vix_interpretation,
+        "fii_interpretation": fii_interpretation,
+        "absorption_interpretation": absorption_interpretation,
     }
 
 

@@ -128,7 +128,7 @@ CROSS_SIGNAL_PATTERNS = [
         "name": "DII Strong Absorption",
         "description": "DII absorbing >80% of FII selling — floor exists",
         "conditions": lambda fii, macro: (
-            fii.get("dii_absorbed") == "High" and
+            fii.get("dii_absorbed", 0) >= 0.8 and
             fii.get("fii_z_score", 0) < -0.5
         ),
         "estimated_floor_pct": 78,
@@ -154,7 +154,7 @@ CROSS_SIGNAL_PATTERNS = [
         "description": "DXY falling + DII support — expect accelerated FII inflows",
         "conditions": lambda fii, macro: (
             macro.get("dxy", {}).get("direction") == "FALLING" and
-            fii.get("dii_absorbed") == "High"
+            fii.get("dii_absorbed", 0) >= 0.8
         ),
         "estimated_inflow_acceleration_pct": 65,
         "avg_nifty_rally": 1.5,
@@ -269,8 +269,9 @@ def backtest_cross_signals(nifty_closes: List[float], fii_flows: List[Dict],
             fii_z = (fii_val - fii_mean) / fii_std if fii_std > 0 else 0
 
             dii_val = fii_flows[i].get("diinet_cr", 0)
-            dii_absorbed = "High" if abs(dii_val) > abs(fii_val) * 0.8 else \
-                           "Medium" if abs(dii_val) > abs(fii_val) * 0.4 else "Low"
+            # Float ratio: what fraction of |FII| does DII cover? Cap at 200%
+            ratio = abs(dii_val) / abs(fii_val) if fii_val != 0 else 0
+            dii_absorbed = min(ratio, 2.0)
 
             # Compute streak
             streak = 0

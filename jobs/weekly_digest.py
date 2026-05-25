@@ -16,6 +16,7 @@ from src.quant_enrichment  import (compute_sector_regime, compute_volatility_set
                                    compute_fii_institutional_footprint,
                                    format_institutional_signals)
 from src.context_engine    import run_contextualization
+from src.validation_helper import ai_generate_and_validate, build_ground_truth_from_index
 
 def compute_scorecard() -> dict:
     """Compute weekly prediction scorecard from stored data."""
@@ -263,9 +264,28 @@ def main():
     except Exception as e:
         print(f"⚠️ Context: {e}")
 
-    # ── 5. AI summary ──────────────────────────────────────────────
+    # ── 5. AI summary (with validation) ───────────────────────────
     print("🤖 Generating AI weekly narrative...")
     ai_summary = ""
+    ground_truth = {}
+    try:
+        if anchor_data:
+            ctx = run_contextualization(anchor_data)
+            bull_bear = ctx.get("bull_bear", {})
+            # Build ground truth
+            gt_extra = {}
+            if bull_bear.get("score") is not None:
+                gt_extra["bull_bear_score"] = bull_bear["score"]
+            if ctx.get("flow_metrics", {}).get("ok"):
+                fm = ctx["flow_metrics"]
+                gt_extra["fii_net"] = fm.get("fii_net")
+                gt_extra["dii_net"] = fm.get("dii_net")
+            if ctx.get("vix_context", {}).get("ok"):
+                gt_extra["india_vix"] = ctx["vix_context"].get("vix_price")
+            ground_truth = build_ground_truth_from_index(valid_index, gt_extra if gt_extra else None)
+    except Exception as e:
+        print(f"⚠️ Context: {e}")
+
     try:
         prompt = AIEngine.weekly_digest_intelligence_prompt(
             scorecard=scorecard,
@@ -276,9 +296,59 @@ def main():
             news_items=validated_news,
             bull_bear=bull_bear
         )
-        ai_summary = ai.analyze("volume", prompt)
     except Exception as e:
-        print(f"⚠️ AI summary: {e}")
+        print(f"⚠️ Weekly prompt build: {e}")
+        prompt = ""
+
+    ai = AIEngine()
+
+    if prompt and ground_truth.get("nifty_close"):
+        try:
+            draft = ai.analyze("volume", prompt)
+            if draft and isinstance(draft, str) and len(draft.split()) >= 50:
+                from src.output_validator import validate_output
+                result = validate_output(draft, ground_truth)
+                if result["send"]:
+                    ai_summary = draft
+                else:
+                    # Retry once with targeted correction, then fallback
+                    print(f"   ⚠️ Weekly digest: {result['reason']} — retrying...")
+                    retry_prompt = f"Rewrite this. Fix: {result['issues'][:2]}\n\nContext: {prompt}"
+                    draft2 = ai.analyze("volume", retry_prompt)
+                    if draft2 and len(draft2.split()) >= 50:
+                        result2 = validate_output(draft2, ground_truth)
+                        if result2["send"]:
+                            ai_summary = draft2
+                        else:
+                            ai_summary = (
+                                f"[Weekly AI narrative skipped — {result['reason']}]\n\n"
+                                f"Bull/Bear: {bull_bear.get('score', 'N/A')}/100\n"
+                                f"FII weekly: {fii_pattern.get('weekly_net', 0):+,0f} Cr\n"
+                                f"Regime: {regime_shift.get('friday_label', 'N/A')}"
+                            )
+                            print(f"⚠️ Weekly digest AI rejected after retry")
+                    else:
+                        ai_summary = (
+                            f"[Weekly AI narrative skipped — {result['reason']}]\n\n"
+                            f"Bull/Bear: {bull_bear.get('score', 'N/A')}/100\n"
+                            f"FII weekly: {fii_pattern.get('weekly_net', 0):+,0f} Cr\n"
+                            f"Regime: {regime_shift.get('friday_label', 'N/A')}"
+                        )
+            else:
+                ai_summary = "[Weekly AI narrative unavailable — response too short]"
+        except Exception as e:
+            print(f"⚠️ Weekly AI: {e}")
+            ai_summary = "[Weekly AI narrative unavailable]"
+    elif prompt:
+        # No ground truth — minimal length check only
+        try:
+            draft = ai.analyze("volume", prompt)
+            if draft and isinstance(draft, str) and len(draft.split()) >= 50:
+                ai_summary = draft
+            else:
+                ai_summary = "[Weekly AI narrative unavailable — response too short]"
+        except Exception as e:
+            print(f"⚠️ AI summary: {e}")
 
     # ── 6. Format and send digest ──────────────────────────────────
     digest = format_weekly_digest(

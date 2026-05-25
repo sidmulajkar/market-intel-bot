@@ -8,6 +8,7 @@ from src.ai_engine       import AIEngine
 from src.telegram_sender import send_text
 from src.db              import was_alert_sent, log_alert_sent
 from src.validator       import validate_articles, assess_sentiment_consensus
+from src.validation_helper import ai_generate_and_validate, build_ground_truth_from_index
 
 def main():
     print("=" * 50)
@@ -38,47 +39,36 @@ def main():
             sentiments.append(sent)
     consensus = assess_sentiment_consensus(sentiments) if sentiments else "neutral"
 
-    # ── Get bull/bear context ──────────────────────────────────────
+    # ── Get bull/bear context + build ground truth ─────────────────
     bull_bear = {}
+    ground_truth = {}
     try:
         from src.context_engine import run_contextualization
         anchor_data = fetch_macro_anchors()
         if anchor_data:
             ctx = run_contextualization(anchor_data)
             bull_bear = ctx.get("bull_bear", {})
+            # Build ground truth for validation
+            gt_extra = {}
+            if bull_bear.get("score") is not None:
+                gt_extra["bull_bear_score"] = bull_bear["score"]
+            if ctx.get("flow_metrics", {}).get("ok"):
+                fm = ctx["flow_metrics"]
+                gt_extra["fii_net"] = fm.get("fii_net")
+                gt_extra["dii_net"] = fm.get("dii_net")
+            if ctx.get("vix_context", {}).get("ok"):
+                gt_extra["india_vix"] = ctx["vix_context"].get("vix_price")
+            for a in anchor_data:
+                name = a.get("name", "")
+                if name == "Brent Crude" and a.get("ok") and a.get("price"):
+                    gt_extra["brent"] = a["price"]
+                elif name == "Gold" and a.get("ok") and a.get("price"):
+                    gt_extra["gold"] = a["price"]
+            ground_truth = build_ground_truth_from_index(valid_index, gt_extra if gt_extra else None)
     except Exception as e:
         print(f"   ⚠️ Context engine: {e}")
 
-    # ── AI market summary ──────────────────────────────────────────
-    print("🤖 Generating market summary...")
-    try:
-        prompt  = AIEngine.eod_market_prompt(
-            movers, valid_index, validated_news, consensus, bull_bear
-        )
-        summary = ai.analyze("volume", prompt)
-    except Exception as e:
-        print(f"   ⚠️ AI failed: {e}")
-        summary = ""
-
-    # ── Build message ──────────────────────────────────────────────
-    # Header with Nifty + VIX + FII context
-    nifty = valid_index.get("Nifty 50", {})
-    vix   = valid_index.get("India VIX", {})
-    header_parts = []
-    if nifty:
-        header_parts.append(f"Nifty {nifty.get('price', 0):,.0f} ({nifty.get('change_pct', 0):+.1f}%)")
-    if vix and vix.get("price"):
-        header_parts.append(f"VIX {vix.get('price', 0):.1f}")
-    header = " | ".join(header_parts) if header_parts else "Market Close"
-
-    msg = f"🔔 *END OF DAY SUMMARY*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n📊 {header}\n\n"
-    if summary:
-        msg += summary + "\n\n"
-
-    # Top movers formatted
-    msg += format_top_movers(movers)
-
-    # ── Big move alerts (from top movers, not watchlist) ───────────
+    # ── Big move alerts (computed before AI call — needed for fallback) ──
     all_movers = (
         movers.get("india", {}).get("gainers", []) +
         movers.get("india", {}).get("losers", []) +
@@ -96,11 +86,61 @@ def main():
                 big_moves.append(f"{emoji} *{sym}* {m['change_pct']:+.1f}%")
                 log_alert_sent(sym, key)
 
-    if big_moves:
-        msg += f"\n\n⚠️ *Big Moves (5%+):*\n" + "\n".join(big_moves)
+    # ── AI market summary (with universal validation) ──────────────
+    print("🤖 Generating market summary...")
+    summary = ""
+    try:
+        prompt = AIEngine.eod_market_prompt(
+            movers, valid_index, validated_news, consensus, bull_bear
+        )
+    except Exception as e:
+        print(f"   ⚠️ Prompt build failed: {e}")
+        prompt = ""
 
-    msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_See you tomorrow! 🌙_"
-    send_text(msg)
+    nifty = valid_index.get("Nifty 50", {})
+    vix   = valid_index.get("India VIX", {})
+    header_parts = []
+    if nifty:
+        header_parts.append(f"Nifty {nifty.get('price', 0):,.0f} ({nifty.get('change_pct', 0):+.1f}%)")
+    if vix and vix.get("price"):
+        header_parts.append(f"VIX {vix.get('price', 0):.1f}")
+    header = " | ".join(header_parts) if header_parts else "Market Close"
+
+    def make_fallback():
+        fb = f"🔔 *END OF DAY SUMMARY*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n📊 {header}\n\n"
+        fb += format_top_movers(movers)
+        if big_moves:
+            fb += f"\n\n⚠️ *Big Moves (5%+):*\n" + "\n".join(big_moves)
+        fb += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_See you tomorrow! 🌙_"
+        return fb
+
+    def send_eod(text):
+        msg = f"🔔 *END OF DAY SUMMARY*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n📊 {header}\n\n"
+        msg += text + "\n\n"
+        msg += format_top_movers(movers)
+        if big_moves:
+            msg += f"\n\n⚠️ *Big Moves (5%+):*\n" + "\n".join(big_moves)
+        msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_See you tomorrow! 🌙_"
+        send_text(msg)
+
+    if prompt and ground_truth.get("nifty_close"):
+        ai_generate_and_validate(
+            ai, "volume", prompt, ground_truth,
+            output_type="market_close",
+            fallback_fn=make_fallback,
+            send_fn=send_eod,
+            max_retries=1,
+        )
+    else:
+        # No ground truth — send without AI validation (degraded)
+        msg = f"🔔 *END OF DAY SUMMARY*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n📊 {header}\n\n"
+        if summary:
+            msg += summary + "\n\n"
+        msg += format_top_movers(movers)
+        if big_moves:
+            msg += f"\n\n⚠️ *Big Moves (5%+):*\n" + "\n".join(big_moves)
+        msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_See you tomorrow! 🌙_"
+        send_text(msg)
     print("✅ MARKET CLOSE COMPLETE")
 
 if __name__ == "__main__":

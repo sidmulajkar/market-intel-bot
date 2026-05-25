@@ -5,7 +5,26 @@ Phase 1: Blocks 1, 2, 4, 6, 8, 10
 Intelligence Layer: context_engine + options_engine integrated
 Quant Layer: percentiles, cross-signals, significance labels
 """
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# FII/DII ABSORPTION — Single source of truth
+# ═══════════════════════════════════════════════════════════════════════
+
+def compute_absorption(fii_net: float, dii_net: float) -> Tuple[Optional[float], str]:
+    """Compute DII absorption of FII selling. Returns (percentage, label) or (None, "").
+    Only meaningful when FII is selling (negative) and DII is buying (positive)."""
+    if fii_net < 0 and dii_net > 0:
+        pct = (dii_net / abs(fii_net)) * 100
+        if pct >= 80:
+            label = f"DII absorbing {pct:.0f}% of FII sell — strong floor"
+        elif pct > 50:
+            label = f"DII absorbing {pct:.0f}% of FII sell — partial support"
+        else:
+            label = f"DII absorbing {pct:.0f}% of FII sell — weak support"
+        return pct, label
+    return None, ""
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -34,6 +53,13 @@ def _flip_percentile(pct: float, metric: str) -> float:
     return pct
 
 
+def _ordinal(n: int) -> str:
+    """Return ordinal string for an integer (e.g. 73 → '73rd')."""
+    if 11 <= (n % 100) <= 13:
+        return f"{n}th"
+    return f"{n}{['th', 'st', 'nd', 'rd'][min(n % 10, 4) if n % 10 < 4 else 0]}"
+
+
 def get_percentile(metric: str, current_value: float, window: str = "1Y") -> str:
     """
     Get percentile context for a metric from daily_market_snapshot.
@@ -56,6 +82,20 @@ def get_percentile(metric: str, current_value: float, window: str = "1Y") -> str
             return ""
 
     if not history or len(history) < 10:
+        # Fallback: for FII/DII flows, try the fii_dii_flows table
+        if metric in ("fii_net", "dii_net"):
+            try:
+                from src.db import get_fii_dii_flows
+                from src.rolling_quant import percentile_rank
+                flows = get_fii_dii_flows(days=365)
+                col = "fiinet_cr" if metric == "fii_net" else "diinet_cr"
+                flow_values = [f[col] for f in flows if f.get(col) is not None]
+                if len(flow_values) >= 10:
+                    result = percentile_rank(current_value, flow_values)
+                    pct = _flip_percentile(result.get("percentile", 50), metric)
+                    return f"{_ordinal(int(pct))} %ile ({window}, FII/DII table)"
+            except Exception:
+                pass
         return "(%ile: insufficient data)"
 
     try:
@@ -63,7 +103,7 @@ def get_percentile(metric: str, current_value: float, window: str = "1Y") -> str
         history_values = [v for _, v in history if v is not None]
         result = percentile_rank(current_value, history_values)
         pct = _flip_percentile(result.get("percentile", 50), metric)
-        return f"{pct:.0f}th %ile ({window})"
+        return f"{_ordinal(int(pct))} %ile ({window})"
     except Exception:
         return ""
 
@@ -89,6 +129,19 @@ def get_percentile_value(metric: str, current_value: float, window: str = "1Y") 
             return None
 
     if not history or len(history) < 10:
+        # Fallback: for FII/DII flows, try the fii_dii_flows table
+        if metric in ("fii_net", "dii_net"):
+            try:
+                from src.db import get_fii_dii_flows
+                from src.rolling_quant import percentile_rank
+                flows = get_fii_dii_flows(days=365)
+                col = "fiinet_cr" if metric == "fii_net" else "diinet_cr"
+                flow_values = [f[col] for f in flows if f.get(col) is not None]
+                if len(flow_values) >= 10:
+                    result = percentile_rank(current_value, flow_values)
+                    return _flip_percentile(result.get("percentile", 50), metric)
+            except Exception:
+                pass
         return None
 
     try:
@@ -382,11 +435,48 @@ def format_macro_anchors(anchor_data: list) -> str:
 # ─────────────────────────────────────────────────────────────────────
 # VALUATION BLOCK (appended to Block 2)
 # ─────────────────────────────────────────────────────────────────────
-def format_valuation_block() -> str:
+def format_valuation_block(ctx: Optional[Dict] = None) -> str:
     """
-    Fetch and format Nifty valuation metrics with historical context.
+    Format Nifty valuation metrics with historical context.
     Appended to Block 2 (Macro Anchors).
+    When ctx with valuation is provided, reads from pre-computed context.
+    Falls back to independent NSE fetch when ctx is None.
     """
+    try:
+        if ctx and ctx.get("valuation", {}).get("ok"):
+            return _format_valuation_from_context(ctx["valuation"])
+        return _format_valuation_from_nse()
+    except Exception as e:
+        print(f"⚠️ format_valuation_block: {e}")
+        return ""
+
+
+def _format_valuation_from_context(v: Dict) -> str:
+    """Format valuation block from pre-computed valuation dict."""
+    lines = [f"\n[Valuation — Nifty]"]
+    lines.append(f"P/E: {v['pe']}x | Earnings Yield: {v['earnings_yield']}%")
+
+    if v.get("pb"):
+        lines.append(f"P/B: {v['pb']}x")
+
+    if v.get("erp_label") is not None:
+        lines.append(f"Equity Risk Premium: {v['erp_premium']:+.2f}% ({v['erp_label']})")
+
+    if v.get("reverse_dcf", {}).get("ok"):
+        rdcf = v["reverse_dcf"]
+        lines.append(f"Reverse DCF: {rdcf['implied_growth_pct']}% implied growth — {rdcf['assessment']}")
+
+    if v.get("pe_percentile_label"):
+        lines.append(f"P/E: {v['pe_percentile_label']} of 3Y ({v['pe_percentile']}th %ile)")
+
+    if v.get("erp_pe_bridge_note"):
+        lines.append(f"  Note: {v['erp_pe_bridge_note']}")
+
+    return "\n".join(lines)
+
+
+def _format_valuation_from_nse() -> str:
+    """Fallback: fetch from NSE and compute (legacy behavior)."""
     try:
         from src.valuation_engine import fetch_nifty_valuation, format_valuation, compute_equity_risk_premium
         from src.db import save_valuation_snapshot, get_valuation_history
@@ -410,11 +500,9 @@ def format_valuation_block() -> str:
         historical_pe = [h["pe"] for h in history if h.get("pe")]
 
         # Get G-Sec yield (approximate from macro anchors or use default)
-        # Try to extract from anchor data — if not available, use recent typical value
         g_sec_yield = 7.1  # Approximate 10Y G-Sec yield
         try:
             import yfinance as yf
-            # Indian 10Y G-Sec — ticker may not always work
             gsec = yf.Ticker("^NSEIGS").history(period="5d")
             if not gsec.empty:
                 g_sec_yield = float(gsec["Close"].iloc[-1])
@@ -441,10 +529,17 @@ def format_valuation_block() -> str:
             lines.append(f"Reverse DCF: {rdcf['implied_growth_pct']}% implied growth — {rdcf['assessment']}")
 
         # Historical percentile
+        pe_pct = None
         if historical_pe and len(historical_pe) >= 5:
             pct = compute_percentile(val["pe"], historical_pe)
             if pct.get("percentile") is not None:
-                lines.append(f"P/E: {pct['percentile']}th percentile of 3Y ({pct['label']})")
+                pe_pct = pct["percentile"]
+                lines.append(f"P/E: {_ordinal(int(pe_pct))} of 3Y ({pct['label']})")
+
+        # ERP vs P/E bridge — explain when they conflict
+        erp_val = erp.get("premium", 0)
+        if pe_pct is not None and pe_pct < 40 and erp_val < 0:
+            lines.append(f"  Note: P/E historically cheap but ERP negative → bonds more attractive than equities at current rates")
 
         return "\n".join(lines)
 
@@ -456,11 +551,109 @@ def format_valuation_block() -> str:
 # ─────────────────────────────────────────────────────────────────────
 # BLOCK 4: FLOW INTELLIGENCE (FII/DII)
 # ─────────────────────────────────────────────────────────────────────
-def format_flows() -> str:
+def format_flows(ctx: Optional[Dict] = None) -> str:
     """
-    Compute weekly FII/DII net + 4-week trend + daily breakdown + significance.
-    Returns BLOCK 4 string with quant-level detail.
+    Format FII/DII flow intelligence block.
+    When ctx with flow_metrics is provided, reads from pre-computed context.
+    Falls back to independent DB query when ctx is None or flow_metrics unavailable.
     """
+    try:
+        # Try to use pre-computed flow metrics from context
+        if ctx and ctx.get("flow_metrics", {}).get("ok"):
+            return _format_flows_from_context(ctx["flow_metrics"], ctx)
+        # Fallback: query DB and compute
+        return _format_flows_from_db()
+    except Exception as e:
+        print(f"⚠️ format_flows: {e}")
+        return ""
+
+
+def _format_flows_from_context(fm: Dict, ctx: Optional[Dict] = None) -> str:
+    """Format flows block from pre-computed flow_metrics dict."""
+    c = ctx or {}
+    fii_interp = c.get("fii_interpretation", {})
+    absorb_interp = c.get("absorption_interpretation", {})
+
+    lines = [
+        f"Flow Intelligence (FII/DII):",
+        f"Latest day ({fm['date']}): FII {fm['fii_net']:+.0f} Cr | DII {fm['dii_net']:+.0f} Cr",
+    ]
+
+    # Use pre-computed FII interpretation if available
+    if fii_interp.get("ok"):
+        lines.append(fii_interp['interpretation'])
+        if fii_interp.get("transition_signal"):
+            lines.append(fii_interp['transition_signal'])
+    else:
+        # Fallback: inline display
+        if fm['fii_sell_streak'] >= 3:
+            lines.append(f"🔴 FII selling streak: {fm['fii_sell_streak']} consecutive days")
+        elif fm['fii_buy_streak'] >= 3:
+            lines.append(f"🟢 FII buying streak: {fm['fii_buy_streak']} consecutive days")
+
+    # Weekly summary (last valid week from 4-week data)
+    weekly_nets = fm.get('fii_4w_weekly', [])
+    if weekly_nets:
+        last_week_fii = weekly_nets[-1]
+        lines.append(f"Last week: FII {last_week_fii:+.0f} Cr | Net {fm['net']:+.0f} Cr")
+    else:
+        lines.append(f"Last week: FII {fm['fii_net']:+.0f} Cr | DII {fm['dii_net']:+.0f} Cr | Net {fm['net']:+.0f} Cr")
+
+    # Z-score (only if not covered by interpretation)
+    if not fii_interp.get("ok") and abs(fm['fii_z_score']) > 1.0:
+        z_label = "sharp outflow" if fm['fii_z_score'] < 0 else "sharp inflow"
+        lines.append(f"FII z-score: {fm['fii_z_score']:+.1f} ({z_label} vs 20D avg)")
+
+    # 5-day stats
+    if fm['data_points'] >= 3:
+        lines.append(f"5-day FII: total {fm['fii_5d_total']:+.0f} Cr | avg {fm['fii_5d_avg']:+.0f} Cr | "
+                     f"range [{fm['largest_sell_day']:+.0f}, {fm['largest_buy_day']:+.0f}]")
+    else:
+        lines.append(f"5-day FII: accumulating ({fm['data_points']}/5 days)")
+
+    # DII absorption — use pre-computed interpretation if available
+    if absorb_interp.get("ok"):
+        lines.append(absorb_interp['interpretation'])
+    else:
+        absorb_label = fm['dii_absorption_label']
+        if not absorb_label:
+            if fm['fii_net'] > 0:
+                absorb_label = "FII buying — DII absorption not relevant"
+            else:
+                absorb_label = "Both FII/DII direction unclear"
+        lines.append(absorb_label)
+
+    # Net market impact (same-day flows)
+    fii_latest = fm['fii_net']
+    dii_latest = fm['dii_net']
+    if fii_latest < 0 and dii_latest > 0:
+        effective_pressure = fii_latest + dii_latest
+        if effective_pressure > 0:
+            lines.append(f"Net market impact: ₹{effective_pressure:+.0f}Cr (net buying — DII more than offset FII)")
+        else:
+            lines.append(f"Net market impact: ₹{effective_pressure:+.0f}Cr effective selling pressure")
+    elif fii_latest < 0:
+        lines.append(f"Net market impact: ₹{fii_latest:+.0f}Cr (no DII offset)")
+
+    # 4-week trend
+    trend = fm.get('fii_4w_trend')
+    weekly_nets_list = fm.get('fii_4w_weekly', [])
+    if trend and len(weekly_nets_list) >= 4:
+        trend_str = f"4-week FII trend: " + " | ".join(
+            [f"Wk-{4-len(weekly_nets_list)+i+1}: {x:+.0f}" for i, x in enumerate(weekly_nets_list)
+        ]) + f" ({trend})"
+        lines.append(trend_str)
+    elif weekly_nets_list and len(weekly_nets_list) >= 2:
+        trend_str = f"FII weekly: " + " | ".join(
+            [f"Wk-{i+1}: {x:+.0f}" for i, x in enumerate(weekly_nets_list)]
+        ) + " (accumulating)"
+        lines.append(trend_str)
+
+    return "\n".join(lines)
+
+
+def _format_flows_from_db() -> str:
+    """Fallback: query DB independently and compute (legacy behavior)."""
     try:
         from src.db import get_fii_dii_flows
         import pandas as pd
@@ -551,17 +744,10 @@ def format_flows() -> str:
         net     = fii_net + dii_net
 
         # ── DII absorption ratio (same-day only) ──
-        if fii_latest < 0 and dii_latest > 0:
-            absorption = (dii_latest / abs(fii_latest)) * 100
-            if absorption > 80:
-                absorb_label = f"DII absorbing {absorption:.0f}% of FII sell — strong floor"
-            elif absorption > 50:
-                absorb_label = f"DII absorbing {absorption:.0f}% of FII sell — partial support"
-            else:
-                absorb_label = f"DII absorbing {absorption:.0f}% of FII sell — weak support"
-        elif fii_latest > 0:
+        absorption_pct, absorb_label = compute_absorption(fii_latest, dii_latest)
+        if absorption_pct is None and fii_latest > 0:
             absorb_label = "FII buying — DII absorption not relevant"
-        else:
+        elif absorption_pct is None:
             absorb_label = "Both FII/DII direction unclear"
 
         # ── 4-week FII trend ──
@@ -650,7 +836,7 @@ def format_flows() -> str:
         return "\n".join(lines)
 
     except Exception as e:
-        print(f"⚠️ format_flows: {e}")
+        print(f"⚠️ format_flows (db fallback): {e}")
         return ""
 
 
@@ -748,11 +934,26 @@ def _format_news_line(article: dict) -> str:
     except Exception:
         pass  # isolate mechanism failures from news output
 
-    # Clean editorial format — impact/sentiment still computed upstream for sorting
+    # Tags for staleness and India linkage
+    tags = []
+    if article.get("seen_before"):
+        tags.append("previously covered")
+    if article.get("india_linkage_note"):
+        tags.append(article["india_linkage_note"])
+    elif article.get("india_linkage", 10) < 7 and not india_link:
+        tags.append("Global")
+    freshness = article.get("freshness_score", 10)
+    if freshness < 5:
+        tags.append(f"stale ({freshness}/10)")
+
+    # Clean editorial format
     if numbers:
         line = f"⦿ {headline.rstrip('.')} ({numbers}). ({source})"
     else:
         line = f"⦿ {headline.rstrip('.')} ({source})"
+
+    if tags:
+        line += f" [{', '.join(tags)}]"
 
     # Add India linkage if mechanism detected
     if india_link:
@@ -990,13 +1191,13 @@ def format_mf_flows() -> str:
                     if pace_str:
                         thematic_lines.append(f"{cat}: +₹{curr:.0f}Cr MTD{pace_str}")
                     else:
-                        thematic_lines.append(f"{cat}: +₹{curr:.0f}Cr ({streak}th consecutive inflow)")
+                        thematic_lines.append(f"{cat}: +₹{curr:.0f}Cr ({_ordinal(streak)} consecutive inflow)")
                 elif curr < 0 and all(prior_s["amount_cr"] < 0):
                     streak = sum(1 for x in prior_s["amount_cr"] if x < 0) + 1
                     if pace_str:
                         thematic_lines.append(f"{cat}: ₹{curr:.0f}Cr MTD{pace_str}")
                     else:
-                        thematic_lines.append(f"{cat}: ₹{curr:.0f}Cr ({streak}th consecutive outflow)")
+                        thematic_lines.append(f"{cat}: ₹{curr:.0f}Cr ({_ordinal(streak)} consecutive outflow)")
                 else:
                     if pace_str:
                         thematic_lines.append(f"{cat}: {curr:+.0f}Cr MTD{pace_str}")
@@ -1128,10 +1329,6 @@ def compute_mf_intelligence(ctx: Dict = None, macro_data: Dict = None,
         dii_net = float(dii_net) if dii_net is not None else 0
     except (ValueError, TypeError):
         dii_net = 0
-    try:
-        dii_absorbed = float(dii_absorbed) if dii_absorbed is not None else 0
-    except (ValueError, TypeError):
-        dii_absorbed = 0
 
     # Gold (defensive proxy)
     gold = None
@@ -1278,7 +1475,11 @@ def compute_mf_intelligence(ctx: Dict = None, macro_data: Dict = None,
     # DII context
     if dii_net != 0:
         if dii_net > 0:
-            lines.append(f"💰 DII: buying ₹{abs(dii_net):,.0f}Cr (absorbed {dii_absorbed*100:.0f}% of FII)")
+            _, absorb_label = compute_absorption(fii_net or 0, dii_net)
+            if absorb_label:
+                lines.append(f"💰 DII: buying ₹{abs(dii_net):,.0f}Cr — {absorb_label}")
+            else:
+                lines.append(f"💰 DII: buying ₹{abs(dii_net):,.0f}Cr — domestic support")
         else:
             lines.append(f"💰 DII: selling ₹{abs(dii_net):,.0f}Cr — adding to downside pressure")
 
@@ -1668,23 +1869,55 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
     temporal_ctx = ctx.get("temporal_context", {})
     temporal_metrics = temporal_ctx.get("metrics", {}) if temporal_ctx.get("ok") else {}
 
-    # FII streak + flow
+    # FII + DII evidence — use pre-computed interpretations when available
     fii = ctx.get("fii_context", {})
-    if fii.get("ok"):
+    fii_interp = ctx.get("fii_interpretation", {})
+    absorb_interp = ctx.get("absorption_interpretation", {})
+    fm = ctx.get("flow_metrics", {})
+
+    # Initialize fii_net, streak, direction early — available for all evidence branches
+    fii_net = 0
+    streak = 0
+    direction = ""
+    if fm.get("ok"):
+        fii_net = fm.get("fii_net", 0) or 0
+        streak = fm.get("fii_streak", 0) or 0
+        direction = fm.get("fii_streak_direction", "") or ""
+    elif fii.get("ok"):
+        fii_net = fii.get("fii_net", 0) or 0
+        streak = fii.get("fii_streak", 0) or 0
+        direction = fii.get("fii_streak_direction", "") or ""
+    try:
+        fii_net = float(fii_net)
+        streak = int(streak)
+    except (ValueError, TypeError):
+        fii_net = 0
+        streak = 0
+
+    if fii_interp.get("ok"):
+        # Use pre-computed FII interpretation
+        evidence.append(f"FII: {fii_interp['interpretation'][:150]}")
+        if fii_interp.get("transition_signal"):
+            evidence.append(f"  🔀 {fii_interp['transition_signal'][:150]}")
+    elif fii.get("ok"):
+        # Fallback: inline display (existing behavior)
         fii_net = fii.get("fii_net", 0)
         streak = fii.get("fii_streak", 0)
         direction = fii.get("fii_streak_direction", "")
         try:
             fii_net = float(fii_net) if fii_net is not None else 0
-        except (ValueError, TypeError):
-            fii_net = 0
-        try:
             streak = int(streak) if streak is not None else 0
         except (ValueError, TypeError):
+            fii_net = 0
             streak = 0
         fii_pct = get_percentile("fii_net", fii_net, "1Y")
         pct_str = f" | {fii_pct}" if fii_pct else ""
-        # Temporal duration context
+        fii_4w_avg = fii.get("fii_4w_avg", 0)
+        try:
+            fii_4w_avg = float(fii_4w_avg) if fii_4w_avg is not None else 0
+        except (ValueError, TypeError):
+            fii_4w_avg = 0
+
         fii_temporal = temporal_metrics.get("fii_net", {})
         temporal_suffix = ""
         if fii_temporal and streak >= 3:
@@ -1695,11 +1928,7 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
                 temporal_suffix = f" (avg {avg_dur:.0f}d)"
             if label_word:
                 temporal_suffix += f" → {label_word.lower()}"
-        fii_4w_avg = fii.get("fii_4w_avg", 0)
-        try:
-            fii_4w_avg = float(fii_4w_avg) if fii_4w_avg is not None else 0
-        except (ValueError, TypeError):
-            fii_4w_avg = 0
+
         if streak >= 3 and direction == "negative":
             if fii_4w_avg and abs(fii_4w_avg) > 0:
                 total = fii_4w_avg * streak
@@ -1716,47 +1945,91 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
             sign = "-" if fii_net < 0 else "+"
             evidence.append(f"FII: {sign}₹{abs(fii_net):,.0f}Cr{pct_str} yesterday")
 
-    # DII context
-    if fii.get("ok"):
+    # DII / absorption evidence
+    if absorb_interp.get("ok"):
+        # Use pre-computed absorption interpretation
+        evidence.append(f"Absorption: {absorb_interp['interpretation'][:150]}")
+    elif fii.get("ok"):
         dii_net = fii.get("dii_net", 0)
-        dii_absorbed = fii.get("dii_absorbed", 0)
         try:
             dii_net = float(dii_net) if dii_net is not None else 0
         except (ValueError, TypeError):
             dii_net = 0
-        try:
-            dii_absorbed = float(dii_absorbed) if dii_absorbed is not None else 0
-        except (ValueError, TypeError):
-            dii_absorbed = 0
         if dii_net > 0 and fii_net < 0:
-            evidence.append(f"DII: +₹{dii_net:,.0f}Cr | absorbing {dii_absorbed*100:.0f}% of FII — floor exists")
+            if fm.get("ok"):
+                absorb_label = fm.get("dii_absorption_label", "")
+            else:
+                _, absorb_label = compute_absorption(fii_net, dii_net)
+            evidence.append(f"DII: +₹{dii_net:,.0f}Cr | {absorb_label}")
+        elif dii_net > 0:
+            evidence.append(f"DII: +₹{dii_net:,.0f}Cr — domestic buying")
+        elif dii_net < -500:
+            evidence.append(f"DII: -₹{abs(dii_net):,.0f}Cr — domestic selling pressure")
+            # Use pre-computed absorption from flow_metrics
+            fm = ctx.get("flow_metrics", {})
+            if fm.get("ok"):
+                absorb_label = fm.get("dii_absorption_label", "")
+            else:
+                _, absorb_label = compute_absorption(fii_net, dii_net)
+            evidence.append(f"DII: +₹{dii_net:,.0f}Cr | {absorb_label}")
         elif dii_net > 0:
             evidence.append(f"DII: +₹{dii_net:,.0f}Cr — domestic buying")
         elif dii_net < -500:
             evidence.append(f"DII: -₹{abs(dii_net):,.0f}Cr — domestic selling pressure")
 
-    # VIX level — percentile-aware
+    # VIX level — use pre-computed vix_interpretation when available
     macro = ctx.get("macro_context", {})
     vix_price = macro.get("vix_price")
+    vix_ctx = ctx.get("vix_context", {})
+    vix_interp = ctx.get("vix_interpretation", {})
+
     if vix_price:
-        vix_pct = get_percentile("india_vix", vix_price, "1Y")
-        vix_pct_val = get_percentile_value("india_vix", vix_price, "1Y")
-        vix_pct_str = f" | {vix_pct}" if vix_pct else ""
-        if vix_pct_val and vix_pct_val >= 85:
-            evidence.append(f"VIX: {vix_price:.1f} | EXTREME{vix_pct_str} | elevated fear")
-        elif vix_pct_val and vix_pct_val >= 70:
-            evidence.append(f"VIX: {vix_price:.1f} | ELEVATED{vix_pct_str} | caution zone")
-        elif vix_price > 25:
-            evidence.append(f"VIX: {vix_price:.1f} | HIGH{vix_pct_str} | elevated fear")
-        elif vix_pct_val and vix_pct_val <= 15:
-            if mp.get("phase") in ("EXPANSION", "RECOVERY"):
-                evidence.append(f"VIX: {vix_price:.1f} | COMPLACENT{vix_pct_str} — crowded longs risk")
+        if vix_interp.get("ok"):
+            # Use pre-computed interpretation
+            evidence.append(f"VIX: {vix_price:.1f} | {vix_interp['risk_level']} — {vix_interp['interpretation'][:120]}")
+            for contra in vix_interp.get("contradictions", []):
+                evidence.append(f"  ⚠️ {contra}")
+        elif vix_ctx.get("ok"):
+            vix_label = vix_ctx.get("vix_label", "NORMAL")
+            vix_icon = vix_ctx.get("vix_icon", "\U0001f7e1")
+            vix_pct_val = vix_ctx.get("vix_percentile")
+            vix_pct_str = f" | {_ordinal(int(vix_pct_val))} %ile (1Y)" if vix_pct_val is not None else ""
+
+            if vix_label == "EXTREME":
+                evidence.append(f"VIX: {vix_price:.1f} | EXTREME{vix_pct_str} | elevated fear")
+            elif vix_label == "ELEVATED":
+                evidence.append(f"VIX: {vix_price:.1f} | ELEVATED{vix_pct_str} | caution zone")
+            elif vix_label == "COMPLACENT":
+                if mp.get("phase") in ("EXPANSION", "RECOVERY"):
+                    evidence.append(f"VIX: {vix_price:.1f} | COMPLACENT{vix_pct_str} — crowded longs risk")
+                else:
+                    evidence.append(f"VIX: {vix_price:.1f} | calm{vix_pct_str}")
+            elif vix_label == "HIGH":
+                evidence.append(f"VIX: {vix_price:.1f} | HIGH{vix_pct_str} | elevated fear")
+            elif vix_label == "LOW":
+                evidence.append(f"VIX: {vix_price:.1f} | LOW{vix_pct_str}")
             else:
-                evidence.append(f"VIX: {vix_price:.1f} | calm{vix_pct_str}")
-        elif vix_price < 15:
-            evidence.append(f"VIX: {vix_price:.1f} | LOW{vix_pct_str}")
+                evidence.append(f"VIX: {vix_price:.1f} | NORMAL{vix_pct_str}")
         else:
-            evidence.append(f"VIX: {vix_price:.1f} | NORMAL{vix_pct_str}")
+            # Fallback: compute from percentiles
+            vix_pct = get_percentile("india_vix", vix_price, "1Y")
+            vix_pct_val = get_percentile_value("india_vix", vix_price, "1Y")
+            vix_pct_str = f" | {vix_pct}" if vix_pct else ""
+            if vix_pct_val and vix_pct_val >= 85:
+                evidence.append(f"VIX: {vix_price:.1f} | EXTREME{vix_pct_str} | elevated fear")
+            elif vix_pct_val and vix_pct_val >= 70:
+                evidence.append(f"VIX: {vix_price:.1f} | ELEVATED{vix_pct_str} | caution zone")
+            elif vix_price > 25:
+                evidence.append(f"VIX: {vix_price:.1f} | HIGH{vix_pct_str} | elevated fear")
+            elif vix_pct_val and vix_pct_val <= 15:
+                if mp.get("phase") in ("EXPANSION", "RECOVERY"):
+                    evidence.append(f"VIX: {vix_price:.1f} | COMPLACENT{vix_pct_str} — crowded longs risk")
+                else:
+                    evidence.append(f"VIX: {vix_price:.1f} | calm{vix_pct_str}")
+            elif vix_price < 15:
+                evidence.append(f"VIX: {vix_price:.1f} | LOW{vix_pct_str}")
+            else:
+                evidence.append(f"VIX: {vix_price:.1f} | NORMAL{vix_pct_str}")
 
     # VIX regime duration
     vix_temporal = temporal_metrics.get("india_vix", {})
@@ -1855,11 +2128,17 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
         dii_align = (dii_val > 500 and not lean_bearish) or (dii_val < -500 and lean_bearish)
         if dii_align:
             aligned += 1
-        _dii_abs = fii.get('dii_absorbed', 0)
-        try:
-            _dii_abs = float(_dii_abs) if _dii_abs is not None else 0
-        except (ValueError, TypeError):
-            _dii_abs = 0
+        # Use pre-computed absorption from flow_metrics
+        fm = ctx.get("flow_metrics", {})
+        if fm.get("ok"):
+            _dii_abs_pct = fm.get("dii_absorption_pct")
+            _dii_abs = _dii_abs_pct / 100 if _dii_abs_pct is not None else 0
+        else:
+            _dii_abs = fii.get('dii_absorbed', 0)
+            try:
+                _dii_abs = float(_dii_abs) if _dii_abs is not None else 0
+            except (ValueError, TypeError):
+                _dii_abs = 0
         absorb_str = f" (absorption {_dii_abs*100:.0f}%)" if dii_val > 0 and fii_net < 0 else ""
         signal_details.append(f"  {dii_icon} DII: ₹{dii_val:+,.0f}Cr{absorb_str}")
     else:
@@ -1932,25 +2211,39 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
     if er not in ("QUIET", ""):
         lines.append(f"📅 Earnings: {er}")
 
-    # Global risk mood — computed from actual signals
+    # Global risk mood — computed from actual signals (Phase 23: gold/copper added)
     gr = ctx.get("global_risk", {})
+    risk_mood_score = ctx.get("risk_mood")
     if gr.get("ok"):
         risk_signals = []
-        # VIX contribution — percentile-aware
+        # VIX contribution — use pre-computed vix_interpretation
+        vix_interp_dash = ctx.get("vix_interpretation", {})
         if vix_price:
-            vix_pct_val = get_percentile_value("india_vix", vix_price, "1Y")
-            if vix_pct_val and vix_pct_val >= 85:
-                risk_signals.append(f"VIX {vix_price:.0f} (extreme — {vix_pct_val:.0f}th %ile)")
-            elif vix_pct_val and vix_pct_val >= 70:
-                risk_signals.append(f"VIX {vix_price:.0f} (elevated — {vix_pct_val:.0f}th %ile)")
-            elif vix_price > 25:
-                risk_signals.append(f"VIX {vix_price:.0f} (high fear)")
-            elif vix_pct_val and vix_pct_val <= 15:
-                risk_signals.append(f"VIX {vix_price:.0f} (complacent — {vix_pct_val:.0f}th %ile)")
-            elif vix_price < 15:
-                risk_signals.append(f"VIX {vix_price:.0f} (low)")
+            if vix_interp_dash.get("ok"):
+                risk_signals.append(f"VIX {vix_price:.0f} ({vix_interp_dash['risk_level'].lower()} — {vix_interp_dash['interpretation'][:80]})")
             else:
-                risk_signals.append(f"VIX {vix_price:.0f} (normal range)")
+                vix_ctx_dash = ctx.get("vix_context", {})
+                if vix_ctx_dash.get("ok"):
+                    vix_pct_val = vix_ctx_dash.get("vix_percentile")
+                    vix_label_ctx = vix_ctx_dash.get("vix_label", "NORMAL")
+                    if vix_pct_val is not None:
+                        risk_signals.append(f"VIX {vix_price:.0f} ({vix_label_ctx.lower()} — {_ordinal(int(vix_pct_val))} %ile)")
+                    else:
+                        risk_signals.append(f"VIX {vix_price:.0f} ({vix_label_ctx.lower()})")
+                else:
+                    vix_pct_val = get_percentile_value("india_vix", vix_price, "1Y")
+                    if vix_pct_val and vix_pct_val >= 85:
+                        risk_signals.append(f"VIX {vix_price:.0f} (extreme — {_ordinal(int(vix_pct_val))} %ile)")
+                    elif vix_pct_val and vix_pct_val >= 70:
+                        risk_signals.append(f"VIX {vix_price:.0f} (elevated — {_ordinal(int(vix_pct_val))} %ile)")
+                    elif vix_price > 25:
+                        risk_signals.append(f"VIX {vix_price:.0f} (high fear)")
+                    elif vix_pct_val and vix_pct_val <= 15:
+                        risk_signals.append(f"VIX {vix_price:.0f} (complacent — {_ordinal(int(vix_pct_val))} %ile)")
+                    elif vix_price < 15:
+                        risk_signals.append(f"VIX {vix_price:.0f} (low)")
+                    else:
+                        risk_signals.append(f"VIX {vix_price:.0f} (normal range)")
         # DXY from anchor data
         anchor_data = ctx.get("anchor_data", [])
         dxy = next((a for a in anchor_data if "DXY" in str(a.get("symbol", "")).upper() or "dollar" in str(a.get("name", "")).lower()), None)
@@ -1976,9 +2269,42 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
             elif hyg_change > 1:
                 risk_signals.append(f"HYG {hyg_change:+.1f}% (risk-on credit)")
 
+        # Gold (Phase 23)
+        gold_a = next((a for a in anchor_data if a.get("name") == "Gold"), None)
+        if gold_a and gold_a.get("ok"):
+            g_weekly = gold_a.get("weekly_change_pct", 0) or 0
+            if abs(g_weekly) > 1.5:
+                risk_signals.append(f"Gold {gold_a['price']:.0f} ({g_weekly:+.1f}% wk)")
+
+        # Copper (Phase 23)
+        copper_a = next((a for a in anchor_data if a.get("name") == "Copper"), None)
+        if copper_a and copper_a.get("ok"):
+            c_weekly = copper_a.get("weekly_change_pct", 0) or 0
+            if abs(c_weekly) > 1:
+                risk_signals.append(f"Copper {copper_a['price']:.2f} ({c_weekly:+.1f}% wk)")
+
         composite = gr.get("composite", "MIXED")
         evidence_str = " | ".join(risk_signals) if risk_signals else "insufficient data"
-        lines.append(f"🌍 Global Risk: {composite} — {evidence_str}")
+
+        # Risk mood bar (0-100 → 10 chars)
+        mood_bar_len = max(0, min(10, round(risk_mood_score / 10))) if risk_mood_score is not None else 5
+        mood_bar = "█" * mood_bar_len + "░" * (10 - mood_bar_len)
+        if risk_mood_score is not None:
+            if risk_mood_score >= 65:
+                mood_icon = "🟢"
+            elif risk_mood_score >= 55:
+                mood_icon = "🟡"
+            elif risk_mood_score >= 45:
+                mood_icon = "🟡"
+            elif risk_mood_score >= 35:
+                mood_icon = "🟠"
+            else:
+                mood_icon = "🔴"
+            lines.append(f"🌍 Global Risk: {composite} | Mood {mood_icon}{risk_mood_score}/100 {mood_bar}")
+            if evidence_str and len(evidence_str) < 200:
+                lines.append(f"   {evidence_str}")
+        else:
+            lines.append(f"🌍 Global Risk: {composite} — {evidence_str}")
 
     lines.append("━" * 26)
 

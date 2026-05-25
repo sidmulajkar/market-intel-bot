@@ -58,7 +58,8 @@ Under 120 words.
 """
         try:
             analysis = ai.analyze("fast", prompt)
-            send_text(f"🤖 *AI — Bulk/Block Activity:*\n\n{analysis}")
+            if analysis and len(analysis.split()) >= 25:
+                send_text(f"🤖 *AI — Bulk/Block Activity:*\n\n{analysis}")
         except Exception as e:
             print(f"⚠️  AI failed: {e}")
 
