@@ -35,6 +35,74 @@ GLOBAL_INDICES = {
     "France":      {"symbol": "^FCHI",      "region": "Europe",   "flag": "🇫🇷", "iso": "FR",  "index_name": "CAC 40"},
 }
 
+# ── Macro anchor sanity ranges — wide absurdity bounds, not tight constraints
+#    Format: symbol -> (min_possible, max_possible)
+#    These are deliberately wide — the real guard is the daily-change check below.
+#    They reject obvious garbage (negative prices, 1000x typos, unit mismatches).
+VALID_RANGES = {
+    "BZ=F":       (20, 300),    # Brent crude $/bbl (was -$37 in Apr 2020, floor=20 for practical use)
+    "GC=F":       (500, 10000), # Gold $/oz
+    "USDINR=X":   (60, 200),    # USD/INR (was ~74 in 2022, ~95 in 2026, could go higher)
+    "^INDIAVIX":  (3, 150),     # India VIX (hit ~85 in Mar 2020 crash)
+    "DX-Y.NYB":   (50, 200),    # DXY index
+    "^TNX":       (0.1, 20.0),  # US 10Y yield % (near 0.5 in 2020, 5%+ in 2023)
+    "^VIX":       (5, 150),     # CBOE VIX (hit ~83 in Mar 2020)
+    "CL=F":       (10, 300),    # WTI crude
+    "HG=F":       (1, 20),      # Copper $/lb
+    "SI=F":       (5, 200),     # Silver $/oz
+    "HYG":        (20, 120),    # High yield ETF
+    "JPY=X":      (50, 500),    # USD/JPY (was ~75 in 2011, ~160 in 2024)
+    "EURUSD=X":   (0.5, 2.5),   # EUR/USD (was ~0.83 in 2000, ~1.60 in 2008)
+    "2YY=F":      (0.1, 20.0),  # US 2Y yield %
+}
+
+# ── Max daily change thresholds — the REAL guard against corrupted data
+#    Most macro variables can't move >5% in a day without a crisis.
+#    VIX is higher-vol, so gets 15%.
+_MAX_DAILY_CHANGE_PCT = {
+    "BZ=F":       8.0,
+    "GC=F":       5.0,
+    "USDINR=X":   3.0,    # Forex pairs rarely move >2% in a day
+    "^INDIAVIX":  15.0,   # VIX can gap hard
+    "DX-Y.NYB":   3.0,
+    "^TNX":       10.0,   # Yields are % terms, can gap
+    "^VIX":       15.0,
+    "CL=F":       8.0,
+    "HG=F":       5.0,
+    "SI=F":       8.0,
+    "HYG":        3.0,
+    "JPY=X":      3.0,
+    "EURUSD=X":   3.0,
+    "2YY=F":      10.0,
+}
+
+
+def _is_price_sane(symbol: str, price: float, prev_price: float = None) -> tuple[bool, str]:
+    """Check if a price is valid. Returns (ok, reason).
+
+    Two-layer guard:
+    1. Absolute range: rejects absurd values (typos, unit errors, negative prices)
+    2. Relative change: rejects sudden jumps that indicate corrupted data
+
+    If prev_price is provided, checks daily change % against threshold.
+    If prev_price is None, skips the relative check (first run scenario).
+    """
+    # Layer 1: absolute range
+    if symbol in VALID_RANGES:
+        lo, hi = VALID_RANGES[symbol]
+        if price < lo or price > hi:
+            return False, f"price {price} outside absurdity bounds [{lo}, {hi}]"
+
+    # Layer 2: relative daily change (catches yfinance corruption, API glitches)
+    if prev_price is not None and prev_price > 0:
+        change_pct = abs(price - prev_price) / prev_price * 100
+        threshold = _MAX_DAILY_CHANGE_PCT.get(symbol, 5.0)
+        if change_pct > threshold:
+            return False, f"daily change {change_pct:.1f}% exceeds {threshold}% threshold (prev={prev_price:.2f}, curr={price:.2f})"
+
+    return True, "ok"
+
+
 MARKET_HOURS = {
     "India":       ("Asia/Kolkata",          9, 15, 15, 30),
     "Japan":       ("Asia/Tokyo",            9,  0, 15,  0),
@@ -333,6 +401,17 @@ def fetch_macro_anchors() -> list:
                 if len(close_s) >= 2:
                     prev    = float(close_s.iloc[-2])
                     current = float(close_s.iloc[-1])
+
+                    sane, reason = _is_price_sane(sym, current, prev_price=prev)
+                    if not sane:
+                        print(f"⚠️  Macro anchor {name} ({sym}): {reason} — rejecting")
+                        results.append({
+                            "name": name, "symbol": sym, "price": None,
+                            "change_pct": None, "weekly_change_pct": None,
+                            "status": None, "ok": False,
+                        })
+                        continue
+
                     change  = round(((current - prev) / prev) * 100, 3) if prev else 0.0
 
                     week_ago   = float(close_s.iloc[0])
@@ -376,6 +455,12 @@ def fetch_macro_anchors() -> list:
                 if len(close_s) >= 2:
                     prev = float(close_s.iloc[-2])
                     current = float(close_s.iloc[-1])
+
+                    sane, reason = _is_price_sane(sym, current, prev_price=prev)
+                    if not sane:
+                        print(f"⚠️  Macro anchor {name} ({sym}): {reason} — rejecting")
+                        raise ValueError("Price failed sanity check")
+
                     change = round(((current - prev) / prev) * 100, 3) if prev else 0.0
                     week_ago = float(close_s.iloc[0])
                     weekly_chg = round(((current - week_ago) / week_ago) * 100, 3) if week_ago else None

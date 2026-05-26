@@ -86,6 +86,58 @@ def main():
                 big_moves.append(f"{emoji} *{sym}* {m['change_pct']:+.1f}%")
                 log_alert_sent(sym, key)
 
+    # ── Identify key drivers (Phase 26: not raw gainers/losers) ───
+    key_drivers = []
+    # Top India mover by absolute change
+    india_all = movers.get("india", {}).get("gainers", []) + movers.get("india", {}).get("losers", [])
+    if india_all:
+        top = max(india_all, key=lambda x: abs(x.get("change_pct", 0)))
+        key_drivers.append(f"{top['symbol']} {top['change_pct']:+.1f}% (top India mover)")
+    # Top US mover
+    us_all = movers.get("us", {}).get("gainers", []) + movers.get("us", {}).get("losers", [])
+    if us_all:
+        top_us = max(us_all, key=lambda x: abs(x.get("change_pct", 0)))
+        key_drivers.append(f"{top_us['symbol']} {top_us['change_pct']:+.1f}% (top US mover)")
+
+    # ── Regime confirmation (Phase 26: did close confirm morning?) ──
+    regime_note = ""
+    try:
+        from src.db import get_latest_market_state, get_bot_state
+        from src.state import MarketState
+        prev = get_latest_market_state()
+        if prev and prev.get("market_phase"):
+            phase = prev.get("market_phase", "UNKNOWN")
+            nifty = valid_index.get("India", {})
+            nifty_change = nifty.get("change_pct", 0)
+            # Check if close direction matches morning regime
+            morning_phase = phase.upper()
+            if "BULL" in morning_phase and nifty_change > 0:
+                regime_note = f"✅ Morning regime ({phase}) confirmed at close."
+            elif "BEAR" in morning_phase and nifty_change < 0:
+                regime_note = f"✅ Morning regime ({phase}) confirmed at close."
+            elif morning_phase in ("ACCUMULATION", "MARKUP", "DISTRIBUTION", "DECLINE"):
+                regime_note = f"⚠️ Morning regime ({phase}) invalidated — close went opposite direction."
+            else:
+                regime_note = f"Morning regime was neutral — close {'green' if nifty_change > 0 else 'red'} ({nifty_change:+.1f}%)."
+    except Exception as e:
+        print(f"   ⚠️ Regime check: {e}")
+
+    # ── Overnight handoff (Phase 26: US/Europe live) ──────────────
+    overnight_note = ""
+    try:
+        from src.delta import get_relevant_indices
+        relevant = get_relevant_indices("15:30", valid_index)
+        if relevant:
+            parts = []
+            for country, d in relevant.items():
+                if d.get("ok") and d.get("change_pct") is not None:
+                    sign = "+" if d.get("change_pct", 0) >= 0 else ""
+                    parts.append(f"{d.get('flag','')} {country} {sign}{d.get('change_pct',0):.1f}%")
+            if parts:
+                overnight_note = f"\n🌍 *Overnight:* {' | '.join(parts[:3])}"
+    except Exception:
+        pass
+
     # ── AI market summary (with universal validation) ──────────────
     print("🤖 Generating market summary...")
     summary = ""
@@ -97,30 +149,36 @@ def main():
         print(f"   ⚠️ Prompt build failed: {e}")
         prompt = ""
 
-    nifty = valid_index.get("Nifty 50", {})
-    vix   = valid_index.get("India VIX", {})
+    nifty = valid_index.get("India", {})
+    vix_price = gt_extra.get("india_vix") if gt_extra else None
     header_parts = []
-    if nifty:
+    if nifty and nifty.get("price", 0) > 0:
         header_parts.append(f"Nifty {nifty.get('price', 0):,.0f} ({nifty.get('change_pct', 0):+.1f}%)")
-    if vix and vix.get("price"):
-        header_parts.append(f"VIX {vix.get('price', 0):.1f}")
+    if vix_price:
+        header_parts.append(f"VIX {vix_price:.1f}")
     header = " | ".join(header_parts) if header_parts else "Market Close"
 
+    if not header_parts:
+        print("   ⚠️ CRITICAL: No Nifty closing price available — cannot send EOD summary")
+        send_text("⚠️ *END OF DAY:* Nifty closing data unavailable — no summary available.")
+        return
+
     def make_fallback():
-        fb = f"🔔 *END OF DAY SUMMARY*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n📊 {header}\n\n"
-        fb += format_top_movers(movers)
-        if big_moves:
-            fb += f"\n\n⚠️ *Big Moves (5%+):*\n" + "\n".join(big_moves)
-        fb += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_See you tomorrow! 🌙_"
-        return fb
+        return ""
 
     def send_eod(text):
-        msg = f"🔔 *END OF DAY SUMMARY*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n📊 {header}\n\n"
-        msg += text + "\n\n"
-        msg += format_top_movers(movers)
+        msg = f"🔔 *END OF DAY*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n📊 {header}\n\n"
+        if regime_note:
+            msg += f"{regime_note}\n\n"
+        if key_drivers:
+            msg += f"📊 *Key Drivers:* {'; '.join(key_drivers)}\n\n"
+        if text:
+            msg += text + "\n\n"
+        if overnight_note:
+            msg += f"{overnight_note}\n\n"
         if big_moves:
-            msg += f"\n\n⚠️ *Big Moves (5%+):*\n" + "\n".join(big_moves)
-        msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_See you tomorrow! 🌙_"
+            msg += f"⚠️ *Big Moves (5%+):*\n" + "\n".join(big_moves) + "\n\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━━━━━\n_See you tomorrow! 🌙_"
         send_text(msg)
 
     if prompt and ground_truth.get("nifty_close"):
@@ -133,13 +191,18 @@ def main():
         )
     else:
         # No ground truth — send without AI validation (degraded)
-        msg = f"🔔 *END OF DAY SUMMARY*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n📊 {header}\n\n"
+        msg = f"🔔 *END OF DAY*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n📊 {header}\n\n"
+        if regime_note:
+            msg += f"{regime_note}\n\n"
+        if key_drivers:
+            msg += f"📊 *Key Drivers:* {'; '.join(key_drivers)}\n\n"
         if summary:
             msg += summary + "\n\n"
-        msg += format_top_movers(movers)
+        if overnight_note:
+            msg += f"{overnight_note}\n\n"
         if big_moves:
-            msg += f"\n\n⚠️ *Big Moves (5%+):*\n" + "\n".join(big_moves)
-        msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_See you tomorrow! 🌙_"
+            msg += f"⚠️ *Big Moves (5%+):*\n" + "\n".join(big_moves) + "\n\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━━━━━\n_See you tomorrow! 🌙_"
         send_text(msg)
     print("✅ MARKET CLOSE COMPLETE")
 

@@ -109,7 +109,7 @@ def save_shareholding_snapshot(symbol: str, data: dict) -> None:
             "quarter": data.get("quarter"),
             "data":    json.dumps(data),
             "date":    today_str(),
-        }).execute()
+        }, on_conflict="symbol,quarter").execute()
     except Exception as e:
         print(f"⚠️  Shareholding save error: {e}")
 

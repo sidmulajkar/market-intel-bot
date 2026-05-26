@@ -575,7 +575,7 @@ def _format_flows_from_context(fm: Dict, ctx: Optional[Dict] = None) -> str:
     absorb_interp = c.get("absorption_interpretation", {})
 
     lines = [
-        f"Flow Intelligence (FII/DII):",
+        f"Flow Intelligence (FII/DII) — Provisional (T+1):",
         f"Latest day ({fm['date']}): FII {fm['fii_net']:+.0f} Cr | DII {fm['dii_net']:+.0f} Cr",
     ]
 
@@ -590,6 +590,8 @@ def _format_flows_from_context(fm: Dict, ctx: Optional[Dict] = None) -> str:
             lines.append(f"🔴 FII selling streak: {fm['fii_sell_streak']} consecutive days")
         elif fm['fii_buy_streak'] >= 3:
             lines.append(f"🟢 FII buying streak: {fm['fii_buy_streak']} consecutive days")
+        else:
+            lines.append("Insufficient history for streak analysis")
 
     # Weekly summary (last valid week from 4-week data)
     weekly_nets = fm.get('fii_4w_weekly', [])
@@ -1323,12 +1325,17 @@ def compute_mf_intelligence(ctx: Dict = None, macro_data: Dict = None,
 
     # DII context (domestic MF buying/selling)
     fii_ctx = ctx.get("fii_context", {})
+    fii_net = fii_ctx.get("fii_net", 0) if fii_ctx.get("ok") else 0
     dii_net = fii_ctx.get("dii_net", 0) if fii_ctx.get("ok") else 0
     dii_absorbed = fii_ctx.get("dii_absorbed", 0) if fii_ctx.get("ok") else 0
     try:
         dii_net = float(dii_net) if dii_net is not None else 0
     except (ValueError, TypeError):
         dii_net = 0
+    try:
+        fii_net = float(fii_net) if fii_net is not None else 0
+    except (ValueError, TypeError):
+        fii_net = 0
 
     # Gold (defensive proxy)
     gold = None

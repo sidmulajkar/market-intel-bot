@@ -3,6 +3,8 @@ AI Engine — Groq + Google AI Studio
 Fixed: RateLimitError import + correct model names
 """
 import os
+import re
+import json
 import time
 import requests
 
@@ -24,6 +26,17 @@ except ImportError:
     GOOGLE_AVAILABLE = False
     print("⚠️  google-generativeai not installed")
 
+# ── GOOGLE SEARCH GROUNDING (via google-genai) ─────────────────────
+# Uses Gemini with Google Search Retrieval — Gemini can search the web
+# during generation to verify numbers, find fresh news, fill API gaps.
+GOOGLE_SEARCH_AVAILABLE = False
+try:
+    from google import genai as genai_client
+    from google.genai import types as genai_types
+    GOOGLE_SEARCH_AVAILABLE = True
+except ImportError:
+    pass  # google-genai not installed — search grounding unavailable
+
 GROQ_KEY   = os.environ.get('GROQ_API_KEY',  '')
 GOOGLE_KEY = os.environ.get('GOOGLE_AI_KEY', '')
 HF_KEY     = os.environ.get('HF_KEY',        '')
@@ -44,6 +57,7 @@ class AIEngine:
     def __init__(self):
         self.groq_client  = None
         self.google_model = None
+        self.google_search_client = None  # google-genai with Search Retrieval
 
         if GROQ_AVAILABLE and GROQ_KEY:
             try:
@@ -59,19 +73,76 @@ class AIEngine:
             except Exception as e:
                 print(f"⚠️  Google AI init failed: {e}")
 
+        # Google Search Grounding — uses google-genai SDK
+        if GOOGLE_SEARCH_AVAILABLE and GOOGLE_KEY:
+            try:
+                self.google_search_client = genai_client.Client(api_key=GOOGLE_KEY)
+            except Exception as e:
+                print(f"⚠️  Google Search client init failed: {e}")
+
     def analyze(self, task: str, prompt: str) -> str:
         if task == "fast":
             return (self._try_groq(prompt)
                     or self._try_google(prompt)
+                    or self._try_google_search(prompt)
                     or "⚠️ AI analysis temporarily unavailable.")
         elif task == "volume":
             return (self._try_google(prompt)
                     or self._try_groq(prompt)
+                    or self._try_google_search(prompt)
                     or "⚠️ AI analysis temporarily unavailable.")
         else:
             return (self._try_groq(prompt)
                     or self._try_google(prompt)
+                    or self._try_google_search(prompt)
                     or "⚠️ AI analysis temporarily unavailable.")
+
+    @staticmethod
+    def _check_output_quality(content: str, min_words: int = 30) -> str:
+        """Reject ultra-short outputs that indicate model failure or quota exceeded."""
+        if not content:
+            return ""
+        # Strip common failure phrases
+        stripped = content.strip()
+        if len(stripped.split()) < min_words:
+            print(f"⚠️  AI output too short ({len(stripped.split())} words, need {min_words}): {stripped[:80]}")
+            return ""
+        return stripped
+
+    @staticmethod
+    def _validate_forecast_schema(content: str) -> bool:
+        """Check that volume-task AI output contains a structured Forecast.
+
+        Extracts JSON from the response and validates required keys exist
+        with valid values. This is the real guard against garbage output —
+        word count is only the fast path.
+        """
+        if not content:
+            return False
+        # Try to find JSON block in the response
+        json_match = re.search(r'\{[^{}]*"direction"[^{}]*\}', content, re.DOTALL)
+        if not json_match:
+            # Also check for non-JSON structured output with labeled fields
+            has_direction = bool(re.search(r'direction\s*[:=]\s*(bullish|bearish|neutral)', content, re.IGNORECASE))
+            has_confidence = bool(re.search(r'confidence\s*[:=]\s*(\d+|high|medium|low)', content, re.IGNORECASE))
+            if has_direction and has_confidence:
+                return True
+            print(f"⚠️  AI output lacks structured forecast: no direction/confidence found")
+            return False
+        try:
+            forecast = json.loads(json_match.group())
+            direction = forecast.get("direction", "").upper()
+            if direction not in ("BULLISH", "BEARISH", "NEUTRAL"):
+                print(f"⚠️  AI forecast: invalid direction={forecast.get('direction')}")
+                return False
+            prob = forecast.get("probability_up")
+            if prob is not None and not (0.0 <= prob <= 1.0):
+                print(f"⚠️  AI forecast: probability_up={prob} out of [0,1]")
+                return False
+            return True
+        except json.JSONDecodeError:
+            print(f"⚠️  AI output: found JSON-like block but parse failed")
+            return False
 
     def _try_groq(self, prompt: str) -> str:
         if not self.groq_client:
@@ -87,7 +158,8 @@ class AIEngine:
                     max_tokens=1000,
                     temperature=0.3,
                 )
-                return resp.choices[0].message.content
+                raw = resp.choices[0].message.content
+                return self._check_output_quality(raw)
 
             except Exception as e:
                 err_str = str(e).lower()
@@ -122,7 +194,7 @@ class AIEngine:
                     full_prompt,
                     generation_config=cfg
                 )
-                return resp.text
+                return self._check_output_quality(resp.text)
             except Exception as e:
                 print(f"⚠️  Google AI error attempt {attempt+1}: {e}")
                 if attempt < 2:
@@ -130,6 +202,42 @@ class AIEngine:
                 else:
                     return ""
         return ""
+
+    def _try_google_search(self, prompt: str) -> str:
+        """Gemini with Google Search Grounding — searches the web during generation.
+
+        This is the final fallback: when both Groq and standard Gemini fail,
+        we use Gemini + Google Search to get live web-grounded analysis.
+        The model can verify our numbers against live sources and find
+        fresh news that our APIs missed.
+        """
+        if not self.google_search_client:
+            return ""
+        try:
+            print("   🔍 Falling back to Gemini + Google Search grounding...")
+            response = self.google_search_client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=f"[SYSTEM]\n{SYSTEM_PROMPT}\n\n[USER]\n{prompt}",
+                config=genai_types.GenerateContentConfig(
+                    tools=[genai_types.GoogleSearchRetrieval()],
+                    temperature=0.3,
+                    max_output_tokens=1000,
+                ),
+            )
+            text = response.text
+
+            # Log grounding metadata (sources used)
+            if hasattr(response, 'grounding_metadata') and response.grounding_metadata:
+                gm = response.grounding_metadata
+                if gm.grounding_chunks:
+                    sources = [c.uri for c in gm.grounding_chunks[:3] if c.uri]
+                    if sources:
+                        print(f"   🔍 Search grounding used {len(sources)} web sources")
+
+            return self._check_output_quality(text)
+        except Exception as e:
+            print(f"⚠️  Google Search grounding failed: {e}")
+            return ""
 
     def sentiment(self, text: str) -> dict:
         if not HF_KEY or not text.strip():

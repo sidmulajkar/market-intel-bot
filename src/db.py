@@ -1362,3 +1362,175 @@ def get_sector_rs_history(sector_name: str = None, days: int = 365) -> list:
     except Exception as e:
         print(f"⚠️ get_sector_rs_history error: {e}")
         return []
+
+
+# ── Phase 25: MarketState ──────────────────────────────────────────────────
+
+def save_market_state(trade_date: str, state) -> bool:
+    """
+    Save MarketState Pydantic model to market_state table (JSONB).
+    state: src.state.MarketState instance
+    """
+    db = get_client()
+    if not db:
+        return False
+    try:
+        data = state.to_dict() if hasattr(state, "to_dict") else state
+        record = {"trade_date": trade_date, "state": data}
+        db.table("market_state").upsert(record).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_market_state error: {e}")
+        return False
+
+
+def get_market_state(trade_date: str):
+    """
+    Fetch MarketState from Supabase by date.
+    Returns dict or None.
+    """
+    db = get_client()
+    if not db:
+        return None
+    try:
+        result = db.table("market_state").select("*").eq("trade_date", trade_date).limit(1).execute()
+        if result.data:
+            return result.data[0].get("state")
+        return None
+    except Exception as e:
+        print(f"⚠️ get_market_state error: {e}")
+        return None
+
+
+def save_forecast_log(trade_date: str, forecast: dict, outcome: dict = None) -> bool:
+    """Save AI forecast to forecast_log table."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        record = {"trade_date": trade_date, "forecast": forecast}
+        if outcome:
+            record["outcome"] = outcome
+            record["scored_at"] = datetime.now().isoformat()
+        db.table("forecast_log").upsert(record).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_forecast_log error: {e}")
+        return False
+
+
+def save_analytics_ledger(date_str: str, category: str, data: dict) -> bool:
+    """Save to consolidated analytics_ledger table."""
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("analytics_ledger").insert({
+            "date": date_str,
+            "category": category,
+            "data": data,
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_analytics_ledger error: {e}")
+        return False
+
+
+# ── Phase 26: Delta Engine Support ─────────────────────────────────────────
+
+_market_state_checked = False
+
+def check_market_state_table() -> bool:
+    """Check if market_state table exists on Supabase. Returns True if present.
+
+    Warns once per session if the table is missing (Phase 26 features disabled).
+    """
+    global _market_state_checked
+    if _market_state_checked:
+        return getattr(check_market_state_table, '_result', True)
+    _market_state_checked = True
+    db = get_client()
+    if not db:
+        check_market_state_table._result = False
+        return False
+    try:
+        result = db.table("market_state").select("id").limit(1).execute()
+        check_market_state_table._result = True
+        return True
+    except Exception:
+        print("⚠️ market_state table missing — delta/regime features disabled")
+        print("   Run: sql/phase25_consolidation.sql on Supabase")
+        check_market_state_table._result = False
+        return False
+
+
+def get_latest_market_state(before_date: str = None):
+    """Fetch the most recent MarketState before a given date.
+
+    Used by delta computation to compare current vs prior send.
+
+    Args:
+        before_date: YYYY-MM-DD. Defaults to today (excludes today).
+
+    Returns:
+        Dict of MarketState data, or None.
+    """
+    from datetime import datetime, timedelta
+    db = get_client()
+    if not db:
+        return None
+    try:
+        if before_date is None:
+            before_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        result = (
+            db.table("market_state")
+            .select("*")
+            .lt("trade_date", before_date)
+            .order("trade_date", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0].get("state")
+        return None
+    except Exception as e:
+        print(f"⚠️ get_latest_market_state error: {e}")
+        return None
+
+
+def get_bot_state(key: str):
+    """Fetch a single value from bot_state table.
+
+    Used for news fingerprint and other persistent state.
+    """
+    db = get_client()
+    if not db:
+        return None
+    try:
+        result = db.table("bot_state").select("value").eq("key", key).limit(1).execute()
+        if result.data:
+            return result.data[0].get("value")
+        return None
+    except Exception as e:
+        print(f"⚠️ get_bot_state error: {e}")
+        return None
+
+
+def set_bot_state(key: str, value: str) -> bool:
+    """Upsert a value into bot_state table.
+
+    Used for news fingerprint persistence.
+    """
+    db = get_client()
+    if not db:
+        return False
+    try:
+        db.table("bot_state").upsert({
+            "key": key,
+            "value": value,
+            "updated_at": datetime.now().isoformat(),
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ set_bot_state error: {e}")
+        return False

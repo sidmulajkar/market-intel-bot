@@ -9,6 +9,21 @@ Returns empty dict on any failure (consistent with project pattern).
 """
 from src.formatters import _ordinal
 
+# ── Sanity bounds for consequence engine (secondary guard after data_fetcher)
+#    Wide absurdity bounds — data_fetcher's daily-change check is the primary guard.
+_CONSEQUENCE_RANGES = {
+    "brent":     (20, 300),
+    "wti":       (10, 300),
+    "usdinr":    (60, 200),
+    "gold":      (500, 10000),
+    "india_vix": (3, 150),
+    "dxy":       (50, 200),
+    "us_10y":    (0.1, 20.0),
+    "copper":    (1, 20),
+    "cboe_vix":  (5, 150),
+    "hyg":       (20, 120),
+}
+
 # ═══════════════════════════════════════════════════════════════════════
 # CONSEQUENCE MULTIPLIERS — India Impact Reference
 # All multipliers are per-unit changes (per $1, per bps, per %, per ₹1)
@@ -60,9 +75,9 @@ CONSEQUENCE_MULTIPLIERS = {
         "unit": "index",
         "description": "Dollar Index (DXY)",
         "per_unit": {
-            "it_revenue_pct": {"value": 0.5, "label": "IT revenue", "format": "IT revenue boost +{:.1f}%"},
+            "it_revenue_pct": {"value": 0.5, "label": "IT revenue", "format": "IT revenue {:+.1f}%"},
             "fii_exit_cr": {"value": 650, "label": "FII exit risk", "format": "FII exit risk ~₹{:.0f}Cr per +1%"},
-            "pharma_export_pct": {"value": 0.3, "label": "Pharma exports", "format": "Pharma export boost +{:.1f}%"},
+            "pharma_export_pct": {"value": 0.3, "label": "Pharma exports", "format": "Pharma export {:+.1f}%"},
         },
         "sectors_bearish": ["EM assets broadly", "Metal (USD-denominated costs)"],
         "sectors_bullish": ["IT (TCS, INFY, WIPRO)", "Pharma exporters"],
@@ -71,9 +86,9 @@ CONSEQUENCE_MULTIPLIERS = {
         "unit": "₹/$",
         "description": "USD/INR exchange rate",
         "per_unit": {
-            "it_revenue_pct": {"value": 0.8, "label": "IT revenue", "format": "IT revenue +{:.1f}% per ₹1"},
-            "oil_bill_cr": {"value": 14000, "label": "Oil import bill", "format": "Oil bill +₹{:.0f}Cr/yr per ₹1"},
-            "gold_inr_pct": {"value": 1.0, "label": "Gold INR price", "format": "Gold INR +{:.0f}% per ₹1"},
+            "it_revenue_pct": {"value": 0.8, "label": "IT revenue", "format": "IT revenue {:+.1f}%"},
+            "oil_bill_cr": {"value": 14000, "label": "Oil import bill", "format": "Oil bill ₹{:+.0f}Cr/yr"},
+            "gold_inr_pct": {"value": 1.0, "label": "Gold INR price", "format": "Gold INR {:+.0f}%"},
         },
         "sectors_bearish": ["Oil importers", "Companies with USD debt"],
         "sectors_bullish": ["IT exporters", "Pharma exporters", "Textile exporters"],
@@ -82,7 +97,7 @@ CONSEQUENCE_MULTIPLIERS = {
         "unit": "index",
         "description": "India VIX (fear gauge)",
         "per_unit": {
-            "option_premium_pct": {"value": 2.0, "label": "Option premium", "format": "Option premium +{:.0f}%"},
+            "option_premium_pct": {"value": 2.0, "label": "Option premium", "format": "Option premium {:+.0f}%"},
         },
         "thresholds": {
             "high": 20,
@@ -143,6 +158,93 @@ def _safe_float(val) -> float:
         return 0.0
 
 
+# Baseline estimates for regime impact — approximate 252-day averages
+# Updated periodically as market regimes shift
+_BASELINE = {
+    "usdinr": 88.0,    # ~2024-2025 average, below current ~95
+    "brent": 82.0,     # multi-year average
+    "gold": 2800.0,    # 2024 average vs current ~4500
+    "dxy": 104.0,      # typical range
+    "us_10y": 4.2,     # post-2022 normal
+    "wti": 75.0,
+    "india_vix": 15.0,
+    "copper": 4.5,
+}
+
+
+def _compute_regime_impact(variable: str, current_value: float) -> list:
+    """
+    Compute impact vs baseline when price is at extreme level.
+
+    This fixes the "±0.0%" problem: when daily change is tiny but the price
+    level is historically extreme, the regime impact matters more than the delta.
+
+    Returns list of formatted impact lines (may be empty if not extreme).
+    """
+    baseline = _BASELINE.get(variable)
+    if baseline is None or baseline == 0:
+        return []
+
+    deviation_pct = (current_value - baseline) / baseline * 100
+    abs_deviation = abs(deviation_pct)
+
+    # Threshold for regime impact escalation
+    # DXY at 4% — dollar index rarely moves >4% from mean in a year
+    threshold = 3.0 if variable == "india_vix" else 4.0 if variable == "dxy" else 5.0
+    if abs_deviation < threshold:
+        return []
+
+    spec = CONSEQUENCE_MULTIPLIERS.get(variable, {})
+    direction = "above" if deviation_pct > 0 else "below"
+    lines = []
+
+    if variable == "usdinr":
+        # Rupee depreciation vs baseline
+        it_impact = 0.8 * abs_deviation  # 0.8% IT revenue boost per % rupee weakness
+        oil_bill_extra = 14000 * (current_value - baseline) / 1000  # Cr per ₹1 deviation
+        if deviation_pct > 0:
+            lines.append(f"IT revenue +{it_impact:.1f}% vs baseline (INR ₹{current_value:.1f} vs ₹{baseline:.0f} avg)")
+            lines.append(f"Oil bill ₹{oil_bill_extra:.0f}Cr/yr extra vs baseline")
+        else:
+            lines.append(f"IT revenue -{it_impact:.1f}% vs baseline (INR strength)")
+            lines.append(f"Oil bill ₹{oil_bill_extra:.0f}Cr/yr saving vs baseline")
+
+    elif variable == "brent":
+        cad_impact = 1.5 * (current_value - baseline)
+        cpi_impact = 2 * (current_value - baseline)
+        lines.append(f"Brent {direction} baseline by {abs(deviation_pct):.0f}%: CAD ${cad_impact:+.1f}B/yr, CPI {cpi_impact:+.0f}bps")
+
+    elif variable == "wti":
+        cad_impact = 1.2 * (current_value - baseline)
+        inr_ps = 2.5 * (current_value - baseline)
+        lines.append(f"WTI {direction} baseline by {abs(deviation_pct):.0f}%: CAD ${cad_impact:+.1f}B/yr, INR pressure {inr_ps:+.0f}ps")
+
+    elif variable == "gold":
+        deviation_usd = current_value - baseline
+        lines.append(f"Gold {direction} baseline by ${deviation_usd:+,.0f}: import pressure elevated")
+
+    elif variable == "dxy":
+        if deviation_pct > 0:
+            lines.append(f"DXY {direction} baseline by {abs(deviation_pct):.1f}%: EM headwind")
+        else:
+            lines.append(f"DXY {direction} baseline by {abs(deviation_pct):.1f}%: EM tailwind")
+
+    elif variable == "us_10y":
+        bps_diff = (current_value - baseline) * 100
+        fii_impact = 17.5 * bps_diff / 50  # per 50bps
+        fii_dir = "outflow" if fii_impact > 0 else "inflow"
+        lines.append(f"US10Y {direction} baseline by {abs(bps_diff):.0f}bps: FII {fii_dir} pressure ₹{abs(fii_impact):.0f}Cr")
+
+    elif variable == "india_vix":
+        vix_label = "elevated" if abs_deviation > 10 else "normal"
+        if deviation_pct > 0:
+            lines.append(f"VIX {direction} baseline by {abs(deviation_pct):.0f}%: volatility {vix_label}")
+        else:
+            lines.append(f"VIX {direction} baseline by {abs(deviation_pct):.0f}%: complacency")
+
+    return lines
+
+
 def compute_consequence(variable: str, current_value: float, change_value: float = 0, change_pct: float = 0) -> dict:
     """
     Compute India-impact consequences for a macro variable.
@@ -187,35 +289,44 @@ def compute_consequence(variable: str, current_value: float, change_value: float
                     lines.append(f"{mult['label']}: ~{raw_impact:.1f}")
                     details.append(mult["label"])
 
-        # Per-50bps multipliers (for yields)
-        per_50bps = spec.get("per_50bps", {})
-        for key, mult in per_50bps.items():
-            # change_value for yields is in % (e.g., +0.18 = +18bps)
-            bps_change = abs(change_value) * 100 if abs(change_value) < 10 else abs(change_value)
-            units_of_50 = bps_change / 50
-            impact = mult["value"] * units_of_50
-            if abs(impact) > 1:
-                fmt = mult.get("format", f"{key}: {{:.0f}}")
-                try:
-                    lines.append(fmt.format(impact))
-                    details.append(mult["label"])
-                except (KeyError, ValueError, IndexError):
-                    lines.append(f"{mult['label']}: ~₹{impact:.0f}Cr")
-                    details.append(mult["label"])
+        # Regime impact: when price is at extreme level, show baseline deviation
+        # instead of per-unit noise. Regime impact replaces ALL per-unit lines.
+        regime_lines = _compute_regime_impact(variable, current_value)
+        has_regime = bool(regime_lines)
+        if has_regime:
+            lines = regime_lines
+            details = ["regime"] * len(regime_lines)
 
-        # Per-$100 multipliers (for gold)
-        per_100 = spec.get("per_100", {})
-        for key, mult in per_100.items():
-            units_of_100 = abs(change_value) / 100 if change_value != 0 else 0
-            impact = mult["value"] * units_of_100
-            if abs(impact) > 0.1:
-                fmt = mult.get("format", f"{key}: {{:.1f}}")
-                try:
-                    lines.append(fmt.format(impact))
-                    details.append(mult["label"])
-                except (KeyError, ValueError, IndexError):
-                    lines.append(f"{mult['label']}: ~${impact:.1f}B")
-                    details.append(mult["label"])
+        # Per-50bps multipliers (for yields) — skip if regime impact active
+        if not has_regime:
+            per_50bps = spec.get("per_50bps", {})
+            for key, mult in per_50bps.items():
+                bps_change = abs(change_value) * 100 if abs(change_value) < 10 else abs(change_value)
+                units_of_50 = bps_change / 50
+                impact = mult["value"] * units_of_50
+                if abs(impact) > 1:
+                    fmt = mult.get("format", f"{key}: {{:.0f}}")
+                    try:
+                        lines.append(fmt.format(impact))
+                        details.append(mult["label"])
+                    except (KeyError, ValueError, IndexError):
+                        lines.append(f"{mult['label']}: ~₹{impact:.0f}Cr")
+                        details.append(mult["label"])
+
+        # Per-$100 multipliers (for gold) — skip if regime impact active
+        if not has_regime:
+            per_100 = spec.get("per_100", {})
+            for key, mult in per_100.items():
+                units_of_100 = abs(change_value) / 100 if change_value != 0 else 0
+                impact = mult["value"] * units_of_100
+                if abs(impact) > 0.1:
+                    fmt = mult.get("format", f"{key}: {{:.1f}}")
+                    try:
+                        lines.append(fmt.format(impact))
+                        details.append(mult["label"])
+                    except (KeyError, ValueError, IndexError):
+                        lines.append(f"{mult['label']}: ~${impact:.1f}B")
+                        details.append(mult["label"])
 
         # Threshold-based signals (check from most extreme to least)
         thresholds = spec.get("thresholds", {})
@@ -235,6 +346,18 @@ def compute_consequence(variable: str, current_value: float, change_value: float
                 severity = "FAVORABLE"
             elif current_value <= thresholds.get("low", 999):
                 severity = "LOW"
+
+        # Regime impact overrides severity based on baseline deviation
+        if has_regime:
+            baseline = _BASELINE.get(variable)
+            if baseline:
+                dev = abs(current_value - baseline) / baseline * 100
+                if dev >= 20:
+                    severity = "EXTREME"
+                elif dev >= 10:
+                    severity = "ELEVATED"
+                elif severity == "NEUTRAL":
+                    severity = "HIGH"  # regime impact active → at least notable
 
         # Build summary
         if lines:
@@ -274,7 +397,7 @@ def format_consequence_line(variable: str, consequence: dict) -> str:
         price = consequence.get("current_price")
         change_pct = consequence.get("change_pct")
 
-        prefix = "→"
+        prefix = "📌"
         if severity in ("STRESS", "EXTREME"):
             prefix = "🚨"
         elif severity in ("ELEVATED", "HIGH"):
@@ -297,6 +420,10 @@ def format_consequence_line(variable: str, consequence: dict) -> str:
                 price_context = f"DXY {price:.1f}"
             elif variable == "wti":
                 price_context = f"WTI ${price:.0f}"
+            elif variable == "india_vix":
+                price_context = f"India VIX: {price:.1f}"
+            elif variable == "cboe_vix":
+                price_context = f"CBOE VIX: {price:.1f}"
             else:
                 price_context = f"{variable}: {price:.1f}"
 
@@ -348,6 +475,14 @@ def compute_all_consequences(anchor_data: list, fii_data: dict = None) -> dict:
 
             price = _safe_float(anchor.get("price"))
             change_pct = _safe_float(anchor.get("change_pct"))
+
+            # Secondary sanity guard — skip if price is outside 3-sigma bounds
+            var_ranges = _CONSEQUENCE_RANGES.get(variable)
+            if var_ranges:
+                lo, hi = var_ranges
+                if price < lo or price > hi:
+                    print(f"⚠️  Consequence guard: {variable} price={price} outside [{lo}, {hi}] — skipping")
+                    continue
 
             # Compute absolute change from percentage
             change_value = price * change_pct / 100 if price and change_pct else 0

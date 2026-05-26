@@ -37,12 +37,59 @@ def main():
             sentiments.append(sent)
     consensus = assess_sentiment_consensus(sentiments) if sentiments else "neutral"
 
-    # ── Build market snapshot ──────────────────────────────────────
+    # ── Conditional skip gate (Phase 26: no signal = no send) ─────
+    # Skip unless: Nifty moved >1% from open, OR VIX spiked >20%, OR extreme moves detected
+    nifty = valid_index.get("India", {})
+    vix = valid_index.get("India VIX", {})
+    nifty_change_abs = abs(nifty.get("change_pct", 0))
+    nifty_change_pct = nifty.get("change_pct", 0)
+    vix_spike = False
+    if vix and vix.get("price"):
+        vix_price = vix.get("price", 0)
+        # Check if VIX spiked >20% from typical morning baseline (~16)
+        try:
+            from src.db import get_latest_market_state
+            from src.state import MarketState
+            prev = get_latest_market_state()
+            if prev and prev.get("macro", {}).get("vix"):
+                prev_vix = prev["macro"]["vix"]
+                if prev_vix > 0 and (vix_price - prev_vix) / prev_vix > 0.20:
+                    vix_spike = True
+        except Exception:
+            pass
+
+    # Pre-scan for extreme moves (needed for skip gate)
+    alerts = []
+    india_all = movers.get("india", {}).get("gainers", []) + movers.get("india", {}).get("losers", [])
+    for m in india_all:
+        change = abs(m.get("change_pct", 0))
+        sym = m.get("symbol", "")
+        if change >= 5.0:
+            alerts.append(m)
+
+    has_extreme = len(alerts) > 0
+    nifty_moved = nifty_change_abs > 1.0
+
+    if not nifty_moved and not vix_spike and not has_extreme:
+        # Send quiet one-liner with intraday delta for transparency
+        skip_note = f"Nifty {nifty_change_pct:+.2f}% | Skip: >1.0%"
+        send_text(f"🟡 *Midday:* Markets quiet, regime unchanged. ({skip_note})")
+        print(f"   🟡 Quiet session — one-liner sent ({skip_note})")
+        print("✅ MIDDAY SCAN COMPLETE")
+        return
+
+    if nifty_moved:
+        print(f"   ⚡ Skip gate: Nifty moved {nifty_change_abs:.1f}%")
+    if vix_spike:
+        print(f"   ⚡ Skip gate: VIX spiked >20%")
+    if has_extreme:
+        print(f"   ⚡ Skip gate: {len(alerts)} extreme moves detected")
+
+    # ── Remove global indices from midday snapshot (Phase 26: stale at 12:30)
+    # Build local snapshot only — no global indices at midday
     lines = []
 
     # Nifty + VIX line
-    nifty = valid_index.get("Nifty 50", {})
-    vix   = valid_index.get("India VIX", {})
     if nifty:
         nifty_change = nifty.get("change_pct", 0)
         nifty_emoji  = "🟢" if nifty_change > 0 else ("🔴" if nifty_change < 0 else "⚪")
@@ -51,28 +98,6 @@ def main():
             vix_price = vix.get("price", 0)
             vix_note  = f" | VIX {vix_price:.1f}"
         lines.append(f"{nifty_emoji} Nifty {nifty.get('price', 0):,.0f} ({nifty_change:+.1f}%){vix_note}")
-
-    # Global indices — top 3 by absolute change
-    global_sorted = sorted(
-        [(c, d) for c, d in valid_index.items()
-         if c not in ("Nifty 50", "India VIX", "Bank Nifty", "Nifty Next 50")],
-        key=lambda x: abs(x[1].get("change_pct", 0)),
-        reverse=True
-    )
-    if global_sorted:
-        g_parts = []
-        for country, d in global_sorted[:3]:
-            sign = "+" if d.get("change_pct", 0) >= 0 else ""
-            g_parts.append(f"{d.get('flag','')} {country} {sign}{d.get('change_pct',0):.1f}%")
-        lines.append(f"🌍 {' | '.join(g_parts)}")
-
-    # News headline
-    if validated_news:
-        top = validated_news[0]
-        headline = top.get("headline", "")[:60]
-        trust    = top.get("trust_score", 0)
-        source   = top.get("source", "unknown")
-        lines.append(f"📰 {headline} ({source}, Trust:{trust}/10)")
 
     # Top gainers + losers from dynamic movers
     india_g = movers.get("india", {}).get("gainers", [])
@@ -84,17 +109,39 @@ def main():
         l_str = ", ".join(f"{m['symbol']} {m['change_pct']:.1f}%" for m in india_l[:3])
         lines.append(f"🔴 Losers: {l_str}")
 
-    # ── Stock-level alerts (only for extraordinary moves) ──────────
-    alerts = []
-    for m in india_g + india_l:
-        change = abs(m.get("change_pct", 0))
-        sym    = m.get("symbol", "")
-        if change >= 5.0:
-            emoji = "🚀" if m.get("change_pct", 0) > 0 else "💥"
-            key   = f"midday_extreme_{sym}"
-            if not was_alert_sent(sym, key):
-                alerts.append(f"{emoji} *{sym}* {m['change_pct']:+.1f}% — extreme move")
-                log_alert_sent(sym, key)
+    # News headline (only if fresh — check fingerprint)
+    if validated_news:
+        try:
+            from src.db import get_bot_state, set_bot_state
+            from src.delta import news_fingerprint_hash
+            current_fp = news_fingerprint_hash([a.get("headline", "") for a in validated_news[:3]])
+            prev_fp = get_bot_state("news_fingerprint_midday")
+            if not prev_fp or current_fp != prev_fp:
+                set_bot_state("news_fingerprint_midday", current_fp)
+                top = validated_news[0]
+                headline = top.get("headline", "")[:60]
+                trust    = top.get("trust_score", 0)
+                source   = top.get("source", "unknown")
+                lines.append(f"📰 {headline} ({source}, Trust:{trust}/10)")
+            else:
+                lines.append("📰 Headlines unchanged")
+        except Exception:
+            top = validated_news[0]
+            headline = top.get("headline", "")[:60]
+            trust    = top.get("trust_score", 0)
+            source   = top.get("source", "unknown")
+            lines.append(f"📰 {headline} ({source}, Trust:{trust}/10)")
+
+    # ── Stock-level alerts (format pre-scanned extreme moves) ────
+    formatted_alerts = []
+    for m in alerts:
+        sym = m.get("symbol", "")
+        emoji = "🚀" if m.get("change_pct", 0) > 0 else "💥"
+        key = f"midday_extreme_{sym}"
+        if not was_alert_sent(sym, key):
+            formatted_alerts.append(f"{emoji} *{sym}* {m['change_pct']:+.1f}% — extreme move")
+            log_alert_sent(sym, key)
+    alerts = formatted_alerts
 
     # ── AI midday brief (with universal validation) ────────────────
     print("🤖 Running AI midday analysis...")
@@ -129,19 +176,13 @@ def main():
         print(f"   ⚠️ AI or context failed: {e}")
         prompt = ""
 
-    def make_fallback():
-        fb = "📊 *MIDDAY MARKET SCAN*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        fb += "\n".join(lines)
-        fb += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_Mid-session check_"
-        if alerts:
-            fb += f"\n\n⚠️ *Extreme Moves:*\n" + "\n".join(alerts)
-        return fb
-
     if prompt and ground_truth.get("nifty_close"):
+        # Snapshot already in `lines` above — send_midday uses it directly
         def send_midday(text):
             msg = "📊 *MIDDAY MARKET SCAN*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             msg += "\n".join(lines)
-            msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{text}"
+            if text:
+                msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{text}"
             if alerts:
                 msg += f"\n\n⚠️ *Extreme Moves:*\n" + "\n".join(alerts)
             msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_Mid-session check_"
@@ -150,7 +191,7 @@ def main():
         ai_generate_and_validate(
             ai, "fast", prompt, ground_truth,
             output_type="midday_scan",
-            fallback_fn=make_fallback,
+            fallback_fn=lambda: "",
             send_fn=send_midday,
             max_retries=1,
         )
@@ -158,8 +199,6 @@ def main():
         # No ground truth or no prompt — send unvalidated (degraded)
         msg = "📊 *MIDDAY MARKET SCAN*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         msg += "\n".join(lines)
-        if analysis:
-            msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{analysis}"
         if alerts:
             msg += f"\n\n⚠️ *Extreme Moves:*\n" + "\n".join(alerts)
         msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_Mid-session check_"

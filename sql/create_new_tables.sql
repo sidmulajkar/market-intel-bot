@@ -449,3 +449,119 @@ AND table_name IN (
     'cftc_positioning_history', 'factor_scores_history',
     'sector_rs_history', 'earnings_surprises', 'market_internals_history'
 );
+
+
+-- ============================================================
+-- 16. MARKET STATE — Phase 25: MarketState Pydantic schema
+-- Stores full MarketState as JSONB for delta computation & regime diff
+-- Written by: src/db.py save_market_state()
+-- Read by: morning_brief.py, market_intel.py via get_latest_market_state()
+-- Retention: 90 days (purged by db.py)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS market_state (
+    id              SERIAL PRIMARY KEY,
+    trade_date      DATE NOT NULL UNIQUE,
+    state           JSONB NOT NULL,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_state_date
+    ON market_state (trade_date DESC);
+
+
+-- ============================================================
+-- 17. FORECAST LOG — Phase 25: AI forecast tracking
+-- Stores parsed AI forecast dict for Brier calibration & validation
+-- Written by: src/db.py save_forecast_log()
+-- Retention: 90 days
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS forecast_log (
+    trade_date      DATE PRIMARY KEY,
+    forecast        JSONB NOT NULL,
+    outcome         JSONB,
+    scored_at       TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_forecast_date
+    ON forecast_log (trade_date DESC);
+
+
+-- ============================================================
+-- 18. ANALYSIS CACHE — Phase 24: Artifact caching
+-- Stores pre-computed analysis blocks to avoid redundant API calls
+-- Written by: jobs/market_intel.py (cache insert)
+-- Auto-purged by expires_at TTL
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS analysis_cache (
+    id              SERIAL PRIMARY KEY,
+    cache_key       TEXT NOT NULL,
+    cache_value     JSONB NOT NULL,
+    expires_at      TIMESTAMPTZ NOT NULL,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_cache_key_expiry
+    ON analysis_cache (cache_key, expires_at DESC);
+
+
+-- ============================================================
+-- 19. ANALYTICS LEDGER — Phase 24: JSONB performance ledger
+-- Stores structured analytics data (FII patterns, regime shifts, signal accuracy)
+-- Written by: src/db.py save_analytics_ledger()
+-- Retention: 1 year (365 days)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS analytics_ledger (
+    id              SERIAL PRIMARY KEY,
+    date            DATE NOT NULL,
+    category        TEXT NOT NULL,  -- 'fii_pattern', 'regime_shift', 'signal_accuracy', etc.
+    data            JSONB NOT NULL,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ledger_date_category
+    ON analytics_ledger (date DESC, category);
+
+
+-- ============================================================
+-- 20. SHAREHOLDING SNAPSHOTS — Phase 22: QoQ shareholding tracking
+-- Stores promoter/FII/DII/public % per symbol per quarter
+-- Written by: src/shareholding_tracker.py save_shareholding_snapshot()
+-- Read by: jobs/market_intel.py via get_previous_snapshot()
+-- Retention: 90 days (purged by db.py)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS shareholding_snapshots (
+    symbol          TEXT NOT NULL,
+    quarter         TEXT NOT NULL,
+    date            DATE NOT NULL,
+    data            JSONB NOT NULL,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (symbol, quarter)
+);
+
+CREATE INDEX IF NOT EXISTS idx_shareholding_date
+    ON shareholding_snapshots (date DESC);
+
+
+-- ============================================================
+-- VERIFICATION: Check all 20 tables exist
+-- ============================================================
+
+SELECT table_name FROM information_schema.tables
+WHERE table_schema = 'public'
+AND table_name IN (
+    'valuation_history', 'market_breadth_history',
+    'daily_predictions', 'prediction_outcomes',
+    'macro_anchor_snapshots', 'fii_institution_tracker',
+    'daily_market_snapshot', 'correlation_matrix',
+    'signal_accuracy_log', 'divergence_log',
+    'cftc_positioning_history', 'factor_scores_history',
+    'sector_rs_history', 'earnings_surprises', 'market_internals_history',
+    'market_state', 'forecast_log', 'analysis_cache',
+    'analytics_ledger', 'shareholding_snapshots'
+);

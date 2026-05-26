@@ -162,6 +162,17 @@ def ai_generate_and_validate(
         send_fn(fallback_fn())
         return False
 
+    # Step 1b: Schema check for volume tasks (structured Forecast required)
+    if task == "volume":
+        try:
+            if not ai._validate_forecast_schema(draft):
+                print(f"   ⚠️ AI output lacks structured forecast ({label})")
+                send_fn(fallback_fn())
+                return False
+        except Exception as e:
+            print(f"   ⚠️ Schema validation error: {e}")
+            # Continue — schema check is best-effort
+
     # Step 2: Validate
     result = _validate_with_output_type(draft, ground_truth, config)
 

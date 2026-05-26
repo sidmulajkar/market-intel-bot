@@ -28,7 +28,7 @@ from src.telegram_sender import send_text
 from src.db             import get_client, save_macro_snapshots_batch
 from src.validator      import validate_articles
 from src.validation_helper import _validate_with_output_type, _OUTPUT_TYPE_CONFIG
-from src.compute_budget import ComputeBudget, should_skip_block, get_block_fallback, BLOCK_PRIORITY
+from src.compute_budget import ComputeBudget, get_block_fallback, BLOCK_PRIORITY
 
 
 
@@ -39,27 +39,171 @@ def validate_ai_response(response: str, min_words: int = 50) -> bool:
     return len(response.split()) >= min_words
 
 
-def get_market_intel_fallback(blocks: dict) -> str:
-    lines = ["📊 *Market Intel (Fallback)*", "━━━━━━━━━━━━━━━━━━━━━━━━"]
-    
-    if blocks.get("block_1"):
-        lines.append("\n🌍 *Global:*")
-        for line in blocks["block_1"].split("\n")[:3]:
-            if line.strip():
-                lines.append(f"  {line}")
-    
-    if blocks.get("block_4"):
-        lines.append("\n📈 *Flows:*")
-        for line in blocks["block_4"].split("\n")[:3]:
-            if line.strip():
-                lines.append(f"  {line}")
-    
-    if blocks.get("block_6"):
-        lines.append("\n📰 *News:*")
-        for line in blocks["block_6"].split("\n")[:3]:
-            if line.strip():
-                lines.append(f"  {line}")
-    
+def _check_extreme_conditions(raw_data: dict) -> tuple[int, list]:
+    """Check for extreme macro conditions. Returns (count, list of messages)."""
+    extreme_count = 0
+    messages = []
+
+    anchors = raw_data.get("anchor_data", [])
+    fii_data = raw_data.get("fii_data", {})
+
+    for a in anchors:
+        if not a.get("ok") or not a.get("price"):
+            continue
+        name = a.get("name", "")
+        price = a["price"]
+
+        if name == "USD/INR" and price >= 90:
+            extreme_count += 1
+            messages.append(f"INR at historic lows (₹{price:.1f})")
+        elif name == "Brent Crude" and price >= 90:
+            extreme_count += 1
+            messages.append(f"Brent at stress level (${price:.0f})")
+        elif name == "India VIX" and price >= 20:
+            extreme_count += 1
+            messages.append(f"VIX elevated ({price:.1f})")
+        elif name == "Gold" and price >= 4000:
+            extreme_count += 1
+            messages.append(f"Gold at extreme (${price:,.0f})")
+
+    # FII selling streak
+    streak = fii_data.get("fii_streak", 0)
+    fii_net = fii_data.get("fii_net", 0)
+    if streak >= 3 and fii_net < 0:
+        extreme_count += 1
+        messages.append(f"FII selling streak ({streak} days, ₹{fii_net:+,.0f}Cr)")
+
+    return extreme_count, messages
+
+
+def render_strong_conviction_template(raw_data: dict, mode: str = "morning") -> str:
+    """
+    Render high-conviction fallback when AI is unavailable AND extreme macro conditions exist.
+    Returns empty string if conditions not met (falls back to get_market_intel_fallback).
+    """
+    extreme_count, extreme_msgs = _check_extreme_conditions(raw_data)
+    if extreme_count < 2:
+        return ""
+
+    # Determine bias
+    if extreme_count >= 3:
+        bias = "Risk-off"
+        probability = "elevated"
+    else:
+        bias = "Cautious"
+        probability = "above normal"
+
+    forces = "; ".join(extreme_msgs)
+    mode_label = "Morning" if mode == "morning" else "Evening"
+
+    lines = [
+        f"⚠️ *{mode_label.upper()} INTEL — Strong Conviction*",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        f"🚨 *MARKET STRESS*: {forces}.",
+        "",
+        f"🎯 *Bias: {bias}*. Probability of further downside: *{probability}*.",
+        "",
+    ]
+
+    # Add key data points
+    anchors = raw_data.get("anchor_data", [])
+    fii_data = raw_data.get("fii_data", {})
+
+    for a in anchors:
+        if not a.get("ok") or not a.get("price"):
+            continue
+        name = a.get("name", "")
+        price = a["price"]
+        chg = a.get("change_pct", 0)
+        if name in ("USD/INR", "Brent Crude", "India VIX", "Gold"):
+            symbol = name.split()[0]
+            if name == "USD/INR":
+                lines.append(f"  • USDINR: ₹{price:.2f} ({chg:+.1f}%)")
+            elif name == "India VIX":
+                lines.append(f"  • VIX: {price:.1f} ({chg:+.1f}%)")
+            else:
+                prefix = "$" if "Crude" in name else "$"
+                lines.append(f"  • {symbol}: {prefix}{price:,.0f} ({chg:+.1f}%)")
+
+    if fii_data.get("fii_net") is not None:
+        lines.append(f"  • FII: ₹{fii_data['fii_net']:+,.0f}Cr")
+        if fii_data.get("fii_streak", 0) >= 3:
+            lines.append(f"  • Selling streak: {fii_data['fii_streak']} consecutive days")
+
+    lines.append("\n━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("_AI analysis unavailable — strong conviction based on macro data._")
+    return "\n".join(lines)
+
+
+def get_market_intel_fallback(raw_data: dict, mode: str = "morning") -> str:
+    """Render a clean minified brief from raw data — no block headers, no empty sections."""
+    # First check if strong conviction template applies
+    strong = render_strong_conviction_template(raw_data, mode)
+    if strong:
+        return strong
+
+    lines = ["📊 *Automated analysis unavailable. Key data:*", "━━━━━━━━━━━━━━━━━━━━━━━━"]
+
+    # Global indices — top 5
+    index_data = raw_data.get("index_data", {})
+    valid = {k: v for k, v in index_data.items() if v.get("ok") and v.get("price", 0) > 0}
+    if valid:
+        lines.append("\n🌍 *Global Indices:*")
+        for country, d in list(valid.items())[:5]:
+            chg = d.get("change_pct", 0)
+            sign = "+" if chg >= 0 else ""
+            lines.append(f"  • {country}: {sign}{chg:.2f}%")
+
+    # FII/DII flows
+    fii_data = raw_data.get("fii_data", {})
+    if fii_data and fii_data.get("fii_net") is not None:
+        lines.append("\n📈 *FII/DII Flows:*")
+        lines.append(f"  FII: ₹{fii_data['fii_net']:+,.0f} Cr | DII: ₹{fii_data['dii_net']:+,.0f} Cr")
+        streak = fii_data.get("fii_streak_days", 0)
+        if streak >= 3:
+            direction = "buying" if fii_data["fii_net"] > 0 else "selling"
+            lines.append(f"  {direction} streak: {streak} consecutive days")
+
+    # Macro anchors — key levels
+    anchors = raw_data.get("anchor_data", [])
+    key_levels = []
+    for a in anchors:
+        if not a.get("ok") or not a.get("price"):
+            continue
+        name = a.get("name", "")
+        price = a["price"]
+        chg = a.get("change_pct", 0)
+        if name == "India VIX":
+            key_levels.append(f"  VIX: {price:.1f} ({chg:+.1f}%)")
+        elif name == "USD/INR":
+            key_levels.append(f"  USD/INR: ₹{price:.2f} ({chg:+.1f}%)")
+        elif name == "Brent Crude":
+            key_levels.append(f"  Brent: ${price:.0f} ({chg:+.1f}%)")
+    if key_levels:
+        lines.append("\n📊 *Key Levels:*")
+        lines.extend(key_levels)
+
+    # News headlines — only if non-empty
+    news = raw_data.get("validated_news", [])
+    if news:
+        lines.append("\n📰 *Top Headlines:*")
+        for a in news[:3]:
+            h = a.get("headline", "")[:60]
+            if h:
+                lines.append(f"  • {h}...")
+
+    # Top movers
+    movers = raw_data.get("movers", {})
+    india_gainers = movers.get("india", {}).get("gainers", [])
+    india_losers = movers.get("india", {}).get("losers", [])
+    if india_gainers or india_losers:
+        lines.append("\n⚡ *Top Movers:*")
+        for m in (india_gainers[:2] + india_losers[:2]):
+            sym = m.get("symbol", "")
+            chg = m.get("change_pct", 0)
+            lines.append(f"  • {sym}: {chg:+.1f}%")
+
     lines.append("\n━━━━━━━━━━━━━━━━━━━━━━━━")
     return "\n".join(lines)
 
@@ -419,18 +563,20 @@ def main():
     print("🔄 ROLLING QUANT ENGINE")
     rolling_quant_block = ""
     snapshot_data = {}
+    hist_snapshots = []
     try:
         from src.rolling_quant import run_rolling_quant_engine, format_rolling_quant_block
         from src.db import get_daily_market_snapshots, save_daily_market_snapshot
 
         # Build today's snapshot from collected data
+        _ctx_rq = getattr(format_context_block, 'last_ctx', None) or {}
         snapshot_data = {
             "nifty_close": nifty_closes[-1] if nifty_closes else None,
             "nifty_pe": None,  # Will be populated from valuation if available
             "india_vix": None,
             "pcr": extra_signals.get("pcr"),
             "advance_decline_ratio": extra_signals.get("breadth_ratio"),
-            "bull_bear_score": ctx.get("bull_bear", {}).get("normalized_score") if ctx else None,
+            "bull_bear_score": _ctx_rq.get("bull_bear", {}).get("normalized_score") if _ctx_rq else None,
             "fear_greed_score": None,
         }
 
@@ -606,7 +752,7 @@ def main():
     print("🔄 EARNINGS CALENDAR")
     earnings_block = ""
     try:
-        from src.earnings_tracker import run_earnings_analysis
+        from src.earnings_tracker import run_earnings_analysis, format_earnings
         earnings = run_earnings_analysis(upcoming_limit=5)
         if earnings.get("ok"):
             earnings_block = format_earnings(earnings)
@@ -843,7 +989,8 @@ def main():
         if snapshot_data.get("advance_decline_ratio"):
             fg_data["breadth_ratio"] = snapshot_data["advance_decline_ratio"]
         if snapshot_data.get("bull_bear_score"):
-            fg_data["bull_bear_score"] = snapshot_data["bull_bear_score"]
+            # bull_bear_score used separately in regime card, not in Fear/Greed
+            pass
         if nifty_closes and len(nifty_closes) >= 252:
             fg_data["momentum_12m"] = ((nifty_closes[-1] / nifty_closes[-252]) - 1) * 100
         fear_greed = compute_fear_greed_index(**fg_data)
@@ -854,18 +1001,18 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Fear/Greed: {e}")
 
-    # ── MARKET STATE DASHBOARD ─────────────────────────────────
-    market_state_block = ""
+    # ── UNIFIED REGIME CARD (replaces Dashboard + Master Signal) ──
+    regime_card_text = ""
     try:
         from src.context_engine import compute_market_phase
-        from src.formatters import format_market_state_dashboard
+        from src.state import MarketState
+        from src.delta import compute_delta
+        from src.delta_renderer import render_regime_card
+        from src.db import get_latest_market_state
+        from datetime import datetime
 
         # Get context from format_context_block
         ctx = getattr(format_context_block, 'last_ctx', None) or {}
-
-        # Inject temporal context for dashboard duration display
-        if 'temporal' in dir() and temporal.get("ok"):
-            ctx["temporal_context"] = temporal
 
         # Get institutional signals
         inst_signals = {}
@@ -950,12 +1097,72 @@ def main():
         # Compute market phase
         market_phase = compute_market_phase(ctx, inst_signals, earnings_regime)
 
-        # Format dashboard
-        market_state_block = format_market_state_dashboard(market_phase, ctx)
-        if market_state_block:
-            print(f"   → Market State: {market_phase['phase']} ({market_phase['stance']})")
+        # Build MarketState from current data
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        state = MarketState(trade_date=today_str)
+        bb = ctx.get("bull_bear", {})
+        if bb.get("score") is not None:
+            state.bull_bear_score = bb["score"]
+        if bb.get("normalized") is not None:
+            state.bull_bear_normalized = bb["normalized"]
+        state.market_phase = market_phase.get("phase")
+        state.cross_asset_regime = ctx.get("global_risk", {}).get("risk_mood")
+
+        # Populate macro
+        macro = ctx.get("macro_context", {})
+        if macro.get("vix_price") is not None:
+            state.macro.vix = macro["vix_price"]
+        if macro.get("vix_regime"):
+            state.macro.vix_regime = macro["vix_regime"]
+        if macro.get("brent"):
+            state.macro.brent = macro["brent"]
+        if macro.get("usdinr"):
+            state.macro.usdinr = macro["usdinr"]
+
+        # Populate flows
+        fii_ctx_val = ctx.get("fii_context", {})
+        if fii_ctx_val.get("ok"):
+            state.flows.fii_net = fii_ctx_val.get("fii_net")
+            state.flows.dii_net = fii_ctx_val.get("dii_net")
+            state.flows.absorption_ratio = fii_ctx_val.get("absorption_ratio")
+
+        # Populate derivatives
+        opt = ctx.get("options_context", {})
+        if snapshot_data.get("pcr") is not None:
+            state.derivatives.pcr = snapshot_data["pcr"]
+
+        # Get previous state for delta
+        prev_state_data = get_latest_market_state()
+        prev_state = None
+        if prev_state_data:
+            try:
+                prev_state = MarketState.model_validate(prev_state_data)
+            except Exception:
+                pass
+
+        delta = compute_delta(state, prev_state)
+
+        # Key levels
+        key_levels = {}
+        if snapshot_data.get("nifty_close"):
+            key_levels["spot"] = snapshot_data["nifty_close"]
+        try:
+            from src.technical_analysis import compute_support_resistance
+            ta = compute_support_resistance()
+            if ta:
+                key_levels["support"] = ta.get("support_1")
+                key_levels["resistance"] = ta.get("resistance_1")
+        except Exception:
+            pass
+
+        job_time_str = "07:00" if mode == "morning" else "18:00"
+        regime_card_text = render_regime_card(state, delta, job_time=job_time_str, key_levels=key_levels)
+        if regime_card_text:
+            print(f"   → Regime card: {market_phase['phase']} ({market_phase['stance']})")
     except Exception as e:
-        print(f"   ⚠️ Market State: {e}")
+        print(f"   ⚠️ Regime card: {e}")
+        import traceback
+        traceback.print_exc()
 
     # ── SIGNAL ARBITRATION (master signal synthesis) ─────────────
     print("🔄 SIGNAL ARBITRATION")
@@ -1029,7 +1236,7 @@ def main():
     # ── Assemble prompt ───────────────────────────────────────────
     print("🔄 Assembling prompt...")
 
-    # Replace placeholders properly
+    # Compositional: fill blocks, strip empty ones — no regex surgery
     prompt = master_template
     block_headers = {
         "block_0": "[BLOCK 0: MARKET POSTURE — READ FIRST]",
@@ -1052,10 +1259,10 @@ def main():
         if content.strip():
             prompt = prompt.replace(placeholder, content)
         else:
-            # Remove both the header line AND the placeholder when empty
-            # Need to remove: [BLOCK X: ...]\n{placeholder}
-            import re
-            prompt = re.sub(rf'{re.escape(header)}\n\s*{re.escape(placeholder)}', '', prompt)
+            # Remove placeholder and its header line — empty blocks excluded from prompt
+            prompt = prompt.replace(f"{header}\n{placeholder}", "")
+            prompt = prompt.replace(f"{header}\n{{{placeholder}}}", "")
+            prompt = prompt.replace(placeholder, "")
 
     # Count non-empty blocks
     non_empty = sum(1 for v in blocks.values() if v.strip())
@@ -1129,11 +1336,31 @@ def main():
     if fear_greed_block:
         prompt += "\n\n" + fear_greed_block
 
-    # ── INJECT MARKET STATE DASHBOARD ──────────────────────────
-    if market_state_block:
-        prompt += "\n\n" + market_state_block
+    # ── GOOGLE SEARCH CONTEXT (live web-grounded intelligence) ───
+    # Only fetched when Groq is available — preserves Google quota
+    # for the primary AI call (Google is primary for "volume" tasks).
+    # When Groq runs the analysis, Google context enriches the prompt.
+    # When Google runs the analysis, search grounding is built into
+    # the _try_google_search fallback, so no separate fetch needed.
+    google_context_block = ""
+    try:
+        from src.ai_engine import GROQ_AVAILABLE
+        from src.google_search import get_all_context
+        if GROQ_AVAILABLE:
+            google_context_block = get_all_context(mode=mode)
+            if google_context_block:
+                prompt += "\n\n" + google_context_block
+    except Exception as e:
+        print(f"   ⚠️ Google Search context: {e}")
 
-    # ── INJECT SIGNAL WEIGHTS (accuracy feedback) ──────────────
+    # ── INJECT REGIME CARD (replaces Dashboard + Master Signal) ───
+    if regime_card_text:
+        prompt = "\n\n[REGIME CARD — READ FIRST]\n" + regime_card_text + "\n\n" + prompt
+
+    # ── INJECT MASTER SIGNAL (if regime card failed) ──────────────
+    if master_signal_block and not regime_card_text:
+        # Replace Block 0 with master signal as fallback
+        prompt = prompt.replace("{block_0}", master_signal_block)
     try:
         from src.prediction_tracker import format_signal_weights
         if weights:
@@ -1146,11 +1373,6 @@ def main():
     # ── INJECT SIMPLE LINES (Block -1, always first) ────────────
     if simple_block:
         prompt = simple_block + "\n\n" + prompt
-
-    # ── INJECT MASTER SIGNAL (replaces Block 0) ─────────────────
-    if master_signal_block:
-        # Replace Block 0 with master signal
-        prompt = prompt.replace("{block_0}", master_signal_block)
 
     # Total failure check - more lenient
     if non_empty == 0:
@@ -1307,7 +1529,21 @@ def main():
         print("✅ Market Intel sent")
     else:
         # Fallback to raw formatted data
-        fallback = get_market_intel_fallback(blocks)
+        # Reconstruct fii_data from context for the fallback template
+        ctx_for_fallback = getattr(format_context_block, 'last_ctx', None) or {}
+        fii_dii = ctx_for_fallback.get("fii_dii_context", {})
+        fii_data = {
+            "fii_net": fii_dii.get("fii_net"),
+            "dii_net": fii_dii.get("dii_net"),
+            "fii_streak": fii_dii.get("fii_streak", 0),
+        } if fii_dii.get("ok") else {}
+        fallback = get_market_intel_fallback({
+            "index_data": index_data,
+            "fii_data": fii_data,
+            "anchor_data": anchor_data,
+            "validated_news": (global_validated or []) + (indian_validated or []),
+            "movers": movers,
+        }, mode=mode)
         ist_time = "🌅" if mode == "morning" else "🌃"
         header = f"{ist_time} *MARKET INTEL ({mode.upper()})*"
         send_text(f"{header}\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n{fallback}\n\n━━━━━━━━━━━━━━━━━━━━━━━━")

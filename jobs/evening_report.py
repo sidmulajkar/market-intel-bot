@@ -2,45 +2,13 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data_fetcher      import fetch_global_indices, fetch_general_news
+from src.data_fetcher      import fetch_global_indices, fetch_general_news, fetch_macro_anchors
 from src.heatmap_generator import generate_heatmap
 from src.ai_engine         import AIEngine
 from src.telegram_sender   import send_image, send_text
-from src.db                import get_watchlist
-from src.validator        import validate_articles, assess_sentiment_consensus
+from src.validator         import validate_articles, assess_sentiment_consensus
 from src.validation_helper import validate_and_send
-
-
-def validate_ai_response(response: str, min_words: int = 50) -> bool:
-    if not response or not isinstance(response, str):
-        return False
-    word_count = len(response.split())
-    return word_count >= min_words
-
-
-def get_fallback_evening(index_data: dict, validated_news: list, sentiment: str) -> str:
-    lines = ["🌃 *Evening Global Report*", "_US Session Now Live_", "━━━━━━━━━━━━━━━━━━━━━━━━"]
-    
-    if index_data:
-        lines.append("\n🌍 *Global Indices:*")
-        for country, d in list(index_data.items())[:5]:
-            if d.get("ok"):
-                change = d.get("change_pct", 0)
-                sign = "+" if change >= 0 else ""
-                lines.append(f"  • {country}: {sign}{change:.2f}%")
-    
-    if validated_news:
-        lines.append("\n📰 *Top Headlines:*")
-        for article in validated_news[:3]:
-            headline = article.get("headline", "")[:60]
-            if headline:
-                lines.append(f"  • {headline}...")
-    
-    if sentiment:
-        lines.append(f"\n💭 *Sentiment:* {sentiment.title()}")
-    
-    lines.append("\n━━━━━━━━━━━━━━━━━━━━━━━━\n_India outlook for tomorrow ↑_")
-    return "\n".join(lines)
+from src.delta             import get_relevant_indices
 
 
 def main():
@@ -48,29 +16,51 @@ def main():
     print("🌃 EVENING REPORT STARTING")
     print("=" * 50)
 
-    stocks      = get_watchlist()
     index_data  = fetch_global_indices()
     valid_index = {k: v for k, v in index_data.items()
                    if v.get("ok") and v.get("price", 0) > 0}
 
+    # ── Skip gate: is US session worth a full report? ─────────────
+    us_evening = get_relevant_indices("20:00", valid_index)
+    us_moved = False
+    vix_changed = False
+
+    if us_evening:
+        for country, d in us_evening.items():
+            if d.get("ok") and abs(d.get("change_pct", 0)) >= 0.5:
+                us_moved = True
+                break
+
+    # Check VIX change vs Indian close baseline
     try:
-        heatmap = generate_heatmap(valid_index)
-        send_image(heatmap, caption="🌃 *Evening Global Heatmap — US Session Live*")
-        print("   ✅ Evening heatmap sent")
-    except Exception as e:
-        print(f"   ⚠️ Heatmap failed: {e}")
+        from src.db import get_latest_market_state
+        prev = get_latest_market_state()
+        if prev and prev.get("macro", {}).get("vix"):
+            prev_vix = prev["macro"]["vix"]
+            cboe_vix_entry = valid_index.get("CBOE VIX", {})
+            if cboe_vix_entry.get("ok") and cboe_vix_entry.get("price"):
+                curr_vix = cboe_vix_entry["price"]
+                if prev_vix > 0 and abs(curr_vix - prev_vix) / prev_vix >= 0.10:
+                    vix_changed = True
+    except Exception:
+        pass
 
-    lines = []
-    for country, d in valid_index.items():
-        sign = "+" if d.get("change_pct", 0) >= 0 else ""
-        lines.append(f"{d.get('flag','')} {country}: {sign}{d.get('change_pct',0):.2f}% [{d.get('status','?')}]")
+    if not us_moved and not vix_changed:
+        send_text("🟡 *Evening:* US session quiet (SPX flat, VIX unchanged). No shift to India outlook.")
+        print("   🟡 Quiet US session — one-liner sent")
+        print("✅ EVENING REPORT COMPLETE")
+        return
 
-    # Fetch and validate news
+    if us_moved:
+        print(f"   ⚡ Skip gate: US moved significantly")
+    if vix_changed:
+        print(f"   ⚡ Skip gate: VIX changed >10%")
+
+    # ── Fetch news + sentiment ─────────────────────────────────────
     news = fetch_general_news()
     ai = AIEngine()
     validated_news = validate_articles(news, min_trust=6) if news else []
 
-    # Get sentiment
     sentiments = []
     for article in validated_news[:5]:
         sent = ai.sentiment(article.get("headline", ""))
@@ -79,7 +69,38 @@ def main():
             sentiments.append(sent)
     consensus_sentiment = assess_sentiment_consensus(sentiments) if sentiments else "neutral"
 
-    # Format news for prompt
+    # ── Get bull/bear context ──────────────────────────────────────
+    bull_bear = {}
+    try:
+        from src.context_engine import run_contextualization
+        anchor_data = fetch_macro_anchors()
+        if anchor_data:
+            ctx = run_contextualization(anchor_data)
+            bull_bear = ctx.get("bull_bear", {})
+    except Exception as e:
+        print(f"   ⚠️ Context engine: {e}")
+
+    # ── Build relevant global indices lines ────────────────────────
+    lines = []
+    if us_evening:
+        for country, d in sorted(us_evening.items(), key=lambda x: abs(x[1].get("change_pct", 0)), reverse=True):
+            sign = "+" if d.get("change_pct", 0) >= 0 else ""
+            lines.append(f"{d.get('flag','')} {country}: {sign}{d.get('change_pct',0):.2f}% [{d.get('status','?')}]")
+    else:
+        # Fallback: show all valid indices
+        for country, d in valid_index.items():
+            sign = "+" if d.get("change_pct", 0) >= 0 else ""
+            lines.append(f"{d.get('flag','')} {country}: {sign}{d.get('change_pct',0):.2f}%")
+
+    # ── Nifty close recap ─────────────────────────────────────────
+    nifty_close_line = ""
+    nifty = valid_index.get("Nifty 50", {})
+    if nifty.get("ok") and nifty.get("price"):
+        n_change = nifty.get("change_pct", 0)
+        sign = "+" if n_change >= 0 else ""
+        nifty_close_line = f"📍 Nifty closed {nifty['price']:,.0f} ({sign}{n_change:.1f}%)"
+
+    # ── AI evening brief ───────────────────────────────────────────
     news_block = ""
     if validated_news:
         news_lines = []
@@ -91,85 +112,64 @@ def main():
         news_block = f"\nToday's news:\n{chr(10).join(news_lines)}\n"
 
     prompt = f"""
-Evening global markets (US session just opened):
+Evening global markets (US session):
 {chr(10).join(lines)}
+{nifty_close_line}
 {news_block}
 
 Market sentiment: {consensus_sentiment.upper()}
 
-Evening report for Indian investors (base on actual news):
-1. 🌃 US Opening Direction + reason
-2. 🌍 Global Risk Mood: Risk-on/Risk-off/Neutral
+Evening report for Indian investors (base on actual data):
+1. 🌃 US Session Direction + key driver
+2. 🌍 Overnight Risk Setup
 3. 🇮🇳 India Tomorrow Setup
-4. 📊 Key levels to watch (not invented events)
-5. 💡 Tomorrow's Strategy
+4. 🎯 Bias: [Direction] unless [specific condition]
+5. 📊 Key levels to watch
 
-Under 200 words. Reference actual headlines provided.
+Under 150 words. Reference actual headlines. Single actionable bias line.
 """
-    ai = AIEngine()
+
+    def make_fallback():
+        parts = []
+        if nifty_close_line:
+            parts.append(nifty_close_line)
+        parts.extend(lines[:5])
+        if validated_news:
+            top = validated_news[0]
+            parts.append(f"📰 {top.get('headline', '')[:50]}...")
+        return " | ".join(parts[:4])
+
+    def send_evening(text):
+        msg = "🌃 *EVENING REPORT*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        if nifty_close_line:
+            msg += f"{nifty_close_line}\n\n"
+        msg += text
+        msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_India outlook for tomorrow ↑_"
+        send_text(msg)
+
     try:
         analysis = ai.analyze("fast", prompt)
     except Exception as e:
-        analysis = f"AI unavailable: {e}"
+        analysis = ""
 
-    # Build closing summary from global indices
-    closing_lines = []
-    nifty_close = None
-    for country, d in valid_index.items():
-        if country == "India" and d.get("price"):
-            nifty_close = d.get("price")
-            nifty_change = d.get("change_pct", 0)
-            sign = "+" if nifty_change >= 0 else ""
-            closing_lines.append(f"Nifty closed at {nifty_close:,.0f} ({sign}{nifty_change:.2f}%)")
-            break
-
-    closing_summary = ""
-    if closing_lines:
-        closing_summary = "\n\n📊 *EOD Summary:*\n" + "\n".join(closing_lines)
-
-    # ── Validate AI output before sending ──────────────────────────
-    def send_evening(text):
-        send_text(
-            "🌃 *EVENING GLOBAL REPORT*\n_US Session Now Live_\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            + text
-            + closing_summary
-            + "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_India outlook for tomorrow ↑_"
-        )
+    # ── Heatmap: only if US moved significantly ────────────────────
+    if us_moved:
+        try:
+            heatmap = generate_heatmap(valid_index)
+            send_image(heatmap, caption="🌃 *Evening Global Heatmap — US Session Live*")
+            print("   ✅ Evening heatmap sent")
+        except Exception as e:
+            print(f"   ⚠️ Heatmap failed: {e}")
 
     sent = validate_and_send(
         analysis, valid_index,
-        fallback_fn=lambda: get_fallback_evening(valid_index, validated_news, consensus_sentiment),
+        fallback_fn=make_fallback,
         send_fn=send_evening,
     )
     if sent:
         print("   ✅ AI evening report sent")
     else:
         print("   ⚠️ AI evening report failed validation — sent fallback")
-
-    # ── Market State Dashboard ─────────────────────────────────────
-    try:
-        from src.data_fetcher import fetch_macro_anchors
-        from src.context_engine import run_contextualization, compute_market_phase
-        from src.formatters import format_market_state_dashboard
-
-        anchors = fetch_macro_anchors()
-        ctx = run_contextualization(anchors)
-
-        earnings_regime = {"ok": False}
-        try:
-            from src.earnings_tracker import compute_earnings_regime
-            earnings_regime = compute_earnings_regime()
-        except Exception:
-            pass
-
-        market_phase = compute_market_phase(ctx, {}, earnings_regime)
-        dashboard = format_market_state_dashboard(market_phase, ctx)
-        if dashboard:
-            send_text(dashboard)
-            print("   → Market State Dashboard sent")
-    except Exception as e:
-        print(f"   ⚠️ Market State Dashboard: {e}")
 
     print("✅ EVENING REPORT COMPLETE")
 

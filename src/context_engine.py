@@ -133,32 +133,62 @@ def get_dxy_signal(dxy_change_pct: float) -> Dict:
 
 def get_macro_context(anchor_data: List[Dict] = None) -> Dict:
     """
-    Extract VIX regime and DXY signal from anchor data.
+    Extract macro context from anchor data.
+    Returns: vix_price, vix_regime, usdinr, brent, gold, dxy, copper, wti, etc.
     """
     if anchor_data is None:
         anchor_data = []
-    vix_data = next((a for a in anchor_data if "VIX" in a.get("name", "")), None)
-    dxy_data = next((a for a in anchor_data if "DXY" in a.get("name", "") or "Dollar" in a.get("name", "")), None)
-    usd_data = next((a for a in anchor_data if "USD" in a.get("name", "")), None)
 
     context = {}
 
+    # VIX
+    vix_data = next((a for a in anchor_data if "VIX" in a.get("name", "")), None)
     if vix_data and vix_data.get("ok"):
         vix_price = vix_data.get("price", 0)
         context["vix_price"] = vix_price
         context["vix_regime"] = get_vix_regime(vix_price)
         context["vix_change"] = vix_data.get("change_pct", 0)
 
+    # DXY
+    dxy_data = next((a for a in anchor_data if "DXY" in a.get("name", "") or "Dollar" in a.get("name", "")), None)
     if dxy_data and dxy_data.get("ok"):
         dxy_change = dxy_data.get("change_pct", 0)
-        dxy_signal = get_dxy_signal(dxy_change)
-        context["dxy"] = dxy_signal
+        context["dxy"] = get_dxy_signal(dxy_change)
 
+    # USD/INR (both key names for backward compat)
+    usd_data = next((a for a in anchor_data if "USD" in a.get("name", "")), None)
     if usd_data and usd_data.get("ok"):
-        context["usd_inr"] = {
+        usd_ctx = {
             "price": usd_data.get("price"),
             "change_pct": usd_data.get("change_pct"),
         }
+        context["usd_inr"] = usd_ctx
+        context["usdinr"] = usd_data.get("price")          # direct float for MarketState
+        context["usdinr_change"] = usd_data.get("change_pct")
+
+    # Brent Crude
+    brent_data = next((a for a in anchor_data if "Brent" in a.get("name", "")), None)
+    if brent_data and brent_data.get("ok"):
+        context["brent"] = brent_data.get("price")
+        context["brent_change"] = brent_data.get("change_pct")
+
+    # Gold
+    gold_data = next((a for a in anchor_data if "Gold" in a.get("name", "")), None)
+    if gold_data and gold_data.get("ok"):
+        context["gold"] = gold_data.get("price")
+        context["gold_change"] = gold_data.get("change_pct")
+
+    # Copper
+    copper_data = next((a for a in anchor_data if "Copper" in a.get("name", "")), None)
+    if copper_data and copper_data.get("ok"):
+        context["copper"] = copper_data.get("price")
+        context["copper_change"] = copper_data.get("change_pct")
+
+    # WTI Crude
+    wti_data = next((a for a in anchor_data if "WTI" in a.get("name", "")), None)
+    if wti_data and wti_data.get("ok"):
+        context["wti"] = wti_data.get("price")
+        context["wti_change"] = wti_data.get("change_pct")
 
     return context
 
@@ -624,7 +654,7 @@ def format_context_for_ai_full(ctx: Dict) -> str:
     gr = ctx.get("global_risk", {})
     if gr.get("ok"):
         lines.append(f"┌─ Global Risk ──────────────────────")
-        lines.append(f"│ {gr['composite']} (score: {gr['score']:+d})")
+        lines.append(f"│ {gr['composite']} (score: {gr['score']:+.1f})")
         for sig in gr.get("signals", []):
             lines.append(f"│ • {sig}")
 
@@ -762,7 +792,7 @@ def format_context_for_ai_full(ctx: Dict) -> str:
     inst = ctx.get("inst_context", {})
     if inst.get("ok"):
         lines.append(f"┌─ Institutional Signal ─────────────")
-        lines.append(f"│ {inst['regime']} (score: {inst['score']:+d})")
+        lines.append(f"│ {inst['regime']} (score: {inst['score']:+.1f})")
         for s in inst.get("signals", []):
             lines.append(f"│ • {s}")
 

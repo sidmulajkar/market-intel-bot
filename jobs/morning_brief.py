@@ -126,7 +126,7 @@ def main():
         )
         return
 
-    # ── Global Heatmap ────────────────────────────────────────────
+    # ── World Heatmap (Phase 26: single most useful image) ─────────
     print("🌍 Fetching global indices...")
     index_data  = fetch_global_indices()
     valid_index = {
@@ -143,28 +143,6 @@ def main():
         print("   ✅ World heatmap sent")
     except Exception as e:
         print(f"   ⚠️ World heatmap failed: {e}")
-
-    # ── Sector Heatmap ────────────────────────────────────────────
-    try:
-        send_image(
-            generate_sector_heatmap(),
-            caption="🏭 *India Sector Heatmap*"
-        )
-        print("   ✅ Sector heatmap sent")
-    except Exception as e:
-        print(f"   ⚠️ Sector heatmap failed: {e}")
-
-    # ── Top Movers Heatmap (India + US separately) ────────────────
-    print("📊 Fetching top movers for heatmap...")
-    try:
-        movers = fetch_top_movers(top_n=10)
-        send_image(
-            generate_top_movers_heatmap(movers),
-            caption="📊 *Top Market Movers — India & US*"
-        )
-        print("   ✅ Top movers heatmap sent")
-    except Exception as e:
-        print(f"   ⚠️ Top movers heatmap failed: {e}")
 
     # ── Fetch & Validate News ─────────────────────────────────────
     print("📰 Fetching and validating news...")
@@ -247,6 +225,9 @@ def main():
                  for pat in pats]
         for sector, pats in SECTOR_KEYWORDS.items()
     }
+
+    # Fetch top movers (needed for alert scan sector grouping)
+    movers = fetch_top_movers(top_n=5)
 
     print("📈 Checking watchlist alerts...")
     try:
@@ -331,133 +312,125 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Snapshot failed: {e}")
 
-    # ── Market State Dashboard ─────────────────────────────────────
+    # ── Single Regime Card (Phase 26: replaces Dashboard + Master Signal + MF) ──
     try:
         from src.data_fetcher import fetch_macro_anchors
         from src.context_engine import run_contextualization, compute_market_phase
-        from src.formatters import format_market_state_dashboard
+        from src.state import MarketState
+        from src.db import get_latest_market_state, get_bot_state, set_bot_state
+        from src.delta import compute_delta, news_fingerprint_hash, get_relevant_indices
+        from src.delta_renderer import render_regime_card
+
+        from datetime import datetime
+        today_str = datetime.now().strftime("%Y-%m-%d")
 
         anchors = fetch_macro_anchors()
         ctx = run_contextualization(anchors)
 
-        # Institutional signals
-        inst_signals = {}
-        try:
-            from src.quant_enrichment import (
-                compute_sector_regime, compute_volatility_setup,
-                compute_risk_appetite, compute_breadth_thrust,
-                compute_fii_institutional_footprint
-            )
-            from src.db import get_macro_history, get_breadth_history, get_fii_institutions
-
-            # Sector regime from top movers
-            _sector_perf = {}
-            for m in (movers.get("india", {}).get("gainers", []) + movers.get("india", {}).get("losers", [])):
-                sym = m.get("symbol", "")
-                if sym in ("HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK"):
-                    _sector_perf.setdefault("BANK", []).append(m.get("weekly_pct", m.get("change_pct", 0)))
-                elif sym in ("TCS", "INFY", "WIPRO", "TECHM"):
-                    _sector_perf.setdefault("IT", []).append(m.get("weekly_pct", m.get("change_pct", 0)))
-                elif sym in ("SUNPHARMA", "DRREDDY"):
-                    _sector_perf.setdefault("PHARMA", []).append(m.get("weekly_pct", m.get("change_pct", 0)))
-                elif sym in ("HINDUNILVR", "ITC"):
-                    _sector_perf.setdefault("FMCG", []).append(m.get("weekly_pct", m.get("change_pct", 0)))
-            avg_sector = {k: round(sum(v)/len(v), 2) for k, v in _sector_perf.items() if v}
-            inst_signals["sector_regime"] = compute_sector_regime(avg_sector)
-
-            _vix_hist = get_macro_history("India VIX", days=90)
-            _vix_vals = [v.get("price", 0) for v in _vix_hist if v.get("price")]
-            if _vix_vals:
-                inst_signals["volatility_setup"] = compute_volatility_setup(_vix_vals, _vix_vals[-1])
-
-            sr = inst_signals.get("sector_regime", {})
-            if sr.get("ok"):
-                _perf = {s: v for s, v in sr.get("leaders", []) + sr.get("laggards", [])}
-                inst_signals["risk_appetite"] = compute_risk_appetite(_perf)
-
-            _breadth = get_breadth_history(days=30)
-            if _breadth:
-                inst_signals["breadth_thrust"] = compute_breadth_thrust(_breadth)
-
-            _inst = get_fii_institutions(days=30)
-            if _inst:
-                inst_signals["fii_footprint"] = compute_fii_institutional_footprint(_inst)
-        except Exception:
-            pass
-
-        earnings_regime = {"ok": False}
-        try:
-            from src.earnings_tracker import compute_earnings_regime
-            earnings_regime = compute_earnings_regime()
-        except Exception:
-            pass
-
-        market_phase = compute_market_phase(ctx, inst_signals, earnings_regime)
-        dashboard = format_market_state_dashboard(market_phase, ctx)
-        if dashboard:
-            send_text(dashboard)
-            print("   → Market State Dashboard sent")
-    except Exception as e:
-        print(f"   ⚠️ Market State Dashboard: {e}")
-
-    # ── Master Signal Arbitration ─────────────────────────────────
-    try:
-        from src.signal_arbitrator import run_arbitration, format_master_signal_dashboard
-
-        # Collect signals for arbitration
-        arb_signals = {}
+        # Build MarketState from current data
+        state = MarketState(trade_date=today_str)
         bb = ctx.get("bull_bear", {})
         if bb.get("score") is not None:
-            arb_signals["bull_bear"] = bb["score"]
-        fg = ctx.get("fear_greed", {})
-        fg_score = fg.get("score") or fg.get("index")  # handle both key names
-        if fg_score is not None:
-            arb_signals["fear_greed"] = fg_score
+            state.bull_bear_score = bb["score"]
+        if bb.get("normalized") is not None:
+            state.bull_bear_normalized = bb["normalized"]
+        state.market_phase = ctx.get("market_phase", {}).get("phase")
+        state.cross_asset_regime = ctx.get("global_risk", {}).get("risk_mood")
+
+        # Populate macro
         macro = ctx.get("macro_context", {})
         if macro.get("vix_price") is not None:
-            arb_signals["vix"] = macro["vix_price"]
+            state.macro.vix = macro["vix_price"]
+        if macro.get("vix_regime"):
+            state.macro.vix_regime = macro["vix_regime"]
+        if macro.get("brent") is not None:
+            state.macro.brent = macro["brent"]
+            if macro.get("brent_change") is not None:
+                state.macro.brent_change_pct = macro["brent_change"]
+        if macro.get("usdinr") is not None:
+            state.macro.usdinr = macro["usdinr"]
+            if macro.get("usdinr_change") is not None:
+                state.macro.usdinr_change_pct = macro["usdinr_change"]
+        if macro.get("gold") is not None:
+            state.macro.gold = macro["gold"]
+        if macro.get("copper") is not None:
+            state.macro.copper = macro["copper"]
+        if macro.get("dxy") is not None:
+            dxy = macro["dxy"]
+            if isinstance(dxy, dict):
+                state.macro.dxy_signal = dxy.get("signal", "FLAT")
 
-        # Wire internals if available
+        # Populate flows
+        fii_ctx = ctx.get("fii_dii_context", {})
+        if fii_ctx.get("ok"):
+            state.flows.fii_net = fii_ctx.get("fii_net")
+            state.flows.dii_net = fii_ctx.get("dii_net")
+            state.flows.absorption_ratio = fii_ctx.get("absorption_ratio")
+
+        # Populate derivatives
+        opt = ctx.get("options", {})
+        if opt.get("ok"):
+            if opt.get("pcr") is not None:
+                state.derivatives.pcr = opt["pcr"]
+            if opt.get("max_pain") is not None:
+                state.derivatives.max_pain = opt["max_pain"]
+
+        # Get previous state for delta
+        prev_state_data = get_latest_market_state()
+        prev_state = None
+        if prev_state_data:
+            try:
+                prev_state = MarketState.model_validate(prev_state_data)
+            except Exception:
+                pass
+
+        delta = compute_delta(state, prev_state)
+
+        # News fingerprint for staleness
+        if validated_news:
+            current_fp = news_fingerprint_headlines = news_fingerprint_hash([a.get("headline", "") for a in validated_news])
+            prev_fp = get_bot_state("news_fingerprint_morning")
+            news_status = news_fingerprint_hash([a.get("headline", "") for a in validated_news])
+            if prev_fp and current_fp == prev_fp:
+                news_block = "📰 *Headlines:* Unchanged since last send."
+            else:
+                set_bot_state("news_fingerprint_morning", current_fp)
+                # Show only fresh headlines
+                top_headlines = []
+                for a in validated_news[:3]:
+                    h = a.get("headline", "")[:60]
+                    if h:
+                        top_headlines.append(f"• {h}...")
+                news_block = "📰 *Top Headlines:*\n" + "\n".join(top_headlines) if top_headlines else ""
+        else:
+            news_block = ""
+
+        # Key levels for regime card
+        key_levels = {}
+        if state.derivatives.max_pain:
+            key_levels["max_pain"] = state.derivatives.max_pain
+        # Support/resistance from Nifty TA
         try:
-            from src.market_internals import run_internals_analysis
-            from src.db import get_market_breadth
-            breadth = get_market_breadth()
-            if breadth:
-                internals = run_internals_analysis(breadth)
-                if internals.get("ok") and internals.get("composite", {}).get("composite_score") is not None:
-                    arb_signals["internals"] = internals["composite"]["composite_score"]
+            from src.technical_analysis import compute_support_resistance
+            ta = compute_support_resistance()
+            if ta:
+                key_levels["support"] = ta.get("support_1")
+                key_levels["resistance"] = ta.get("resistance_1")
         except Exception:
             pass
 
-        if arb_signals:
-            arbitration = run_arbitration(arb_signals)
-            if arbitration.get("ok"):
-                master_block = format_master_signal_dashboard(arbitration["arbitration"])
-                if master_block:
-                    send_text(master_block)
-                    art = arbitration["arbitration"]
-                    print(f"   → Master Signal: {art['master_score']}/100 ({art['master_label']})")
-    except Exception as e:
-        print(f"   ⚠️ Master Signal: {e}")
+        # Render unified regime card with news appended
+        regime_card = render_regime_card(state, delta, job_time="08:00", key_levels=key_levels)
+        if news_block:
+            regime_card += "\n\n" + news_block
 
-    # ── MF Intelligence (daily inferred signals) ──────────────────
-    try:
-        from src.formatters import compute_mf_intelligence
-        # Build macro_data dict from anchors
-        macro_data = {"anchors": anchors} if anchors else {}
-        # Add VIX
-        for a in (anchors or []):
-            if "India VIX" in str(a.get("name", "")) or a.get("symbol") == "^INDIAVIX":
-                macro_data["vix_price"] = a.get("price")
-                macro_data["vix_regime"] = "HIGH" if (a.get("price") or 0) > 20 else "LOW" if (a.get("price") or 0) < 15 else "NORMAL"
-                break
-
-        mf_block = compute_mf_intelligence(ctx=ctx, macro_data=macro_data)
-        if mf_block:
-            send_text(mf_block)
-            print("   → MF Intelligence sent")
+        if regime_card:
+            send_text(regime_card)
+            print(f"   → Regime card sent ({len(regime_card)} chars)")
     except Exception as e:
-        print(f"   ⚠️ MF Intelligence: {e}")
+        print(f"   ⚠️ Regime card: {e}")
+        import traceback
+        traceback.print_exc()
 
     print("=" * 50)
     print("✅ MORNING BRIEF COMPLETE")

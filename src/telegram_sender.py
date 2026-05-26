@@ -11,6 +11,7 @@ import pytz
 
 TOKEN   = os.environ.get('TELEGRAM_TOKEN',  '')
 CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+DRY_RUN = os.environ.get('DRY_RUN', '').lower() in ('1', 'true', 'yes')
 BASE    = f"https://api.telegram.org/bot{TOKEN}"
 
 def _post(endpoint: str, **kwargs) -> dict:
@@ -26,7 +27,16 @@ def _post(endpoint: str, **kwargs) -> dict:
         return {"ok": False}
 
 def send_text(text: str, parse_mode: str = "Markdown") -> bool:
-    """Send text message — auto-splits if over 4000 chars"""
+    """Send text message — auto-splits if over 4000 chars. Dry-run prints to console."""
+    if DRY_RUN:
+        print("\n" + "=" * 60)
+        print("📨 [DRY RUN] Telegram message would be sent:")
+        print("=" * 60)
+        print(text[:4000])
+        if len(text) > 4000:
+            print(f"\n... ({len(text) - 4000} more chars)")
+        print("=" * 60)
+        return True
     max_len = 4000
     if len(text) > max_len:
         chunks  = [text[i:i+max_len] for i in range(0, len(text), max_len)]
