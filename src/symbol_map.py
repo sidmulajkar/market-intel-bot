@@ -18,16 +18,19 @@ from typing import Dict, Optional
 # ═══════════════════════════════════════════════════════════════════════════════
 
 MACRO_ANCHORS: Dict[str, str] = {
-    "USD/INR":     "USDINR=X",
-    "Brent Crude": "BZ=F",
-    "Gold":        "GC=F",
-    "India VIX":   "^INDIAVIX",
-    "Dollar Index":"DX-Y.NYB",
-    "US 10Y Yield":"^TNX",
-    "CBOE VIX":    "^VIX",
-    "HYG":         "HYG",
-    "WTI Crude":   "CL=F",
-    "Copper":      "HG=F",
+    "USD/INR":       "USDINR=X",
+    "Brent Crude":   "BZ=F",
+    "Gold":          "GC=F",
+    "India VIX":     "^INDIAVIX",
+    "Dollar Index":  "DX-Y.NYB",
+    "US 10Y Yield":  "^TNX",
+    "CBOE VIX":      "^VIX",
+    "HYG":           "HYG",
+    "WTI Crude":     "CL=F",
+    "Copper":        "HG=F",
+    "S&P 500 Futures":"ES=F",
+    "Nasdaq Futures": "NQ=F",
+    "Nikkei 225":    "^N225",
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════

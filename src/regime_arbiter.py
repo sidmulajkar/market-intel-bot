@@ -17,7 +17,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Optional
 
 from src.posture_engine import compute_posture, PostureResult
 
@@ -69,7 +69,7 @@ def _build_override_narrative(drivers, usdinr, brent, vix, fii_net) -> str:
     return "Macro extremes detected."
 
 
-def arbitrate_regime(state) -> RegimeVerdict:
+def arbitrate_regime(state, flow_metrics: Optional[Dict] = None) -> RegimeVerdict:
     """Single arbiter that determines regime from MarketState.
 
     Must be called AFTER macro/flows/derivatives are populated.
@@ -145,7 +145,27 @@ def arbitrate_regime(state) -> RegimeVerdict:
         dominant_driver = _dominant_driver_from_bb(state)
         narrative = _narrative_from_bb(bb_norm, market_phase, data_count)
 
-    # ── Layer 3: Posture alignment (THEREFORE) ────────────────────
+    # ── Layer 3: Scenario detection (multi-variable patterns) ─────
+    try:
+        from src.scenario_engine import ScenarioDetector
+        detector = ScenarioDetector(state, flow_metrics=flow_metrics)
+        scenarios = detector.detect()
+        if scenarios:
+            state.active_scenarios = scenarios
+            names = [s.name for s in scenarios]
+            print(f"🔍 Scenarios detected: {', '.join(names)}")
+            # Persist to history
+            try:
+                from src.db import merge_scenario_history
+                trade_date = getattr(state, "trade_date", None)
+                if trade_date:
+                    merge_scenario_history(trade_date, [s.model_dump() for s in scenarios])
+            except Exception:
+                pass  # Non-blocking — persistence is advisory
+    except Exception:
+        pass  # Non-blocking — scenarios are advisory
+
+    # ── Layer 4: Posture alignment (THEREFORE) ────────────────────
     posture = compute_posture(
         vix=vix if vix > 0 else None,
         usdinr=usdinr if usdinr > 0 else None,

@@ -18,7 +18,7 @@ def main():
         return
 
     summary = get_mf_summary()
-    send_text(format_mf_message(summary))
+    mf_text = format_mf_message(summary)
 
     if summary["top_gainers"] or summary["top_losers"]:
         gainers_text = "\n".join([f"🟢 {s.get('display_name','')[:35]}: {s.get('change_pct',0):+.2f}%"
@@ -42,9 +42,11 @@ Under 150 words.
         try:
             analysis = ai.analyze("volume", prompt)
             if analysis and len(analysis.split()) >= 30:
-                send_text(f"🤖 *AI — MF Flow Analysis:*\n\n{analysis}")
+                mf_text += f"\n\n🤖 *AI — MF Flow Analysis:*\n{analysis}"
         except Exception as e:
             print(f"⚠️ AI failed: {e}")
+
+    send_text(mf_text)
 
     print("✅ MF FLOWS COMPLETE")
 

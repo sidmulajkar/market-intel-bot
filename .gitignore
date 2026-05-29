@@ -36,6 +36,13 @@ logs/
 htmlcov/
 .coverage
 
-# OpenClaude / Claude Code local config — NEVER commit
+# Runtime state / caches
+.news_seen.json
+
+# Generated analysis output
+full_day_analyst_output.md
+
+# OpenCode / OpenClaude / Claude Code local config — NEVER commit
+.opencode/
 .openclaude/
 .claude/

@@ -174,7 +174,11 @@ def render_deterministic_intel(raw_data: dict, mode: str = "morning") -> str:
     if dii_net is not None:
         state.flows.dii_net = dii_net
 
-    verdict = arbitrate_regime(state)
+    flow_metrics = {
+        "fii_net": fii_net,
+        "fii_streak_days": fii_streak or 0,
+    }
+    verdict = arbitrate_regime(state, flow_metrics=flow_metrics)
 
     # ── Build arbitrated BLUF header ───────────────────────────────
     emoji = "🟢" if verdict.regime in ("BULLISH", "CONSTRUCTIVE") else ("🔴" if verdict.regime == "DEFENSIVE" else "🟡")
@@ -407,7 +411,8 @@ def main():
                 from src.options_engine import run_options_analysis
                 pcr_data = run_options_analysis("NIFTY", store=False, run_label="context")
                 if pcr_data and pcr_data.get("pcr") is not None:
-                    extra_signals["pcr"] = pcr_data["pcr"]
+                    pcr_value = pcr_data["pcr"]
+                    extra_signals["pcr"] = pcr_value if isinstance(pcr_value, (int, float)) else pcr_value.get("pcr")
             except Exception:
                 pass  # Non-critical
 
@@ -1188,7 +1193,11 @@ def main():
         try:
             from src.regime_arbiter import arbitrate_regime
             from src.db import save_market_state
-            verdict = arbitrate_regime(state)
+            flow_metrics = {
+                "fii_net": state.flows.fii_net,
+                "fii_streak_days": state.flows.fii_streak_days,
+            }
+            verdict = arbitrate_regime(state, flow_metrics=flow_metrics)
             state.final_regime = verdict.regime
             state.final_regime_confidence = verdict.confidence
             state.final_dominant_driver = verdict.dominant_driver
@@ -1620,12 +1629,29 @@ def main():
                     break
 
         if current_regime and not vix_moved:
-            # Regime unchanged, VIX stable → compress to one-liner
+            # Regime unchanged, VIX stable → compress to one-liner with key context
+            override = persisted.get("final_override_reason", "") if persisted else ""
+            macro_data = persisted.get("macro", {}) if persisted else {}
+            usdinr_val = macro_data.get("usdinr", "")
+            brent_val = macro_data.get("brent", "")
+            vix_val = macro_data.get("vix", "")
+            triggers = []
+            if usdinr_val:
+                triggers.append(f"USDINR ₹{usdinr_val}")
+            if brent_val:
+                triggers.append(f"Brent ${brent_val}")
+            if vix_val:
+                triggers.append(f"VIX {vix_val}")
+            trigger_str = ", ".join(triggers[:3])
             compressed = (
                 f"📌 *{mode_label} INTEL CHECK:* "
-                f"{current_regime} posture unchanged. No new catalyst. "
-                f"Watch levels hold."
+                f"{current_regime}".lower().title()
             )
+            if trigger_str:
+                compressed += f" | {trigger_str}"
+            if current_regime == "DEFENSIVE" and override:
+                compressed += f" | Override: {override}"
+            compressed += f" | No new catalyst."
             send_text(compressed)
             print(f"   → Intel compressed to one-liner — regime unchanged, no delta")
         else:

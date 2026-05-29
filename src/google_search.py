@@ -144,6 +144,8 @@ def get_all_context(mode: str = "morning") -> str:
     """
     if not _GOOGLE_SEARCH_AVAILABLE:
         return ""
+    if os.environ.get('DRY_RUN', '').lower() in ('1', 'true', 'yes'):
+        return ""
 
     today = _today_str()
     cache_key = f"all_{mode}"

@@ -61,10 +61,10 @@ def _get_arbiter_regime() -> dict:
 def _posture_for_regime(regime: str) -> str:
     posture_map = {
         "BULLISH": "Add beta; buy dips on support holds.",
-        "NEUTRAL": "No edge — range trade; stay light.",
+        "NEUTRAL": "No edge — range trade; neutral positioning.",
         "DEFENSIVE": "Cut beta, hedge, raise cash; reduce OMCs and oil importers.",
     }
-    return posture_map.get(regime, "No edge — stay light.")
+    return posture_map.get(regime, "No edge — neutral positioning.")
 
 def main():
     print("=" * 50)
@@ -146,40 +146,96 @@ def main():
     derivs_block = ""
     try:
         from src.options_engine import get_latest_snapshot
-        snap = get_latest_snapshot("NIFTY")
+        snap = get_latest_snapshot("NIFTY", "morning")
         pcr = max_pain = gex = skew = None
-        if snap and snap.get("ok"):
+        if snap:
             pcr = snap.get("pcr")
             max_pain = snap.get("max_pain")
             gex = snap.get("gex")
             skew = snap.get("skew_25d")
-        # Fallback: read from persisted MarketState (populated at 08:00)
-        if pcr is None and max_pain is None and gex is None and skew is None:
+            if pcr is not None:
+                print(f"   ✅ Options snapshot: PCR={pcr}")
+        # Fallback tier 1: persisted MarketState
+        if pcr is None or max_pain is None or gex is None or skew is None:
             try:
                 from src.db import get_market_state
                 from datetime import datetime
                 ms = get_market_state(datetime.now().strftime("%Y-%m-%d"))
                 if ms and ms.get("derivatives"):
                     d = ms["derivatives"]
-                    pcr = pcr or d.get("pcr")
-                    max_pain = max_pain or d.get("max_pain")
-                    gex = gex or d.get("gex")
-                    skew = skew or d.get("skew_25d")
+                    if pcr is None:
+                        pcr = d.get("pcr")
+                    if max_pain is None:
+                        max_pain = d.get("max_pain")
+                    if gex is None:
+                        gex = d.get("gex")
+                    if skew is None:
+                        skew = d.get("skew_25d")
+                    if pcr is not None:
+                        print(f"   ✅ Fallback MarketState: PCR={pcr}")
             except Exception:
                 pass
+        # Fallback tier 2: live NSE fetch if still empty
+        if pcr is None:
+            print("   🔄 Falling back to live NSE options fetch...")
+            try:
+                from src.options_engine import analyze_options_chain
+                live = analyze_options_chain("NIFTY")
+                if live.get("ok"):
+                    mp_data = live.get("max_pain", {}) or {}
+                    pcr_data = live.get("pcr", {}) or {}
+                    gex_data = live.get("gex", {}) or {}
+                    skew_data = live.get("skew", {}) or {}
+                    if pcr is None:
+                        pcr = pcr_data.get("pcr")
+                    if max_pain is None:
+                        max_pain = mp_data.get("max_pain")
+                    if gex is None:
+                        gex_val = gex_data.get("net_gex_cr")
+                        gex = float(f"{gex_val:.1f}") if gex_val is not None else None
+                    if skew is None:
+                        skew = skew_data.get("skew_25d")
+                    if pcr is not None:
+                        print(f"   ✅ Live NSE fetch: PCR={pcr}")
+                else:
+                    print(f"   ⚠️ NSE options API unavailable ({live.get('message')})")
+            except Exception as e:
+                print(f"   ⚠️ NSE options fetch error: {e}")
+        if pcr is None:
+            print("   ⚠️ No PCR data from any source")
+        # GEX staleness guard: suppress live morning snapshot if >4h old
+        gex_stale = True
+        if gex is not None:
+            gex_stale = False
+            if snap and snap.get("run") == "morning":
+                from datetime import datetime, timezone
+                snap_ts = snap.get("created_at")
+                if snap_ts:
+                    try:
+                        snap_time = datetime.fromisoformat(snap_ts.replace("Z", "+00:00"))
+                        age = (datetime.now(timezone.utc) - snap_time).total_seconds()
+                        if age > 14400:
+                            gex_stale = True
+                    except Exception:
+                        pass
+
         parts = []
         if pcr is not None:
             parts.append(f"PCR: {pcr:.2f}")
         if max_pain is not None:
             parts.append(f"Max Pain: {max_pain:,.0f}")
-        if gex is not None:
+        if gex is not None and not gex_stale:
             parts.append(f"GEX: {gex:+,.0f}")
+        elif gex is not None and gex_stale:
+            pass  # Suppress stale GEX
         if skew is not None:
             parts.append(f"Skew (25d): {skew:.2f}")
         if parts:
             derivs_block = f"📉 *Derivatives:* {' | '.join(parts)}"
+            print(f"   ✅ Derivatives block built: {' | '.join(parts)}")
     except Exception:
-        pass
+        import traceback
+        traceback.print_exc()
 
     # ── Big move alerts (computed before AI call — needed for fallback) ──
     all_movers = (
@@ -286,22 +342,11 @@ def main():
         brier_block = "\n⚠️ *Scorecard:* Pending (data unavailable)"
 
     def make_fallback():
-        """Deterministic EOD summary — no AI needed."""
-        parts = []
-        if india_drivers:
-            parts.append(f"India: {'; '.join(india_drivers)}")
-        if flows_block:
-            parts.append(flows_block)
-        if derivs_block:
-            parts.append(derivs_block)
-        if overnight_note:
-            parts.append(overnight_note.strip())
-        if us_drivers:
-            parts.append(f"US: {'; '.join(us_drivers)}")
+        """Deterministic EOD text-only note — no AI needed. Blocks are rendered by send_eod."""
         regime_posture = regime_info.get("posture_text", "")
         if regime_posture:
-            parts.append(f"Posture: {regime_posture}")
-        return "\n".join(parts) if parts else f"Regime: {regime_label}. Session closed."
+            return f"Posture: {regime_posture}"
+        return f"Regime: {regime_label}. Session closed."
 
     # ── Regime-gated sign-off ──────────────────────────────────────
     sign_off = "_See you tomorrow!_"
@@ -309,41 +354,49 @@ def main():
         sign_off = "_Evening macro watch continues. Evening intel at 18:00._"
 
     def send_eod(text):
-        bluf = ""
+        from src.formatters import reorder_market_blocks, format_scenario_block
+
+        # Build scenario block from state
+        scenario_block = ""
         try:
-            from src.telegram_sender import build_bluf
-            bluf = build_bluf(
-                regime_verdict=regime_info,
-            )
+            from datetime import datetime
+            from src.db import get_market_state
+            ms = get_market_state(datetime.now().strftime("%Y-%m-%d"))
+            if ms:
+                from src.state import MarketState
+                state = MarketState.model_validate(ms)
+                scenario_block = format_scenario_block(state)
         except Exception:
             pass
-        msg = f"🔔 *END OF DAY*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        # ── Regime header: single-line reference (full detail in 08:00 Regime Card) ──
+
         reg_emoji = {"BULLISH": "🟢", "NEUTRAL": "🟡", "DEFENSIVE": "🔴"}.get(regime_label, "🟡")
         nifty_str = f" | Nifty {nifty.get('price'):,.0f}" if nifty.get("price") else ""
         if nifty.get("price") and nifty.get("change_pct") is not None:
             sign = "+" if nifty["change_pct"] >= 0 else ""
             nifty_str += f" ({sign}{nifty['change_pct']:.1f}%)"
-        msg += f"{reg_emoji} *REGIME: {regime_label}*{nifty_str}\n\n"
-        if brier_block:
-            msg += brier_block + "\n\n"
-        # Note: BLUF omitted — regime header above is the single regime line (Phase 31 invariant)
-        msg += f"📊 {header}\n\n"
-        if flows_block:
-            msg += f"{flows_block}\n\n"
-        if derivs_block:
-            msg += f"{derivs_block}\n\n"
-        if india_drivers:
-            msg += f"📊 *India Drivers:* {'; '.join(india_drivers)}\n\n"
-        if text:
-            msg += text + "\n\n"
-        if overnight_note:
-            msg += f"{overnight_note}\n"
-        if us_drivers:
-            msg += f"\n🌍 *Overnight Watch:* {'; '.join(us_drivers)}\n"
+        regime_block = f"🔔 *END OF DAY*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n{reg_emoji} *REGIME: {regime_label}*{nifty_str}"
+        header_block = f"📊 {header}"
+        india_block = f"📊 *India Drivers:* {'; '.join(india_drivers)}" if india_drivers else ""
+        us_block = f"🌍 *Overnight Watch:* {'; '.join(us_drivers)}" if us_drivers else ""
+        big_moves_block = ""
         if big_moves:
-            msg += f"\n⚠️ *Big Moves (5%+):*\n" + "\n".join(big_moves) + "\n"
-        msg += "━━━━━━━━━━━━━━━━━━━━━━━━\n" + sign_off
+            big_moves_block = "⚠️ *Big Moves (5%+):*\n" + "\n".join(big_moves)
+
+        msg = reorder_market_blocks(
+            regime=regime_label,
+            regime_block=regime_block,
+            scorecard_block=brier_block,
+            header_block=header_block,
+            flows_block=flows_block or "",
+            derivs_block=derivs_block or "",
+            india_drivers_block=india_block,
+            ai_block=text or "",
+            overnight_block=overnight_note.strip() if overnight_note else "",
+            us_drivers_block=us_block,
+            big_moves_block=big_moves_block,
+            sign_off_block=f"━━━━━━━━━━━━━━━━━━━━━━━━\n{sign_off}",
+            scenario_block=scenario_block,
+        )
         send_text(msg)
 
     if prompt and ground_truth.get("nifty_close"):
@@ -355,31 +408,7 @@ def main():
             max_retries=1,
         )
     else:
-        # No ground truth — send without AI validation (degraded)
-        reg_emoji = {"BULLISH": "🟢", "NEUTRAL": "🟡", "DEFENSIVE": "🔴"}.get(regime_label, "🟡")
-        nifty_str = f" | Nifty {nifty.get('price'):,.0f}" if nifty.get("price") else ""
-        if nifty.get("price") and nifty.get("change_pct") is not None:
-            sign = "+" if nifty["change_pct"] >= 0 else ""
-            nifty_str += f" ({sign}{nifty['change_pct']:.1f}%)"
-        msg = f"🔔 *END OF DAY*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        msg += f"{reg_emoji} *REGIME: {regime_label}*{nifty_str}\n\n"
-        if brier_block:
-            msg += brier_block + "\n\n"
-        msg += f"📊 {header}\n\n"
-        if flows_block:
-            msg += f"{flows_block}\n\n"
-        if derivs_block:
-            msg += f"{derivs_block}\n\n"
-        if india_drivers:
-            msg += f"📊 *India Drivers:* {'; '.join(india_drivers)}\n\n"
-        if overnight_note:
-            msg += f"{overnight_note}\n"
-        if us_drivers:
-            msg += f"\n🌍 *Overnight Watch:* {'; '.join(us_drivers)}\n"
-        if big_moves:
-            msg += f"\n⚠️ *Big Moves (5%+):*\n" + "\n".join(big_moves) + "\n"
-        msg += "━━━━━━━━━━━━━━━━━━━━━━━━\n" + sign_off
-        send_text(msg)
+        send_eod(make_fallback())
     print("✅ MARKET CLOSE COMPLETE")
 
 if __name__ == "__main__":

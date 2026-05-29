@@ -95,6 +95,8 @@ class AIEngine:
         Caches result for 60s to avoid repeated test calls.
         Returns False on 429 errors, True otherwise.
         """
+        if os.environ.get('DRY_RUN', '').lower() in ('1', 'true', 'yes'):
+            return True
         import time
         provider = "groq" if task == "fast" else "google"
         cached = self._quota_cache.get(provider)
@@ -145,6 +147,12 @@ class AIEngine:
 
     def analyze(self, task: str, prompt: str, timeout_seconds: int = 15) -> str:
         """Call AI with hard timeout. Single attempt per provider — no retry chain."""
+        if os.environ.get('DRY_RUN', '').lower() in ('1', 'true', 'yes'):
+            return ("Nifty closed in a range with mixed sectoral action. "
+                    "FII net selling continued while DII flows provided offset. "
+                    "Global indices traded flat to negative. "
+                    "Volatility remained above the 15 mark. "
+                    "No single catalyst dominated the session.")
         primary = self._try_groq if task == "fast" else self._try_google
         fallback = self._try_google if task == "fast" else self._try_groq
 
@@ -297,6 +305,8 @@ class AIEngine:
 
     def sentiment(self, text: str) -> dict:
         if not HF_KEY or not text.strip():
+            return {"neutral": 1.0}
+        if os.environ.get('DRY_RUN', '').lower() in ('1', 'true', 'yes'):
             return {"neutral": 1.0}
         # Circuit breaker — skip entirely after 3 failures
         try:

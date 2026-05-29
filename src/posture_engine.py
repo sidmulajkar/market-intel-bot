@@ -9,7 +9,7 @@ Posture = f(Macro extremes, FII flows, VIX regime, Breadth, DXY, Brent)
 Three tiers:
   DEFENSIVE   — reduce beta, hedge, watch for breakdowns
   CONSTRUCTIVE — range-trade, buy support, sell resistance
-  NO EDGE     — stay light, wait for catalyst
+  NO EDGE     — neutral positioning, wait for catalyst
 
 Usage:
     from src.posture_engine import compute_posture
@@ -344,7 +344,7 @@ def _defensive_triggers(usdinr: float, brent: float, vix: float, current_regime:
         if usdinr >= 96:
             triggers.append(f"INR ₹{usdinr:.0f}+ → extreme import pain")
         elif current_regime == "DEFENSIVE":
-            triggers.append(f"INR ₹97+ escalates; INR <₹94 → possible downgrade")
+            triggers.append(f"INR ₹97+ escalates; INR <₹94 → de-escalation (252d baseline: ₹83)")
         else:
             triggers.append(f"INR ₹96: monitor — at override threshold")
     if vix > 0:
@@ -412,7 +412,7 @@ def _no_edge_therefore(usdinr: float, brent: float, vix: float) -> str:
     if not levels:
         levels = ["VIX spikes >20", "Brent breaks $96", "FII streak >5 days"]
 
-    return f"No edge. Stay light until one of these breaks: {'; '.join(levels[:3])}."
+    return f"No edge. Wait until one of these breaks: {'; '.join(levels[:3])}."
 
 
 def _no_edge_triggers(usdinr: float, brent: float, vix: float, fii_net: float) -> list[str]:

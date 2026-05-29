@@ -64,10 +64,10 @@ def _posture_for_regime(regime: str) -> str:
     """Map regime to actionable posture."""
     posture_map = {
         "BULLISH": "Add beta; buy dips on support holds.",
-        "NEUTRAL": "No edge — range trade; stay light.",
+        "NEUTRAL": "No edge — range trade; neutral positioning.",
         "DEFENSIVE": "Cut beta, hedge, raise cash; reduce OMCs and oil importers.",
     }
-    return posture_map.get(regime, "No edge — stay light.")
+    return posture_map.get(regime, "No edge — neutral positioning.")
 
 
 def _watch_levels_for_regime(regime: str) -> str:

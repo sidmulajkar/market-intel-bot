@@ -48,9 +48,17 @@ _TRADING_SIGNAL_PATTERNS = [
     r'[Ww]atch:.*→.*(cut|reduce|hedge|add|raise|trim|buy|sell)',
     r'(cut|reduce|hedge|trim|raise)\s+(beta|exposure|allocation|position|weight|cash)',
     r'(avoid|prefer|accumulate)\s+[A-Z]',
-    r'\b(may|likely|possibly|probably)\s+(test|hit|reach|break|slide|rally|correct)',
+    r'\b(may|likely|possibly|probably)\s+(test|hit|reach|break|slide|rally|correct|set|move|drift|remain)',
     r'\b(full|partial)\s+(defensive|hedge|cash)',
     r'\bif\s+\w+\s+(breaks|crosses|holds|sustains)\b',
+    # Scenario speculative language scrub (Phase 34)
+    r'fears(?!\s+data)',        # Allow "fears" only if followed by data
+    r'expected(?!\s+actual)',   # Allow "expected" only if followed by actual
+    r'impact(?!\s+parallel)',   # Allow "impact" only in scenario context
+    r'likely(?!\s+based)',      # Allow "likely" only if followed by "based on"
+    r'[Ss]uggesting\s+caution',  # "suggesting caution" — advice language
+    r'[Ss]hould\s+(watch|consider|avoid|hedge|monitor|raise|cut|reduce|trim|accumulate|remain|be)',  # advisory "should"
+    r'\bset\s+direction\b',      # "set direction" — prediction language
 ]
 
 

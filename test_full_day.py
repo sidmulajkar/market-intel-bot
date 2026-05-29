@@ -78,8 +78,11 @@ def run_job(script: str, args: list, label: str) -> dict:
         exit_code = 124
 
     # Extract DRY RUN telegram messages
+    # Supports two formats:
+    #   1. No emoji scrub: 📨 ... \n=====\n<text>\n=====
+    #   2. With emoji scrub: 📨 ... \n--- SCRUBBED ---\n=====\n<scrubbed>\n=====
     telegram_messages = re.findall(
-        r'📨 \[DRY RUN\] Telegram message would be sent:\n={60}\n(.*?)\n={60}',
+        r'📨 \[DRY RUN\] Telegram message would be sent:.*?\n={60}\n(.*?)\n={60}',
         stdout, re.DOTALL
     )
 

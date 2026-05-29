@@ -319,8 +319,26 @@ Under 100 words. Reference actual data only. No bias, no key levels, no conditio
         text += f"\n  Watch: {' | '.join(t for t in posture.triggers[:2])}"
         return text
 
+    def _build_outlook_line():
+        try:
+            from src.posture_engine import compute_posture
+            from src.db import get_latest_market_state
+            prev = get_latest_market_state()
+            macro = prev.get("macro", {}) if prev else {}
+            posture = compute_posture(
+                vix=macro.get("vix"),
+                usdinr=macro.get("usdinr"),
+                brent=macro.get("brent"),
+            )
+            if posture.posture != "NO EDGE" or posture.triggers:
+                return f"  Watch: {' | '.join(t for t in posture.triggers[:2])}"
+        except Exception:
+            pass
+        return ""
+
     def send_evening(text):
         bluf = ""
+        regime_verdict = {}
         try:
             from src.telegram_sender import build_bluf
             regime_verdict = _get_evening_regime(valid_index)
@@ -336,7 +354,9 @@ Under 100 words. Reference actual data only. No bias, no key levels, no conditio
         if nifty_close_line and not bluf:
             msg += f"{nifty_close_line}\n\n"
         msg += text
-        msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_India outlook for tomorrow_"
+        outlook = _build_outlook_line()
+        if outlook:
+            msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{outlook}"
         send_text(msg)
 
     try:

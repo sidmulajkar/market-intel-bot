@@ -55,6 +55,9 @@ VALID_RANGES = {
     "JPY=X":      (50, 500),    # USD/JPY (was ~75 in 2011, ~160 in 2024)
     "EURUSD=X":   (0.5, 2.5),   # EUR/USD (was ~0.83 in 2000, ~1.60 in 2008)
     "2YY=F":      (0.1, 20.0),  # US 2Y yield %
+    "ES=F":       (1000, 20000), # S&P 500 E-mini futures
+    "NQ=F":       (2000, 50000), # Nasdaq 100 futures
+    "^N225":      (5000, 100000),# Nikkei 225
 }
 
 # ── Max daily change thresholds — the REAL guard against corrupted data
@@ -75,6 +78,9 @@ _MAX_DAILY_CHANGE_PCT = {
     "JPY=X":      3.0,
     "EURUSD=X":   3.0,
     "2YY=F":      10.0,
+    "ES=F":       5.0,
+    "NQ=F":       5.0,
+    "^N225":      5.0,
 }
 
 
@@ -381,6 +387,9 @@ def fetch_macro_anchors() -> list:
         {"name": "Silver",          "symbol": "SI=F"},        # Industrial precious metal
         {"name": "Copper",          "symbol": "HG=F"},        # Dr. Copper — growth proxy
         {"name": "US 2Y Yield",     "symbol": "2YY=F"},       # Fed expectations
+        {"name": "S&P 500 Futures", "symbol": "ES=F"},        # US equity futures
+        {"name": "Nasdaq Futures",  "symbol": "NQ=F"},        # US tech futures
+        {"name": "Nikkei 225",      "symbol": "^N225"},       # Japan equity index
     ]
 
     symbols = [a["symbol"] for a in anchors]

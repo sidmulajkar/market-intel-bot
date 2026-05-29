@@ -55,90 +55,139 @@ def fetch_nse_options_chain(symbol: str = "NIFTY") -> List[Dict]:
         _options_breaker = None
 
     # Use correct endpoint based on symbol type
-    if symbol.upper() in INDEX_SYMBOLS:
-        url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
-    else:
-        url = f"https://www.nseindia.com/api/option-chain-equities?symbol={symbol}"
+    # v3 API requires expiry param; prefetch expiry dates from contract-info
+    try:
+        contract = nse_get(
+            f"https://www.nseindia.com/api/option-chain-contract-info?symbol={symbol}",
+            timeout=15, retries=1,
+        )
+        if contract.status_code != 200:
+            print(f"⚠️  Contract info API returned {contract.status_code}")
+            return []
+        contract_data = contract.json()
+        expiry_dates = contract_data.get("expiryDates", [])
+        if not expiry_dates:
+            print("⚠️  No expiry dates from contract-info")
+            return []
+    except Exception as e:
+        print(f"⚠️  Contract info fetch error: {e}")
+        return []
 
+    # Select appropriate expiry
+    selected_expiry = None
+    today = datetime.now().date()
+
+    for exp in expiry_dates:
+        try:
+            exp_date = datetime.strptime(exp, "%d-%b-%Y").date()
+            days_to_expiry = (exp_date - today).days
+            if days_to_expiry < 0:
+                continue
+            if selected_expiry is None or days_to_expiry < selected_expiry[1]:
+                if days_to_expiry >= 3 or selected_expiry is None:
+                    selected_expiry = (exp, days_to_expiry)
+        except:
+            continue
+
+    if not selected_expiry:
+        selected_expiry = (expiry_dates[0], 0) if expiry_dates else ("", 0)
+
+    expiry_str = selected_expiry[0]
+    days_to_exp = selected_expiry[1]
+    print(f"   📅 Using expiry: {expiry_str} ({days_to_exp}d)")
+
+    _CACHE_FILE = "/tmp/nse_options_chain_cache.json"
+
+    # Now fetch actual chain data with the selected expiry
+    if symbol.upper() in INDEX_SYMBOLS:
+        chain_type = "Indices"
+    else:
+        chain_type = "Equity"
+    url = f"https://www.nseindia.com/api/option-chain-v3?symbol={symbol}&type={chain_type}&expiry={expiry_str}"
+
+    results = []
     try:
         resp = nse_get(url, timeout=20, retries=1)
+        if resp.status_code == 200:
+            data = resp.json()
+            chain_data = data.get("records", {}).get("data", [])
+            if chain_data:
+                results = _extract_chain_rows(chain_data, expiry_str, days_to_exp)
+                if results:
+                    underlying = data["records"].get("underlyingValue", 0)
+                    results[0]["_underlying"] = underlying
+                    results[0]["_days_to_expiry"] = days_to_exp
+                    results.sort(key=lambda x: x["strike"])
+                    _write_chain_cache(_CACHE_FILE, expiry_str, results)
+                    if _options_breaker:
+                        _options_breaker.record_success()
+                    return results
+        else:
+            print(f"⚠️  Options v3 API returned {resp.status_code}")
+    except Exception as e:
+        print(f"⚠️  Options v3 fetch error: {e}")
 
-        if resp.status_code != 200:
-            print(f"⚠️  Options API returned {resp.status_code}")
-            return []
-
-        data = resp.json()
-        records = data.get("records", {})
-        underlying_value = records.get("underlyingValue", 0)
-        expiry_dates = records.get("expiryDates", [])
-        chain_data = records.get("data", [])
-
-        if not chain_data:
-            return []
-
-        # Select appropriate expiry
-        selected_expiry = None
-        today = datetime.now().date()
-
-        for exp in expiry_dates:
-            try:
-                exp_date = datetime.strptime(exp, "%d-%b-%Y").date()
-                days_to_expiry = (exp_date - today).days
-                if days_to_expiry < 0:
-                    continue
-                if selected_expiry is None or days_to_expiry < selected_expiry[1]:
-                    if days_to_expiry >= 3 or selected_expiry is None:
-                        selected_expiry = (exp, days_to_expiry)
-            except:
-                continue
-
-        if not selected_expiry:
-            selected_expiry = (expiry_dates[0], 0) if expiry_dates else ("", 0)
-
-        expiry_str = selected_expiry[0]
-        days_to_exp = selected_expiry[1]
-        print(f"   📅 Using expiry: {expiry_str} ({days_to_exp}d)")
-
-        # Extract relevant fields including IV
-        results = []
-        for rec in chain_data:
-            if rec.get("expiryDate") != expiry_str:
-                continue
-
-            ce = rec.get("CE", {})
-            pe = rec.get("PE", {})
-
-            results.append({
-                "strike": rec.get("strikePrice", 0),
-                "call_oi": ce.get("openInterest", 0) or 0,
-                "call_change_oi": ce.get("changeinOpenInterest", 0) or 0,
-                "call_volume": ce.get("totalTradedVolume", 0) or 0,
-                "call_iv": ce.get("impliedVolatility", 0) or 0,
-                "call_last": ce.get("lastPrice", 0) or 0,
-                "put_oi": pe.get("openInterest", 0) or 0,
-                "put_change_oi": pe.get("changeinOpenInterest", 0) or 0,
-                "put_volume": pe.get("totalTradedVolume", 0) or 0,
-                "put_iv": pe.get("impliedVolatility", 0) or 0,
-                "put_last": pe.get("lastPrice", 0) or 0,
-                "expiry": expiry_str,
-                "days_to_expiry": days_to_exp,
-            })
-
-        # Store underlying value and metadata
-        if results:
-            results[0]["_underlying"] = underlying_value
-            results[0]["_days_to_expiry"] = days_to_exp
-
-        results.sort(key=lambda x: x["strike"])
+    # Fallback: file cache (populated by earlier successful fetch)
+    cached = _read_chain_cache(_CACHE_FILE)
+    if cached:
+        print(f"   📦 Using cached options data (expiry {cached['expiry']})")
         if _options_breaker:
             _options_breaker.record_success()
-        return results
+        return cached["data"]
 
-    except Exception as e:
-        print(f"⚠️  Options fetch error: {e}")
-        if _options_breaker:
-            _options_breaker.record_failure()
-        return []
+    print("   ⚠️ No options data from any source")
+    if _options_breaker:
+        _options_breaker.record_failure()
+    return []
+
+
+def _extract_chain_rows(chain_data: List[Dict], expiry_str: str, days_to_exp: int) -> List[Dict]:
+    """Extract strike-wise OI/IV data from raw chain records for a given expiry."""
+    results = []
+    for rec in chain_data:
+        if rec.get("expiryDate") != expiry_str:
+            continue
+        ce = rec.get("CE", {})
+        pe = rec.get("PE", {})
+        results.append({
+            "strike": rec.get("strikePrice", 0),
+            "call_oi": ce.get("openInterest", 0) or 0,
+            "call_change_oi": ce.get("changeinOpenInterest", 0) or 0,
+            "call_volume": ce.get("totalTradedVolume", 0) or 0,
+            "call_iv": ce.get("impliedVolatility", 0) or 0,
+            "call_last": ce.get("lastPrice", 0) or 0,
+            "put_oi": pe.get("openInterest", 0) or 0,
+            "put_change_oi": pe.get("changeinOpenInterest", 0) or 0,
+            "put_volume": pe.get("totalTradedVolume", 0) or 0,
+            "put_iv": pe.get("impliedVolatility", 0) or 0,
+            "put_last": pe.get("lastPrice", 0) or 0,
+            "expiry": expiry_str,
+            "days_to_expiry": days_to_exp,
+        })
+    return results
+
+
+def _write_chain_cache(path: str, expiry: str, data: List[Dict]) -> None:
+    """Persist options chain to local file for after-hours fallback."""
+    try:
+        import json
+        with open(path, "w") as f:
+            json.dump({"expiry": expiry, "data": data}, f)
+    except Exception:
+        pass
+
+
+def _read_chain_cache(path: str) -> Optional[Dict]:
+    """Read cached options chain from local file."""
+    import os
+    if not os.path.exists(path):
+        return None
+    try:
+        import json
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -586,6 +635,8 @@ def store_options_snapshot(symbol: str, run: str, analysis: Dict) -> bool:
             "max_pain": analysis.get("max_pain", {}).get("max_pain"),
             "pcr": analysis.get("pcr", {}).get("pcr"),
             "pcr_signal": analysis.get("pcr", {}).get("signal"),
+            "gex": analysis.get("gex", {}).get("net_gex_cr"),
+            "skew_25d": analysis.get("skew", {}).get("skew_25d"),
             "support_zone": analysis.get("zones", {}).get("support_zone", []),
             "resistance_zone": analysis.get("zones", {}).get("resistance_zone", []),
         }
@@ -599,9 +650,10 @@ def store_options_snapshot(symbol: str, run: str, analysis: Dict) -> bool:
         return False
 
 
-def get_latest_snapshot(symbol: str, run: str) -> Optional[Dict]:
+def get_latest_snapshot(symbol: str, run: str = "morning") -> Optional[Dict]:
     """
     Retrieve last snapshot for comparison (evening job compares to morning).
+    Default run is 'morning' for convenience at EOD.
     """
     if not SUPABASE_URL or not SUPABASE_KEY:
         return None
@@ -615,13 +667,15 @@ def get_latest_snapshot(symbol: str, run: str) -> Optional[Dict]:
             .select("*")
             .eq("symbol", symbol)
             .eq("run", run)
-            .order("created_at", descending=True)
+            .order("created_at", desc=True)
             .limit(1)
             .execute()
         )
 
         if result.data:
             return result.data[0]
+        else:
+            print(f"⚠️  Options snapshot: no rows for {symbol}/{run}")
     except Exception as e:
         print(f"⚠️  Get snapshot error: {e}")
 

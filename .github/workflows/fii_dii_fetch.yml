@@ -10,7 +10,7 @@ concurrency:
 jobs:
   fii-dii-fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
@@ -33,7 +33,7 @@ jobs:
         run: pip install -r requirements.txt --quiet --disable-pip-version-check
 
       - name: 📊 Run FII/DII Fetch
-        timeout-minutes: 4
+        timeout-minutes: 8
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}

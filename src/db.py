@@ -1458,6 +1458,45 @@ def save_seen_headlines(trade_date: str, hashes: list) -> bool:
         return False
 
 
+def merge_scenario_history(trade_date: str, active_scenarios: list) -> bool:
+    """Merge new scenario detections into MarketState's scenario_history.
+
+    Loads existing state, appends today's snapshot to history,
+    updates active_scenarios, and persists. Non-blocking (returns False on failure).
+
+    Args:
+        trade_date: YYYY-MM-DD
+        active_scenarios: List of Scenario dicts from ScenarioDetector.
+    """
+    try:
+        from src.state import MarketState
+
+        state_dict = get_market_state(trade_date)
+        if not state_dict:
+            state = MarketState(trade_date=trade_date)
+        else:
+            state = MarketState.from_dict(state_dict)
+
+        state.active_scenarios = active_scenarios
+
+        # Build today's snapshot
+        from src.state import ScenarioSnapshot
+        snapshot = ScenarioSnapshot(
+            date=trade_date,
+            active_scenarios=active_scenarios,
+        )
+        state.scenario_history.append(snapshot)
+
+        # Keep history bounded — last 90 days
+        if len(state.scenario_history) > 90:
+            state.scenario_history = state.scenario_history[-90:]
+
+        return save_market_state(trade_date, state)
+    except Exception as e:
+        print(f"⚠️ merge_scenario_history error: {e}")
+        return False
+
+
 def save_forecast_log(trade_date: str, forecast: dict, outcome: dict = None) -> bool:
     """Save AI forecast to forecast_log table."""
     db = get_client()

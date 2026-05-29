@@ -88,6 +88,7 @@ class Derivatives(BaseModel):
     call_oi_total: Optional[float] = None
     put_oi_total: Optional[float] = None
     iv: Optional[float] = None               # India VIX from options chain
+    data_age_seconds: Optional[float] = None # Age of data when computed (for staleness checks)
     top_call_strikes: List[float] = Field(default_factory=list)
     top_put_strikes: List[float] = Field(default_factory=list)
 
@@ -136,6 +137,24 @@ class Alert(BaseModel):
     threshold: Optional[float] = None
 
 
+# ── Scenario ──────────────────────────────────────────────────────────────────
+
+class Scenario(BaseModel):
+    """Detected market scenario — multi-variable pattern, data-anchored."""
+    name: str                                # asian_contagion / fii_exodus / usd_crisis / oil_shock / geopolitical
+    severity: str = "WATCH"                  # ACTIVE / WATCH / CLEARING
+    start_date: Optional[str] = None         # First detection date (YYYY-MM-DD)
+    confidence: str = "MEDIUM"               # HIGH / MEDIUM / LOW
+    indicators: List[str] = Field(default_factory=list)  # e.g., ["USDINR≥87", "FII 5d sell streak"]
+    last_updated: Optional[str] = None       # Last detection date
+
+
+class ScenarioSnapshot(BaseModel):
+    """Daily snapshot of all active scenarios (for history tracking)."""
+    date: str                                # YYYY-MM-DD
+    active_scenarios: List[Scenario] = Field(default_factory=list)
+
+
 # ── MarketState ──────────────────────────────────────────────────────────────
 
 class MarketState(BaseModel):
@@ -178,6 +197,10 @@ class MarketState(BaseModel):
 
     # Headline dedup — MD5 hashes of rendered headlines across jobs
     seen_headlines: List[str] = Field(default_factory=list)
+
+    # Scenario detection — multi-variable patterns (Day 2)
+    active_scenarios: List[Scenario] = Field(default_factory=list)
+    scenario_history: List[ScenarioSnapshot] = Field(default_factory=list)
 
     @field_validator('cross_asset_regime', mode='before')
     @classmethod

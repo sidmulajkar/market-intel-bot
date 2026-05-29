@@ -186,31 +186,38 @@ def main():
     consensus_sentiment = assess_sentiment_consensus(sentiments) if sentiments else None
     print(f"   Validated: {len(validated_news)} articles, consensus: {consensus_sentiment}")
 
-    # ── AI Brief ─────────────────────────────────────────────────
+    # ── AI Brief (captured, not sent — merged with alerts + regime card) ──
     print("🤖 Running AI analysis...")
+    brief_text = ""
     try:
         prompt = AIEngine.morning_brief_prompt(valid_index, validated_news, consensus_sentiment)
-        brief  = ai.analyze("fast", prompt)
+        brief = ai.analyze("fast", prompt)
 
         def make_fallback():
             return get_fallback_brief(valid_index, validated_news, consensus_sentiment)
 
-        sent = validate_and_send(
+        captured = []
+        def capture(t):
+            captured.append(t)
+            return True
+
+        validate_and_send(
             brief, valid_index,
             fallback_fn=make_fallback,
-            send_fn=send_text,
+            send_fn=capture,
             fmt_fn=fmt_morning_report,
         )
-        if sent:
-            print("   ✅ AI brief sent")
+        brief_text = captured[0] if captured else make_fallback()
+        if captured:
+            print("   ✅ AI brief ready")
         else:
-            print("   ⚠️ AI brief failed validation — sent fallback")
+            print("   ⚠️ AI brief failed validation — using fallback")
     except Exception as e:
         print(f"   ⚠️ AI brief failed: {e}")
-        fallback = get_fallback_brief(valid_index, validated_news, consensus_sentiment)
-        send_text(fallback)
+        brief_text = get_fallback_brief(valid_index, validated_news, consensus_sentiment)
 
     # ── Watchlist Alerts (Sector Grouped) ──────────────────────────
+    alerts_text = ""
     STOCK_SECTORS = {
         "RELIANCE": "ENERGY", "TCS": "IT", "INFY": "IT", "HDFCBANK": "BANKING",
         "ICICIBANK": "BANKING", "WIPRO": "IT", "TATASTEEL": "STEEL",
@@ -351,11 +358,9 @@ def main():
             alert_lines.append(f"⚡ *High Volume:* {', '.join(spike_parts)}")
 
         if alert_lines:
-            send_text(
-                "🔔 *Pre-Market Alerts*\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                + "\n".join(alert_lines)
-            )
+            alerts_text = "🔔 *Pre-Market Alerts*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n" + "\n".join(alert_lines)
+        else:
+            alerts_text = ""
     except Exception as e:
         print(f"   ⚠️ Alert scan failed: {e}")
 
@@ -432,7 +437,11 @@ def main():
         try:
             from src.regime_arbiter import arbitrate_regime
             from src.db import save_market_state
-            verdict = arbitrate_regime(state)
+            flow_metrics = {
+                "fii_net": state.flows.fii_net,
+                "fii_streak_days": state.flows.fii_streak_days,
+            }
+            verdict = arbitrate_regime(state, flow_metrics=flow_metrics)
             state.final_regime = verdict.regime
             state.final_regime_confidence = verdict.confidence
             state.final_dominant_driver = verdict.dominant_driver
@@ -535,8 +544,14 @@ def main():
             pass
 
         if regime_card:
-            send_text(regime_card)
-            print(f"   → Regime card sent ({len(regime_card)} chars)")
+            merged = ""
+            if brief_text:
+                merged += brief_text + "\n\n"
+            if alerts_text:
+                merged += alerts_text + "\n\n"
+            merged += regime_card
+            send_text(merged)
+            print(f"   → Merged morning brief sent ({len(merged)} chars)")
     except Exception as e:
         print(f"   ⚠️ Regime card: {e}")
         import traceback

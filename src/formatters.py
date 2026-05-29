@@ -22,6 +22,134 @@ def render_scorecard(correct: int, total: int, avg_brier: float) -> str:
         return f"Brier: {avg_brier:.2f} | Calibration: {correct}/{total} ({hit_rate}%){calibration_note}"
 
 
+_HISTORICAL_CONTEXT = {
+    "asian_contagion": {
+        "parallel": "2013 Taper Tantrum parallel",
+        "impact": "INR -20% in 6m, Nifty -8% in 6m, RBI sold $105B reserves",
+    },
+    "geopolitical": {
+        "parallel": "2022 Ukraine conflict parallel",
+        "impact": "India CAD -3.2% of GDP, CPI peaked at 7.8%",
+    },
+    "fii_exodus": {
+        "parallel": "2020 COVID crash, 2022 rate hike exodus",
+        "impact": "Nifty -23% in 1m (2020), FII pulled $15B in 3m (2022)",
+    },
+    "usd_crisis": {
+        "parallel": "2013 Taper Tantrum, 2024-25 INR pressure",
+        "impact": "RBI sold $105B reserves defending INR in 2013",
+    },
+    "oil_shock": {
+        "parallel": "2022 Russia-Ukraine, 2008 oil spike",
+        "impact": "India CAD -3.2% (2022), CPI 7.8% (2022)",
+    },
+}
+
+
+def format_scenario_block(state) -> str:
+    """Render active scenarios block from MarketState.
+
+    Only renders when scenarios are ACTIVE or WATCH.
+    Shows scenario name, confidence, indicator triggers, and historical context.
+    Historical data is factual past events — not AI speculation or prediction.
+    """
+    try:
+        if not state.active_scenarios:
+            return ""
+        lines = ["⚠️ *Active Risk Scenarios* (data-only, historical parallels):"]
+        for s in state.active_scenarios:
+            if s.severity not in ("ACTIVE", "WATCH"):
+                continue
+            emoji = "🚨" if s.severity == "ACTIVE" else "⚠️"
+            display_name = s.name.replace("_", " ").title()
+            ctx = _HISTORICAL_CONTEXT.get(s.name, {})
+            parallel = ctx.get("parallel", "")
+            impact = ctx.get("impact", "")
+            header = f"{emoji} *{display_name}* ({s.confidence})"
+            lines.append(header)
+            for ind in s.indicators[:3]:
+                lines.append(f"  • {ind}")
+            if parallel:
+                lines.append(f"  📜 *Historical parallel:* {parallel}")
+            if impact:
+                lines.append(f"  💥 *Past impact:* {impact}")
+        if len(lines) > 1:
+            return "\n".join(lines)
+        return ""
+    except Exception:
+        return ""
+
+
+def reorder_market_blocks(
+    regime: str,
+    regime_block: str,
+    scorecard_block: str,
+    header_block: str,
+    flows_block: str,
+    derivs_block: str,
+    india_drivers_block: str,
+    ai_block: str,
+    overnight_block: str,
+    us_drivers_block: str,
+    big_moves_block: str,
+    sign_off_block: str,
+    scenario_block: str = "",
+) -> str:
+    """Reorder output blocks based on regime for dynamic India/Global split.
+
+    - DEFENSIVE/BEARISH → 50% India / 50% Global (interleaved)
+    - NEUTRAL → 80% India / 20% Global (US at end)
+    - BULLISH → 90% India / 10% Global (US at end)
+    """
+    sections = []
+
+    # Regime header + scorecard always first
+    sections.append(regime_block)
+    if scorecard_block:
+        sections.append(scorecard_block)
+    if scenario_block:
+        sections.append(scenario_block)
+
+    if regime in ("DEFENSIVE", "BEARISH"):
+        # 50/50 split: interleave India + Global
+        if header_block:
+            sections.append(header_block)
+        if flows_block:
+            sections.append(flows_block)
+        if overnight_block:
+            sections.append(overnight_block)
+        if derivs_block:
+            sections.append(derivs_block)
+        if india_drivers_block:
+            sections.append(india_drivers_block)
+        if us_drivers_block:
+            sections.append(us_drivers_block)
+        if ai_block:
+            sections.append(ai_block)
+    else:
+        # NEUTRAL/BULLISH: India first, US at end
+        if header_block:
+            sections.append(header_block)
+        if flows_block:
+            sections.append(flows_block)
+        if derivs_block:
+            sections.append(derivs_block)
+        if india_drivers_block:
+            sections.append(india_drivers_block)
+        if ai_block:
+            sections.append(ai_block)
+        if overnight_block:
+            sections.append(overnight_block)
+        if us_drivers_block:
+            sections.append(us_drivers_block)
+
+    if big_moves_block:
+        sections.append(big_moves_block)
+    sections.append(sign_off_block)
+
+    return "\n\n".join(filter(None, sections)) + "\n"
+
+
 def _fmt_rupee(value: float) -> str:
     """Format rupee value with sign before symbol: -₹655Cr instead of ₹-655Cr."""
     sign = "-" if value < 0 else "+"

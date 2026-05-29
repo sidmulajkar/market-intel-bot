@@ -8,7 +8,7 @@ on:
 jobs:
   bot-handler:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - id: python
@@ -23,7 +23,7 @@ jobs:
       - run: pip install -r requirements.txt --quiet --disable-pip-version-check
         if: steps.cache-venv.outputs.cache-hit != 'true'
       - name: 🤖 Run Bot Handler
-        timeout-minutes: 4
+        timeout-minutes: 8
         working-directory: ${{ github.workspace }}
         env:
           TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}

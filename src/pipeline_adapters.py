@@ -206,8 +206,11 @@ def compute_global_risk(state: MarketState) -> MarketState:
 
 
 def compute_options(state: MarketState) -> MarketState:
-    """Compute derivatives metrics (PCR, max pain, GEX)."""
-    from src.options_engine import fetch_nse_options_chain, compute_max_pain, compute_pcr
+    """Compute derivatives metrics (PCR, max pain, GEX, skew)."""
+    from src.options_engine import (
+        fetch_nse_options_chain, compute_max_pain, compute_pcr,
+        compute_gex, compute_skew,
+    )
     chain = fetch_nse_options_chain("NIFTY")
     if not chain:
         state.missing_sources.append("options_chain")
@@ -224,6 +227,14 @@ def compute_options(state: MarketState) -> MarketState:
     mp = compute_max_pain(chain)
     if mp is not None:
         state.derivatives.max_pain = mp
+
+    gex_data = compute_gex(chain, spot)
+    if gex_data and gex_data.get("ok"):
+        state.derivatives.gex = gex_data.get("net_gex_cr")
+
+    skew_data = compute_skew(chain, spot)
+    if skew_data and skew_data.get("ok"):
+        state.derivatives.skew_25d = skew_data.get("skew_25d")
 
     state.raw["options_chain"] = chain
     return state
