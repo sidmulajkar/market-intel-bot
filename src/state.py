@@ -18,6 +18,13 @@ from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field, field_validator
 
 
+def _coerce_str_or_none(v):
+    """Coerce value to str if present, else None."""
+    if v is None:
+        return None
+    return str(v)
+
+
 # ── Macro ────────────────────────────────────────────────────────────────────
 
 class Macro(BaseModel):
@@ -158,10 +165,25 @@ class MarketState(BaseModel):
     cross_asset_regime: Optional[str] = None # RISK_ON / RISK_OFF / STAGFLATION
     dominant_factor: Optional[str] = None    # Top contributing factor
 
+    # Regime arbiter output (single source of truth — all formatters read this)
+    final_regime: Optional[str] = None       # BULLISH/BEARISH/NEUTRAL/DEFENSIVE
+    final_regime_confidence: Optional[str] = None  # HIGH/MEDIUM/LOW
+    final_dominant_driver: Optional[str] = None    # e.g., "USDINR ₹95.7 + Brent $93"
+    final_override_reason: Optional[str] = None    # "" or "macro_extreme"
+
     # Validation / quality
     data_quality: str = "real"               # real / estimated / degraded
     missing_sources: List[str] = Field(default_factory=list)
     compute_budget_pct: Optional[float] = None
+
+    # Headline dedup — MD5 hashes of rendered headlines across jobs
+    seen_headlines: List[str] = Field(default_factory=list)
+
+    @field_validator('cross_asset_regime', mode='before')
+    @classmethod
+    def coerce_cross_asset_regime(cls, v):
+        """Coerce int → str for cross_asset_regime (upstream sometimes writes confirmation_pct int)."""
+        return _coerce_str_or_none(v)
 
     def with_macro(self, data: Dict) -> "MarketState":
         """Convenience: update macro fields from dict."""

@@ -8,6 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 _sent_messages = []
 
 def mock_send_text(text):
+    # Apply emoji scrubber so test output matches what users actually receive
+    text = _ts._scrub_emoji(text)
     _sent_messages.append(text)
     print("\n" + "=" * 60)
     print(f"  TELEGRAM MESSAGE #{len(_sent_messages)}")
@@ -16,6 +18,7 @@ def mock_send_text(text):
     print("=" * 60)
 
 def mock_send_image(image, caption=""):
+    caption = _ts._scrub_emoji(caption)
     print(f"\n📷 IMAGE: {caption}")
 
 # Patch telegram_sender before importing any job

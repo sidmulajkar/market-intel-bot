@@ -5,6 +5,7 @@ BUG FIX: Single-ticker batch download has different column structure
 import os
 import time
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pytz
 import requests
 import yfinance as yf
@@ -445,8 +446,8 @@ def fetch_macro_anchors() -> list:
 
     except Exception as e:
         print(f"⚠️  Batch download failed: {e}")
-        # Fallback: individual fetches
-        for anchor in anchors:
+        # Fallback: parallel individual fetches
+        def _fetch_single(anchor: dict) -> dict:
             sym, name = anchor["symbol"], anchor["name"]
             try:
                 raw = yf.download(sym, period="5d", interval="1d",
@@ -465,16 +466,20 @@ def fetch_macro_anchors() -> list:
                     week_ago = float(close_s.iloc[0])
                     weekly_chg = round(((current - week_ago) / week_ago) * 100, 3) if week_ago else None
                     status = "up" if change > 0.05 else "down" if change < -0.05 else "flat"
-                    results.append({"name": name, "symbol": sym, "price": round(current, 2),
-                                    "change_pct": round(change, 2), "weekly_change_pct": weekly_chg,
-                                    "status": status, "ok": True})
-                else:
-                    raise ValueError("Insufficient data")
+                    return {"name": name, "symbol": sym, "price": round(current, 2),
+                            "change_pct": round(change, 2), "weekly_change_pct": weekly_chg,
+                            "status": status, "ok": True}
+                raise ValueError("Insufficient data")
             except Exception as e2:
                 print(f"⚠️  {name}: {e2}")
-                results.append({"name": name, "symbol": sym, "price": None,
-                                "change_pct": None, "weekly_change_pct": None,
-                                "status": None, "ok": False})
+                return {"name": name, "symbol": sym, "price": None,
+                        "change_pct": None, "weekly_change_pct": None,
+                        "status": None, "ok": False}
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = {executor.submit(_fetch_single, a): a for a in anchors}
+            for future in as_completed(futures):
+                results.append(future.result())
 
     ok_count = sum(1 for r in results if r["ok"])
     print(f"✅ Macro anchors: {ok_count}/{len(anchors)} fetched")

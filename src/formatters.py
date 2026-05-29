@@ -6,6 +6,54 @@ Intelligence Layer: context_engine + options_engine integrated
 Quant Layer: percentiles, cross-signals, significance labels
 """
 from typing import Dict, Optional, Tuple
+import hashlib
+
+def render_scorecard(correct: int, total: int, avg_brier: float) -> str:
+    """Unified Brier scorecard — single format across all jobs.
+
+    Suppresses Brier score when n < 10 (statistically meaningless).
+    Shows full scorecard with Brier only when n >= 10.
+    """
+    if total < 10:
+        return f"Calibration: building (n={total}). Hit rate: {correct}/{total}."
+    else:
+        hit_rate = round(correct / total * 100, 1) if total > 0 else 0
+        calibration_note = " | Low conviction" if avg_brier > 0.30 else ""
+        return f"Brier: {avg_brier:.2f} | Calibration: {correct}/{total} ({hit_rate}%){calibration_note}"
+
+
+def _fmt_rupee(value: float) -> str:
+    """Format rupee value with sign before symbol: -₹655Cr instead of ₹-655Cr."""
+    sign = "-" if value < 0 else "+"
+    return f"{sign}₹{abs(value):,.0f}Cr"
+
+
+# Cross-job headline dedup — set of MD5 hashes populated by jobs at start
+_seen_headline_hashes: set = set()
+
+
+def set_seen_headlines(hashes: list):
+    """Populate the seen headline hash set at job start."""
+    global _seen_headline_hashes
+    _seen_headline_hashes = set(hashes)
+
+
+def add_seen_headline(text: str) -> str:
+    """Compute MD5 hash of headline and add to seen set. Returns hash."""
+    h = hashlib.md5(text[:80].encode()).hexdigest()
+    _seen_headline_hashes.add(h)
+    return h
+
+
+def is_headline_seen(text: str) -> bool:
+    """Check if headline hash is already in seen set."""
+    h = hashlib.md5(text[:80].encode()).hexdigest()
+    return h in _seen_headline_hashes
+
+
+def get_all_seen_headlines() -> list:
+    """Return current seen headline hashes for persistence."""
+    return list(_seen_headline_hashes)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -62,7 +110,7 @@ def _ordinal(n: int) -> str:
 
 def get_percentile(metric: str, current_value: float, window: str = "1Y") -> str:
     """
-    Get percentile context for a metric from daily_market_snapshot.
+    Get percentile context for a metric from market_state JSONB daily_snapshot.
     Returns: "65th %ile (1Y)" or "(%ile: insufficient data)" if < 10 data points.
     Caches results per session to avoid repeated DB queries.
     """
@@ -319,7 +367,7 @@ def format_global_indices(index_data: dict) -> str:
     Uses proper index names (S&P 500, Nifty 50, etc.) instead of just country codes.
     """
     if not index_data:
-        return ""
+        return "_Note: Global indices data unavailable._"
 
     try:
         lines = []
@@ -355,7 +403,7 @@ def format_macro_anchors(anchor_data: list) -> str:
     Includes weekly change, status, and consequence layer for each anchor.
     """
     if not anchor_data:
-        return ""
+        return "_Note: Macro anchors data unavailable._"
 
     try:
         from src.consequence_engine import compute_all_consequences, format_consequence_line
@@ -405,6 +453,26 @@ def format_macro_anchors(anchor_data: list) -> str:
             else:
                 formatted = f"{name}: ${price:,.2f} ({sign}{change:.2f}%){weekly_s} {status_e}"
 
+            # Append oil baseline context for Brent/WTI
+            if symbol in ("BZ=F", "CL=F"):
+                baseline = 80.0
+                diff = price - baseline
+                # Rough estimate: $1/bbl above baseline ≈ ₹1,500 Cr/yr import pressure on India
+                pressure_per_dollar = 1500  # Cr/yr
+                annual_pressure = diff * pressure_per_dollar
+                direction = "above" if diff > 0 else "below"
+                annual_pressure_sign = "-" if annual_pressure < 0 else "+"
+                formatted += f"\n   vs ${baseline:.0f} baseline: ${diff:+.1f} → {annual_pressure_sign}₹{abs(annual_pressure):,.0f} Cr/yr import bill pressure"
+
+            # Append INR baseline context for USDINR
+            if symbol == "USDINR=X":
+                baseline = 83.0
+                diff = price - baseline
+                # Rough estimate: ₹1 USDINR appreciation ≈ ₹15,000 Cr/yr pressure on $1T imports
+                annual_pressure = diff * 15000  # Cr/yr
+                annual_pressure_sign = "-" if annual_pressure < 0 else "+"
+                formatted += f"\n   annualized pressure: {annual_pressure_sign}₹{abs(annual_pressure):,.0f} Cr/yr on India imports"
+
             # Append consequence line if available
             var_name = symbol_to_var.get(symbol)
             if var_name and var_name in consequences:
@@ -425,6 +493,10 @@ def format_macro_anchors(anchor_data: list) -> str:
 
         if not lines:
             return ""
+
+        # Add baseline footnote when consequence data is present
+        if consequences:
+            lines.append("   _Baseline: 252-day trailing average (approx. 1 year of trading days)._")
 
         return "Macro Anchors:\n" + "\n".join(lines)
     except Exception as e:
@@ -565,7 +637,7 @@ def format_flows(ctx: Optional[Dict] = None) -> str:
         return _format_flows_from_db()
     except Exception as e:
         print(f"⚠️ format_flows: {e}")
-        return ""
+        return "_Note: FII/DII flow data unavailable._"
 
 
 def _format_flows_from_context(fm: Dict, ctx: Optional[Dict] = None) -> str:
@@ -631,11 +703,11 @@ def _format_flows_from_context(fm: Dict, ctx: Optional[Dict] = None) -> str:
     if fii_latest < 0 and dii_latest > 0:
         effective_pressure = fii_latest + dii_latest
         if effective_pressure > 0:
-            lines.append(f"Net market impact: ₹{effective_pressure:+.0f}Cr (net buying — DII more than offset FII)")
+            lines.append(f"Net market impact: {_fmt_rupee(effective_pressure)} (net buying — DII more than offset FII)")
         else:
-            lines.append(f"Net market impact: ₹{effective_pressure:+.0f}Cr effective selling pressure")
+            lines.append(f"Net market impact: {_fmt_rupee(effective_pressure)} effective selling pressure")
     elif fii_latest < 0:
-        lines.append(f"Net market impact: ₹{fii_latest:+.0f}Cr (no DII offset)")
+        lines.append(f"Net market impact: {_fmt_rupee(fii_latest)} (no DII offset)")
 
     # 4-week trend
     trend = fm.get('fii_4w_trend')
@@ -825,11 +897,11 @@ def _format_flows_from_db() -> str:
         if fii_latest < 0 and dii_latest > 0:
             effective_pressure = fii_latest + dii_latest
             if effective_pressure > 0:
-                lines.append(f"Net market impact: ₹{effective_pressure:+.0f}Cr (net buying — DII more than offset FII)")
+                lines.append(f"Net market impact: {_fmt_rupee(effective_pressure)} (net buying — DII more than offset FII)")
             else:
-                lines.append(f"Net market impact: ₹{effective_pressure:+.0f}Cr effective selling pressure")
+                lines.append(f"Net market impact: {_fmt_rupee(effective_pressure)} effective selling pressure")
         elif fii_latest < 0:
-            lines.append(f"Net market impact: ₹{fii_latest:+.0f}Cr (no DII offset)")
+            lines.append(f"Net market impact: {_fmt_rupee(fii_latest)} (no DII offset)")
 
         # Trend (suppress if insufficient data)
         if trend_str:
@@ -852,7 +924,7 @@ def format_news(global_articles: list, indian_articles: list = None) -> str:
     Data sources (NSE, BSE, SEBI) are separated from news articles.
     """
     if not global_articles and not indian_articles:
-        return ""
+        return "_Note: News data unavailable._"
 
     try:
         from src.quant_enrichment import enrich_news_articles
@@ -920,11 +992,56 @@ def format_news(global_articles: list, indian_articles: list = None) -> str:
         return ""
 
 
+def _truncate_headline(headline: str, max_len: int = 100) -> str:
+    """Truncate headline at sentence boundary, preserving 'but/however/unless' clauses."""
+    if len(headline) <= max_len:
+        return headline
+
+    # Find last sentence boundary before max_len
+    boundary_pos = -1
+    for sep in ['. ', '; ', ' — ', ' – ']:
+        pos = headline.rfind(sep, 0, max_len)
+        if pos > boundary_pos:
+            boundary_pos = pos + len(sep)
+
+    if boundary_pos > 0:
+        truncated = headline[:boundary_pos].rstrip()
+        # Check for qualifying clause within ~30 chars after the boundary
+        remainder = headline[boundary_pos:boundary_pos + 40]
+        for conj in ['but ', 'But ', 'however ', 'However ', 'unless ', 'Unless ', 'although ', 'Although ']:
+            if conj in remainder[:30]:
+                conj_start = remainder.index(conj)
+                # Find end of the qualifying clause (next sentence boundary or end)
+                clause_end = remainder.find('. ', conj_start)
+                if clause_end == -1:
+                    clause_end = len(remainder)
+                truncated += ' ' + remainder[conj_start:clause_end].rstrip()
+                break
+        return truncated
+
+    # No sentence boundary found — hard truncate
+    return headline[:max_len].rstrip() + "…"
+
+
 def _format_news_line(article: dict) -> str:
-    """Format a single news article line — editorial style with India linkage."""
-    headline = article.get("headline", "")[:100]
+    """Format a single news article line — editorial style with India linkage.
+
+    Suppresses duplicates via MD5 hash check against _seen_headline_hashes.
+    Omits headlines with unavailable trust scores.
+    """
     source   = article.get("source", "unknown")
+    trust    = article.get("trust_score", 0)
+
+    # Omit unverified news (no trust score)
+    if not trust:
+        return ""
+
+    headline = _truncate_headline(article.get("headline", ""))
     numbers  = article.get("extracted_numbers", "")
+
+    # Dedup check — suppress if already rendered this session
+    if _seen_headline_hashes and is_headline_seen(headline):
+        return ""
 
     # Detect mechanism trigger from headline
     india_link = ""
@@ -948,11 +1065,11 @@ def _format_news_line(article: dict) -> str:
     if freshness < 5:
         tags.append(f"stale ({freshness}/10)")
 
-    # Clean editorial format
+    # Clean editorial format with trust score
     if numbers:
-        line = f"⦿ {headline.rstrip('.')} ({numbers}). ({source})"
+        line = f"⦿ {headline.rstrip('.')} ({numbers}). ({source}, trust {trust}/10)"
     else:
-        line = f"⦿ {headline.rstrip('.')} ({source})"
+        line = f"⦿ {headline.rstrip('.')} ({source}, trust {trust}/10)"
 
     if tags:
         line += f" [{', '.join(tags)}]"
@@ -960,6 +1077,9 @@ def _format_news_line(article: dict) -> str:
     # Add India linkage if mechanism detected
     if india_link:
         line += f"\n   → {india_link}"
+
+    # Register hash so subsequent jobs suppress this headline
+    add_seen_headline(headline)
 
     return line
 
@@ -1664,7 +1784,7 @@ def format_options_block(symbol: str = "NIFTY", run_label: str = "morning") -> s
         analysis = run_options_analysis(symbol=symbol, store=True, run_label=run_label)
 
         if not analysis.get("ok"):
-            return ""
+            return "_Note: Options data unavailable._"
 
         # Format output
         lines = []
@@ -2124,7 +2244,7 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
                     streak_str += " — mature"
                 elif pct_of_avg < 40:
                     streak_str += " — early"
-        signal_details.append(f"  {fii_icon} FII: ₹{fii_net:+,.0f}Cr{streak_str}")
+        signal_details.append(f"  {fii_icon} FII: {_fmt_rupee(fii_net)}{streak_str}")
     else:
         unfired_reasons.append("FII data unavailable")
 
@@ -2147,7 +2267,7 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
             except (ValueError, TypeError):
                 _dii_abs = 0
         absorb_str = f" (absorption {_dii_abs*100:.0f}%)" if dii_val > 0 and fii_net < 0 else ""
-        signal_details.append(f"  {dii_icon} DII: ₹{dii_val:+,.0f}Cr{absorb_str}")
+        signal_details.append(f"  {dii_icon} DII: {_fmt_rupee(dii_val)}{absorb_str}")
     else:
         unfired_reasons.append("DII data unavailable")
 
@@ -2383,12 +2503,12 @@ def format_weekly_digest(scorecard: Dict = None, fii_pattern: Dict = None,
         if fp.get("streak_weeks", 0) > 1:
             direction = "buying" if fp["weekly_net"] > 0 else "selling"
             streak = f" ({fp['streak_weeks']} consecutive {direction} weeks)"
-        lines.append(f"💰 *FII Weekly:* {emoji} ₹{fp.get('weekly_net', 0):+,.0f} Cr{streak}")
+        lines.append(f"💰 *FII Weekly:* {emoji} {_fmt_rupee(fp.get('weekly_net', 0))}{streak}")
         if fp.get("dii_net"):
             dii_emoji = "🟢" if fp["dii_net"] > 0 else "🔴"
-            lines.append(f"   DII: {dii_emoji} ₹{fp['dii_net']:+,.0f} Cr")
+            lines.append(f"   DII: {dii_emoji} {_fmt_rupee(fp['dii_net'])}")
         if fp.get("4w_avg"):
-            lines.append(f"   4W avg: ₹{fp['4w_avg']:+,.0f} Cr")
+            lines.append(f"   4W avg: {_fmt_rupee(fp['4w_avg'])}")
         lines.append("")
 
     # ── 3. Regime Shift ────────────────────────────────────────────

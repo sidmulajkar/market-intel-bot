@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 
 def compute_temporal_context(snapshots: List[Dict]) -> Dict:
     """
-    Compute temporal context for key metrics from daily_market_snapshot.
+    Compute temporal context for key metrics from stored daily snapshots.
     For each metric: duration in regime, rate of change, historical comparison.
     """
     if not snapshots or len(snapshots) < 10:

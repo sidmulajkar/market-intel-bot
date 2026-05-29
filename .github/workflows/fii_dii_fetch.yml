@@ -10,21 +10,30 @@ concurrency:
 jobs:
   fii-dii-fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
 
       - name: 🐍 Python 3.12
+        id: python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip'
+
+      - name: 💾 Cache site-packages
+        uses: actions/cache@v4
+        id: cache-venv
+        with:
+          path: ${{ env.pythonLocation }}
+          key: ${{ runner.os }}-py${{ steps.python.outputs.python-version }}-req-${{ hashFiles('requirements.txt') }}
 
       - name: 📦 Install dependencies
-        run: pip install -r requirements.txt --quiet
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: pip install -r requirements.txt --quiet --disable-pip-version-check
 
       - name: 📊 Run FII/DII Fetch
+        timeout-minutes: 4
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}

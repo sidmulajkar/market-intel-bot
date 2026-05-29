@@ -158,6 +158,61 @@ def _safe_float(val) -> float:
         return 0.0
 
 
+# Magnitude gate thresholds for consequence engine
+# Suppress impacts below these levels (noise), flag above as material
+_MAGNITUDE_FLOOR_CR = 500      # ₹500 Cr/yr minimum to show
+_MAGNITUDE_MATERIAL_CR = 10_000  # ₹10,000 Cr/yr = material impact
+_MAGNITUDE_FLOOR_USD_B = 0.5   # $0.5B minimum to show
+
+
+def _apply_magnitude_gate(lines: list, details: list) -> tuple[list, list]:
+    """Filter consequence lines by magnitude. Suppress negligible, flag material.
+
+    Returns (filtered_lines, filtered_details).
+    - Suppresses ₹ Cr impacts < ₹500 Cr
+    - Suppresses $B impacts < $0.5B
+    - Appends [MATERIAL] tag to impacts > ₹10,000 Cr
+    """
+    if not lines:
+        return lines, details
+
+    filtered_lines = []
+    filtered_details = []
+
+    for line, detail in zip(lines, details):
+        suppressed = False
+
+        # Check for ₹ Cr impacts
+        if "Cr" in line:
+            # Extract numeric value before "Cr" (handles negative signs)
+            import re
+            cr_matches = re.findall(r'₹\s*-?([0-9,]+(?:\.\d+)?)\s*Cr', line)
+            for val_str in cr_matches:
+                val = float(val_str.replace(",", ""))
+                if val < _MAGNITUDE_FLOOR_CR:
+                    suppressed = True
+                    break
+                # Flag material impacts
+                if val > _MAGNITUDE_MATERIAL_CR and "[MATERIAL]" not in line:
+                    line = line + " [MATERIAL]"
+
+        # Check for $B impacts
+        elif "B" in line and "$" in line:
+            import re
+            b_matches = re.findall(r'\$\s*([0-9,]+(?:\.\d+)?)\s*[Bb]', line)
+            for val_str in b_matches:
+                val = float(val_str.replace(",", ""))
+                if val < _MAGNITUDE_FLOOR_USD_B:
+                    suppressed = True
+                    break
+
+        if not suppressed:
+            filtered_lines.append(line)
+            filtered_details.append(detail)
+
+    return filtered_lines, filtered_details
+
+
 # Baseline estimates for regime impact — approximate 252-day averages
 # Updated periodically as market regimes shift
 _BASELINE = {
@@ -194,53 +249,45 @@ def _compute_regime_impact(variable: str, current_value: float) -> list:
     if abs_deviation < threshold:
         return []
 
+    # VARIANCE CAP: If deviation > 30%, baseline/unit mismatch likely.
+    # Suppress the line entirely — emitting 62% gold deviation destroys trust.
+    if abs_deviation > 30.0:
+        print(f"⚠️  Consequence engine: {variable} deviation {abs_deviation:.0f}% exceeds 30% cap — suppressing (likely baseline/unit mismatch)")
+        return []
+
     spec = CONSEQUENCE_MULTIPLIERS.get(variable, {})
     direction = "above" if deviation_pct > 0 else "below"
     lines = []
 
     if variable == "usdinr":
-        # Rupee depreciation vs baseline
-        it_impact = 0.8 * abs_deviation  # 0.8% IT revenue boost per % rupee weakness
-        oil_bill_extra = 14000 * (current_value - baseline) / 1000  # Cr per ₹1 deviation
+        # Rupee depreciation vs baseline — directional only (no hedge model for exact numbers)
         if deviation_pct > 0:
-            lines.append(f"IT revenue +{it_impact:.1f}% vs baseline (INR ₹{current_value:.1f} vs ₹{baseline:.0f} avg)")
-            lines.append(f"Oil bill ₹{oil_bill_extra:.0f}Cr/yr extra vs baseline")
+            lines.append(f"INR ₹{current_value:.1f} vs ₹{baseline:.0f} baseline ({abs_deviation:.0f}% deviation): material tailwind to IT margins, elevated CAD pressure")
         else:
-            lines.append(f"IT revenue -{it_impact:.1f}% vs baseline (INR strength)")
-            lines.append(f"Oil bill ₹{oil_bill_extra:.0f}Cr/yr saving vs baseline")
+            lines.append(f"INR ₹{current_value:.1f} vs ₹{baseline:.0f} baseline ({abs_deviation:.0f}% deviation): IT margin headwind, CAD relief")
 
     elif variable == "brent":
-        cad_impact = 1.5 * (current_value - baseline)
-        cpi_impact = 2 * (current_value - baseline)
-        lines.append(f"Brent {direction} baseline by {abs(deviation_pct):.0f}%: CAD ${cad_impact:+.1f}B/yr, CPI {cpi_impact:+.0f}bps")
+        lines.append(f"Brent ${current_value:.0f} {direction} baseline ({abs(deviation_pct):.0f}%): elevated import costs, CPI pressure, OMC margin squeeze")
 
     elif variable == "wti":
-        cad_impact = 1.2 * (current_value - baseline)
-        inr_ps = 2.5 * (current_value - baseline)
-        lines.append(f"WTI {direction} baseline by {abs(deviation_pct):.0f}%: CAD ${cad_impact:+.1f}B/yr, INR pressure {inr_ps:+.0f}ps")
+        lines.append(f"WTI ${current_value:.0f} {direction} baseline ({abs(deviation_pct):.0f}%): CAD pressure, INR impact")
 
     elif variable == "gold":
-        deviation_usd = current_value - baseline
-        lines.append(f"Gold {direction} baseline by ${deviation_usd:+,.0f}: import pressure elevated")
+        lines.append(f"Gold ${current_value:,.0f} {direction} baseline (${baseline:.0f}, {abs(deviation_pct):.0f}% deviation): import cost pressure")
 
     elif variable == "dxy":
-        if deviation_pct > 0:
-            lines.append(f"DXY {direction} baseline by {abs(deviation_pct):.1f}%: EM headwind")
-        else:
-            lines.append(f"DXY {direction} baseline by {abs(deviation_pct):.1f}%: EM tailwind")
+        lines.append(f"DXY {direction} baseline by {abs(deviation_pct):.1f}% ({baseline:.1f} → {current_value:.1f})")
 
     elif variable == "us_10y":
         bps_diff = (current_value - baseline) * 100
-        fii_impact = 17.5 * bps_diff / 50  # per 50bps
-        fii_dir = "outflow" if fii_impact > 0 else "inflow"
-        lines.append(f"US10Y {direction} baseline by {abs(bps_diff):.0f}bps: FII {fii_dir} pressure ₹{abs(fii_impact):.0f}Cr")
+        fii_dir = "outflow" if deviation_pct > 0 else "inflow"
+        lines.append(f"US10Y {direction} baseline by {abs(bps_diff):.0f}bps: FII {fii_dir} pressure")
 
     elif variable == "india_vix":
-        vix_label = "elevated" if abs_deviation > 10 else "normal"
-        if deviation_pct > 0:
-            lines.append(f"VIX {direction} baseline by {abs(deviation_pct):.0f}%: volatility {vix_label}")
-        else:
-            lines.append(f"VIX {direction} baseline by {abs(deviation_pct):.0f}%: complacency")
+        lines.append(f"VIX {direction} baseline by {abs(deviation_pct):.0f}% ({baseline:.1f} → {current_value:.1f})")
+
+    elif variable == "copper":
+        lines.append(f"Copper {direction} baseline by {abs(deviation_pct):.0f}% ({baseline:.2f} → {current_value:.2f})")
 
     return lines
 
@@ -358,6 +405,9 @@ def compute_consequence(variable: str, current_value: float, change_value: float
                     severity = "ELEVATED"
                 elif severity == "NEUTRAL":
                     severity = "HIGH"  # regime impact active → at least notable
+
+        # Magnitude gate: filter negligible impacts, flag material ones
+        lines, details = _apply_magnitude_gate(lines, details)
 
         # Build summary
         if lines:
@@ -497,6 +547,19 @@ def compute_all_consequences(anchor_data: list, fii_data: dict = None) -> dict:
             if consequence:
                 results[variable] = consequence
 
+        # WTI/Brent coherence check: if deviation spread > 5%, suppress WTI
+        if "brent" in results and "wti" in results:
+            brent_price = _safe_float(results["brent"].get("current_price"))
+            wti_price = _safe_float(results["wti"].get("current_price"))
+            brent_baseline = _BASELINE.get("brent")
+            wti_baseline = _BASELINE.get("wti")
+            if brent_price and wti_price and brent_baseline and wti_baseline:
+                brent_dev = abs((brent_price - brent_baseline) / brent_baseline * 100)
+                wti_dev = abs((wti_price - wti_baseline) / wti_baseline * 100)
+                if abs(brent_dev - wti_dev) > 5.0:
+                    print(f"⚠️  WTI/Brent decoupling: Brent {brent_dev:.0f}% vs WTI {wti_dev:.0f}% — suppressing WTI")
+                    del results["wti"]
+
     except Exception:
         pass
 
@@ -567,25 +630,139 @@ def compute_compound_consequences(anchor_data: list) -> list:
         return []
 
 
+# Severity sort order for headwind/tailwind hierarchy
+_SEVERITY_SCORE = {
+    "EXTREME": 5,   # worst headwind
+    "STRESS": 4,
+    "HIGH": 3,
+    "ELEVATED": 2,
+    "NEUTRAL": 1,
+    "LOW": -1,       # mild tailwind
+    "FAVORABLE": -2, # strong tailwind
+}
+
+# Variables that are headwinds when elevated (positive deviation = bad for India)
+_HEADWIND_WHEN_HIGH = {"usdinr", "brent", "wti", "dxy", "us_10y", "india_vix", "cboe_vix", "gold"}
+# Variables that are tailwinds when elevated (positive deviation = good for India)
+_TAILWIND_WHEN_HIGH = {"copper", "hyg"}  # copper = growth, HYG = risk-on
+
+
+def _classify_consequence(variable: str, consequence: dict) -> tuple[str, int]:
+    """Classify as 'headwind' or 'tailwind' and return sort score.
+
+    Returns (classification, severity_score).
+    Lower score = more urgent to show first.
+    """
+    severity = consequence.get("severity", "NEUTRAL")
+    score = _SEVERITY_SCORE.get(severity, 0)
+    price = consequence.get("current_price")
+    baseline = _BASELINE.get(variable)
+
+    # Determine if price is above or below baseline
+    above_baseline = None
+    if price and baseline:
+        above_baseline = price > baseline
+
+    # Headwind-when-high variables: bad when above baseline (USDINR, Brent, VIX, DXY, yields)
+    if variable in _HEADWIND_WHEN_HIGH:
+        if above_baseline is True and severity in ("EXTREME", "STRESS", "HIGH", "ELEVATED"):
+            return "headwind", -score
+        elif above_baseline is False and severity in ("FAVORABLE", "LOW"):
+            return "tailwind", score
+    # Tailwind-when-high variables: good when above baseline (copper=growth, HYG=risk-on)
+    elif variable in _TAILWIND_WHEN_HIGH:
+        if above_baseline is True and severity in ("EXTREME", "STRESS", "HIGH", "ELEVATED"):
+            return "tailwind", score
+        elif above_baseline is False and severity in ("EXTREME", "STRESS", "HIGH", "ELEVATED"):
+            return "headwind", -score
+
+    # Unknown or neutral → neutral bucket
+    return "neutral", 0
+
+
+# India relevance tiers — for India-focused bot, INR/Brent outrank Gold/Copper
+_INDIA_RELEVANCE_TIER = {
+    # Tier 1: Always show, always on top
+    "usdinr": 1, "brent": 1, "india_vix": 1,
+    # Tier 2: Show if ELEVATED+ severity
+    "dxy": 2, "us_10y": 2, "wti": 2,
+    # Tier 3: Suppress unless EXTREME
+    "gold": 3, "copper": 3, "hyg": 3, "cboe_vix": 3,
+}
+
+
+def compute_compound_stress_score(consequences: dict) -> int:
+    """Count how many variables are at ELEVATED/HIGH/STRESS/EXTREME.
+
+    Used by the regime arbiter to trigger deterministic override.
+    """
+    return sum(1 for c in consequences.values()
+               if c.get("severity") in ("ELEVATED", "HIGH", "STRESS", "EXTREME"))
+
+
+def _tier_filter(var: str, severity: str) -> bool:
+    """Check if a variable should be shown based on its tier and severity."""
+    tier = _INDIA_RELEVANCE_TIER.get(var, 2)
+    if tier == 1:
+        return True
+    if tier == 2:
+        return severity in ("ELEVATED", "HIGH", "STRESS", "EXTREME")
+    if tier == 3:
+        return severity == "EXTREME"
+    return True
+
+
 def format_consequence_block(consequences: dict) -> str:
     """
     Format all consequences into a single block for the AI prompt.
     Shows only variables that have meaningful consequences.
+    Sorted: India relevance tier → headwinds (worst first) → tailwinds → neutral.
+
+    Tier 1 (always top): USDINR, Brent, VIX
+    Tier 2 (show if ELEVATED+): DXY, US10Y, WTI
+    Tier 3 (suppress unless EXTREME): Gold, Copper, HYG, CBOE VIX
     """
     try:
-        lines = []
+        headwinds = []
+        tailwinds = []
+        neutral = []
+
         for var, cons in consequences.items():
             line = format_consequence_line(var, cons)
-            if line:
-                spec = CONSEQUENCE_MULTIPLIERS.get(var, {})
-                desc = spec.get("description", var.upper())
-                lines.append(f"{desc}: {line}")
+            if not line:
+                continue
+            spec = CONSEQUENCE_MULTIPLIERS.get(var, {})
+            desc = spec.get("description", var.upper())
+            full_line = f"{desc}: {line}"
 
-        if not lines:
+            severity = cons.get("severity", "NEUTRAL")
+            tier = _INDIA_RELEVANCE_TIER.get(var, 2)
+
+            # Tier filter: suppress Tier 2 if not elevated, Tier 3 if not extreme
+            if not _tier_filter(var, severity):
+                continue
+
+            classification, score = _classify_consequence(var, cons)
+            # Sort key: (tier, severity_score) so Tier 1 appears before Tier 2
+            if classification == "headwind":
+                headwinds.append((tier, score, full_line))
+            elif classification == "tailwind":
+                tailwinds.append((tier, score, full_line))
+            else:
+                neutral.append((tier, full_line))
+
+        # Sort: tier first (1 before 2 before 3), then severity within tier
+        headwinds.sort(key=lambda x: (x[0], x[1]))
+        tailwinds.sort(key=lambda x: (x[0], x[1]))
+        neutral.sort(key=lambda x: x[0])
+
+        all_lines = [l for _, _, l in headwinds] + [l for _, _, l in tailwinds] + [l for _, l in neutral]
+
+        if not all_lines:
             return ""
 
         header = "[CONSEQUENCE LAYER — India Impact]"
-        return header + "\n" + "\n".join(lines)
+        return header + "\n" + "\n".join(all_lines)
 
     except Exception:
         return ""

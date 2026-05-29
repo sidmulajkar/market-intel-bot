@@ -283,6 +283,22 @@ def validate_output(ai_text: str, ground_truth: Dict) -> Dict:
         if extra_severity != "MAJOR":  # Don't downgrade from MAJOR
             extra_severity = "MINOR"
 
+    # Structural check: scenario tree should always have Bull/Base/Bear
+    has_bull_case = bool(re.search(r'(?i)bull\s*(?:case|scenario)', ai_text))
+    has_base_case = bool(re.search(r'(?i)base\s*(?:case|scenario)', ai_text))
+    has_bear_case = bool(re.search(r'(?i)bear\s*(?:case|scenario)', ai_text))
+    missing = []
+    if not has_bull_case:
+        missing.append("Bull")
+    if not has_base_case:
+        missing.append("Base")
+    if not has_bear_case:
+        missing.append("Bear")
+    if missing:
+        extra_issues.append(f"SCENARIO TREE PARTIAL: Missing {', '.join(missing)} case(s) — include Bull/Base/Bear with current price in Base range")
+        if extra_severity == "OK":
+            extra_severity = "MINOR"
+
     # Merge extra issues into validation result
     if extra_issues:
         validation["issues"] = validation.get("issues", []) + extra_issues
@@ -315,67 +331,29 @@ def validate_output(ai_text: str, ground_truth: Dict) -> Dict:
 
 
 def _generate_fallback(ground_truth: Dict) -> str:
-    """Generate raw data fallback when AI output is contradictory."""
-    lines = ["[MARKET DATA — AI output discarded due to contradictions]"]
+    """Generate clean data-only fallback when AI output is contradictory.
 
-    bull_bear = ground_truth.get("bull_bear_score")
-    if bull_bear is not None:
-        lines.append(f"  Bull/Bear Score: {bull_bear}/100")
+    No mention of AI, validation, or fallback. Just the key numbers.
+    """
+    lines = []
 
+    # Flows summary if available
     fii = ground_truth.get("fii_net")
-    if fii is not None:
-        lines.append(f"  FII Net: ₹{fii:+,.0f}Cr")
+    dii = ground_truth.get("dii_net")
+    if fii is not None or dii is not None:
+        fii_str = f"FII {'₹' + f'{fii:+,.0f}Cr'}" if fii is not None else "FII N/A"
+        dii_str = f"DII {'₹' + f'{dii:+,.0f}Cr'}" if dii is not None else "DII N/A"
+        lines.append(f"Flows: {fii_str} | {dii_str}")
 
     nifty = ground_truth.get("nifty_close")
     if nifty:
-        lines.append(f"  Nifty: {nifty:,.0f}")
-
-    pcr = ground_truth.get("pcr")
-    if pcr:
-        lines.append(f"  PCR: {pcr:.2f}")
+        lines.append(f"Nifty: {nifty:,.0f}")
 
     vix = ground_truth.get("india_vix")
     if vix:
-        lines.append(f"  VIX: {vix:.1f}")
-
-    brent = ground_truth.get("brent")
-    if brent:
-        lines.append(f"  Brent: ${brent:.2f}")
-
-    gold = ground_truth.get("gold")
-    if gold:
-        lines.append(f"  Gold: ${gold:.2f}")
-
-    usdinr = ground_truth.get("usdinr")
-    if usdinr:
-        lines.append(f"  USDINR: ₹{usdinr:.2f}")
-
-    # Regime context — makes fallback actionable
-    regime = ground_truth.get("cross_asset_regime")
-    if regime:
-        lines.append(f"  Regime: {regime}")
-
-    absorption = ground_truth.get("absorption_pct")
-    if absorption:
-        try:
-            absorption = float(absorption)
-            lines.append(f"  Key: DII absorbing {absorption:.0f}% of FII outflow")
-        except (ValueError, TypeError):
-            pass
-
-    bb = ground_truth.get("bull_bear_score")
-    if bb is not None:
-        if bb >= 60:
-            lines.append("  Signal: Bullish lean — AI output rejected for data contradictions")
-        elif bb <= 40:
-            lines.append("  Signal: Bearish lean — AI output rejected for data contradictions")
-        else:
-            lines.append("  Signal: Mixed — no directional call")
+        lines.append(f"VIX: {vix:.1f}")
 
     lines.append("")
-    lines.append("  Note: AI brief was discarded due to data contradictions.")
-    lines.append("  Raw data provided instead. Manual review recommended.")
-
     return "\n".join(lines)
 
 

@@ -225,6 +225,16 @@ def validate_yesterday_prediction(nifty_closes: list = None) -> Dict:
         actual_outcome = determine_actual_outcome(change_pct)
         actual_regime = determine_actual_regime(change_pct)
 
+        # Override check: if arbiter override was active yesterday,
+        # use the arbiter's final_regime as actual (not Nifty-change proxy)
+        try:
+            from src.db import get_market_state
+            ms = get_market_state(yesterday)
+            if ms and ms.get("final_override_reason"):
+                actual_regime = ms.get("final_regime", actual_regime)
+        except Exception:
+            pass
+
         # Check regime accuracy
         pred_regime = prediction.get("regime", "")
         regime_correct = False

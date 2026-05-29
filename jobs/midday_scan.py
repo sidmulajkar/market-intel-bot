@@ -6,8 +6,27 @@ from src.data_fetcher    import fetch_global_indices, fetch_top_movers, fetch_ge
 from src.ai_engine       import AIEngine
 from src.telegram_sender import send_text
 from src.validator       import validate_articles, assess_sentiment_consensus
-from src.db              import was_alert_sent, log_alert_sent
+from src.db              import was_alert_sent, log_alert_sent, get_latest_market_state
 from src.validation_helper import ai_generate_and_validate, build_ground_truth_from_index
+
+
+def _get_arbiter_regime() -> dict:
+    """Read arbitrated regime from MarketState — never recompute."""
+    try:
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        prev = get_latest_market_state(before_date=today)
+        if prev and prev.get("final_regime"):
+            return {
+                "regime": prev["final_regime"],
+                "confidence": prev.get("final_regime_confidence", "MEDIUM"),
+                "dominant_driver": prev.get("final_dominant_driver", ""),
+                "posture_text": "",
+                "watch_levels": "",
+            }
+    except Exception:
+        pass
+    return {"regime": "NEUTRAL", "confidence": "LOW", "dominant_driver": "", "posture_text": "", "watch_levels": ""}
 
 def main():
     print("=" * 50)
@@ -35,7 +54,7 @@ def main():
         article["sentiment"] = sent
         if sent:
             sentiments.append(sent)
-    consensus = assess_sentiment_consensus(sentiments) if sentiments else "neutral"
+    consensus = assess_sentiment_consensus(sentiments) if sentiments else None
 
     # ── Conditional skip gate (Phase 26: no signal = no send) ─────
     # Skip unless: Nifty moved >1% from open, OR VIX spiked >20%, OR extreme moves detected
@@ -71,10 +90,9 @@ def main():
     nifty_moved = nifty_change_abs > 1.0
 
     if not nifty_moved and not vix_spike and not has_extreme:
-        # Send quiet one-liner with intraday delta for transparency
+        # No push on quiet days — regime card is the pinned source of truth
         skip_note = f"Nifty {nifty_change_pct:+.2f}% | Skip: >1.0%"
-        send_text(f"🟡 *Midday:* Markets quiet, regime unchanged. ({skip_note})")
-        print(f"   🟡 Quiet session — one-liner sent ({skip_note})")
+        print(f"   🟡 Quiet session — no Telegram push ({skip_note})")
         print("✅ MIDDAY SCAN COMPLETE")
         return
 
@@ -136,7 +154,7 @@ def main():
     formatted_alerts = []
     for m in alerts:
         sym = m.get("symbol", "")
-        emoji = "🚀" if m.get("change_pct", 0) > 0 else "💥"
+        emoji = "⚠️" if m.get("change_pct", 0) > 0 else "⚠️"
         key = f"midday_extreme_{sym}"
         if not was_alert_sent(sym, key):
             formatted_alerts.append(f"{emoji} *{sym}* {m['change_pct']:+.1f}% — extreme move")
@@ -176,10 +194,22 @@ def main():
         print(f"   ⚠️ AI or context failed: {e}")
         prompt = ""
 
+    regime_info = _get_arbiter_regime()
+
     if prompt and ground_truth.get("nifty_close"):
         # Snapshot already in `lines` above — send_midday uses it directly
         def send_midday(text):
+            bluf = ""
+            try:
+                from src.telegram_sender import build_bluf
+                bluf = build_bluf(
+                    regime_verdict=regime_info,
+                )
+            except Exception:
+                pass
             msg = "📊 *MIDDAY MARKET SCAN*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            if bluf:
+                msg += bluf + "\n\n"
             msg += "\n".join(lines)
             if text:
                 msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{text}"

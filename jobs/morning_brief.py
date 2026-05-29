@@ -1,5 +1,6 @@
 import os
 import sys
+import hashlib
 
 # GUARANTEED PATH FIX - works on all systems
 _dir = os.path.dirname(os.path.abspath(__file__))
@@ -40,33 +41,57 @@ def validate_ai_response(response: str, min_words: int = 50) -> bool:
     return word_count >= min_words
 
 
-def get_fallback_brief(index_data: dict, validated_news: list, sentiment: str) -> str:
+def get_fallback_brief(index_data: dict, validated_news: list, sentiment: str, anchor_data: list = None) -> str:
     """
     Fallback when AI fails - format raw data as structured text.
+    Appends posture line if anchor data available.
     """
     lines = []
-    lines.append("📊 *Morning Market Snapshot*\n")
+    lines.append("*Morning Market Snapshot*\n")
 
     # Global indices summary
     if index_data:
-        lines.append("🌍 *Global Indices:*")
+        lines.append("*Global Indices:*")
         for country, d in list(index_data.items())[:5]:
             if d.get("ok"):
                 change = d.get("change_pct", 0)
                 sign = "+" if change >= 0 else ""
-                lines.append(f"  • {country}: {sign}{change:.2f}%")
+                lines.append(f"  {country}: {sign}{change:.2f}%")
 
     # News summary
     if validated_news:
-        lines.append("\n📰 *Top Headlines:*")
+        lines.append("\n*Top Headlines:*")
         for article in validated_news[:3]:
             headline = article.get("headline", "")[:60]
             if headline:
-                lines.append(f"  • {headline}...")
+                lines.append(f"  {headline}...")
 
-    # Sentiment
-    if sentiment:
-        lines.append(f"\n💭 *Market Sentiment:* {sentiment.title()}")
+    # Sentiment — only render if a measurable model produced a directional call
+    if sentiment and sentiment.lower() != "neutral":
+        lines.append(f"\n*Market Sentiment:* {sentiment.title()}")
+
+    # Posture line from anchor data
+    if anchor_data:
+        try:
+            from src.posture_engine import compute_posture
+            posture_vix = posture_usdinr = posture_brent = None
+            for a in anchor_data:
+                if not a.get("ok") or not a.get("price"):
+                    continue
+                name = a.get("name", "")
+                if name == "India VIX":
+                    posture_vix = a["price"]
+                elif name == "USD/INR":
+                    posture_usdinr = a["price"]
+                elif name == "Brent Crude":
+                    posture_brent = a["price"]
+            posture = compute_posture(
+                vix=posture_vix, usdinr=posture_usdinr, brent=posture_brent,
+            )
+            lines.append(f"\n📌 *Posture:* {posture.posture}")
+            lines.append(f"  {posture.therefore}")
+        except Exception:
+            pass
 
     return "\n".join(lines)
 
@@ -158,7 +183,7 @@ def main():
         if sent:
             sentiments.append(sent)
 
-    consensus_sentiment = assess_sentiment_consensus(sentiments) if sentiments else "neutral"
+    consensus_sentiment = assess_sentiment_consensus(sentiments) if sentiments else None
     print(f"   Validated: {len(validated_news)} articles, consensus: {consensus_sentiment}")
 
     # ── AI Brief ─────────────────────────────────────────────────
@@ -229,6 +254,12 @@ def main():
     # Fetch top movers (needed for alert scan sector grouping)
     movers = fetch_top_movers(top_n=5)
 
+    # Pre-market alert gate: only non-price catalysts.
+    # Pure price moves on Nifty 50 stocks will appear in the 09:15 gap list —
+    # alerting them at 08:00 is redundant and violates the "delta only" principle.
+    # Only fire on: earnings surprises, regulatory (SEBI/RBI), geopolitical, or ADR >4%.
+    # Price-based watchlist alerts are suppressed here.
+
     print("📈 Checking watchlist alerts...")
     try:
         wl_data = fetch_watchlist_data(stocks)
@@ -247,13 +278,35 @@ def main():
             clean_sym = sym.replace(".NS", "").replace(".BO", "")
             sector = STOCK_SECTORS.get(clean_sym, "OTHER")
 
-            if abs(change) >= 2.5:
+            # Skip price-only alerts — these appear in 09:15 gap lists
+            # Only allow non-price catalysts (earnings, regulatory, geopolitical)
+            # identified via news-sector matching
+            has_news_catalyst = False
+            for article in (validated_news or [])[:5]:
+                headline = article.get("headline", "").lower()
+                # Check if any sector keyword or company name appears in headlines
+                if clean_sym.lower().split()[0] in headline or sector.lower() in headline:
+                    has_news_catalyst = True
+                    break
+
+            if not has_news_catalyst:
+                continue  # Pure price move — will appear in 09:15 gaps
+
+            # Only alert on stocks with a news catalyst
+            threshold = 2.5
+            if abs(change) >= threshold:
                 if sector not in sector_alerts:
                     sector_alerts[sector] = []
                 sector_alerts[sector].append((clean_sym, change, vol_ratio))
             elif vol_ratio >= 2.5:
-                # High volume without big price move — unusual
                 vol_spikes.append((clean_sym, change, vol_ratio))
+
+        # Filter: require at least 2 stocks with same catalyst in a sector
+        filtered_alerts = {}
+        for sector, stocks_data in sector_alerts.items():
+            if len(stocks_data) >= 2:
+                filtered_alerts[sector] = stocks_data
+        sector_alerts = filtered_alerts
 
         # Match news headlines to sectors for WHY context (Phase 23: word-boundary regex)
         sector_context = {}
@@ -375,6 +428,21 @@ def main():
             if opt.get("max_pain") is not None:
                 state.derivatives.max_pain = opt["max_pain"]
 
+        # ── Run Regime Arbiter (single source of truth) ───────────
+        try:
+            from src.regime_arbiter import arbitrate_regime
+            from src.db import save_market_state
+            verdict = arbitrate_regime(state)
+            state.final_regime = verdict.regime
+            state.final_regime_confidence = verdict.confidence
+            state.final_dominant_driver = verdict.dominant_driver
+            state.final_override_reason = verdict.override_reason
+            # Persist for all downstream jobs (09:15, 12:30, 15:30, 18:00, 20:00)
+            save_market_state(today_str, state)
+            print(f"   → Arbiter regime persisted: {verdict.regime} ({verdict.confidence})")
+        except Exception as e:
+            print(f"   ⚠️ Regime arbiter: {e}")
+
         # Get previous state for delta
         prev_state_data = get_latest_market_state()
         prev_state = None
@@ -390,18 +458,33 @@ def main():
         if validated_news:
             current_fp = news_fingerprint_headlines = news_fingerprint_hash([a.get("headline", "") for a in validated_news])
             prev_fp = get_bot_state("news_fingerprint_morning")
-            news_status = news_fingerprint_hash([a.get("headline", "") for a in validated_news])
             if prev_fp and current_fp == prev_fp:
-                news_block = "📰 *Headlines:* Unchanged since last send."
+                news_block = ""
             else:
                 set_bot_state("news_fingerprint_morning", current_fp)
-                # Show only fresh headlines
+                # Show only fresh headlines with trust scores
                 top_headlines = []
+                headline_hashes = []
                 for a in validated_news[:3]:
-                    h = a.get("headline", "")[:60]
+                    trust = a.get("trust_score", 0)
+                    if not trust:
+                        continue
+                    h = a.get("headline", "")
+                    # Truncate at sentence boundary
+                    if len(h) > 60:
+                        pos = h.rfind('. ', 0, 60)
+                        h = h[:pos + 2].rstrip() if pos > 0 else h[:60] + "…"
                     if h:
-                        top_headlines.append(f"• {h}...")
+                        top_headlines.append(f"• {h} ({a.get('source', 'unknown')}, trust {trust}/10)")
+                        headline_hashes.append(hashlib.md5(h.encode()).hexdigest())
                 news_block = "📰 *Top Headlines:*\n" + "\n".join(top_headlines) if top_headlines else ""
+
+                # Persist headline hashes for cross-job dedup (09:15 market_open reads these)
+                try:
+                    from src.db import save_seen_headlines
+                    save_seen_headlines(today_str, headline_hashes)
+                except Exception:
+                    pass
         else:
             news_block = ""
 
@@ -423,6 +506,33 @@ def main():
         regime_card = render_regime_card(state, delta, job_time="08:00", key_levels=key_levels)
         if news_block:
             regime_card += "\n\n" + news_block
+
+        # ── Brier score accountability header ─────────────────────
+        try:
+            from src.prediction_tracker import validate_yesterday_prediction, get_weekly_accuracy
+            from src.formatters import render_scorecard
+            yv = validate_yesterday_prediction()
+            if yv.get("ok"):
+                regime_correct = yv.get("regime_correct", False)
+                emoji = "✅" if regime_correct else "❌"
+                predicted = yv.get("predicted_regime", "?")
+                actual = yv.get("actual_regime", "?")
+                brier = yv.get("brier_score", 0)
+
+                week = get_weekly_accuracy(days=7)
+                avg_brier = week.get("avg_brier", 0.25)
+                correct = week.get("correct", 0)
+                total = week.get("total", 0)
+
+                scorecard = render_scorecard(correct, total, avg_brier)
+                brier_line = (
+                    f"\n\n📌 *Scorecard:*\n"
+                    f"Yesterday: {predicted} → {actual} {emoji}\n"
+                    f"{scorecard}"
+                )
+                regime_card += brier_line
+        except Exception:
+            pass
 
         if regime_card:
             send_text(regime_card)

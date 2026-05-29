@@ -9,6 +9,13 @@ import sys
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
+
+def _fmt_rupee_local(value: float) -> str:
+    """Format rupee value with sign before symbol: -₹655Cr instead of ₹-655Cr."""
+    sign = "-" if value < 0 else "+"
+    return f"{sign}₹{abs(value):,.0f}Cr"
+
+
 # Supabase imports
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
@@ -585,12 +592,12 @@ def format_context_for_ai(fii_context: Dict, macro_context: Dict, bull_bear: Dic
     # FII/DII Context
     if fii_context.get("ok"):
         lines.append("┌─ FII/DII Flows ─────────────────────")
-        lines.append(f"│ FII: ₹{fii_context.get('fii_net', 0):+.0f}Cr ({fii_context.get('date', '')})")
-        lines.append(f"│   vs 4W avg: ₹{fii_context.get('fii_4w_avg', 0):+.0f}Cr")
+        lines.append(f"│ FII: {_fmt_rupee_local(fii_context.get('fii_net', 0))} ({fii_context.get('date', '')})")
+        lines.append(f"│   vs 4W avg: {_fmt_rupee_local(fii_context.get('fii_4w_avg', 0))}")
         lines.append(f"│   z-score: {fii_context.get('fii_z_score', 0):+.2f}")
         lines.append(f"│   streak: {fii_context.get('fii_streak', 0)} days ({fii_context.get('fii_streak_direction', 'N/A')})")
-        lines.append(f"│ DII: ₹{fii_context.get('dii_net', 0):+.0f}Cr | Absorption: {fii_context.get('dii_absorbed', 'N/A')}")
-        lines.append(f"│ Net: ₹{fii_context.get('net', 0):+.0f}Cr")
+        lines.append(f"│ DII: {_fmt_rupee_local(fii_context.get('dii_net', 0))} | Absorption: {fii_context.get('dii_absorbed', 'N/A')}")
+        lines.append(f"│ Net: {_fmt_rupee_local(fii_context.get('net', 0))}")
 
     # Macro Context
     if macro_context.get("vix_price"):

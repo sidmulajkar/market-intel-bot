@@ -891,13 +891,13 @@ def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
     except Exception as e:
         results["errors"].append(f"options_snapshots: {e}")
 
-    # ── Daily market snapshot: 3 years ──
+    # ── market_state JSONB: 3 years ──
     try:
-        cutoff_snapshot = (datetime.now() - timedelta(days=1095)).strftime("%Y-%m-%d")
-        resp = db.table("daily_market_snapshot").delete().lt("date", cutoff_snapshot).execute()
-        results["daily_snapshot"] = len(resp.data) if resp.data else 0
+        cutoff_state = (datetime.now() - timedelta(days=1095)).strftime("%Y-%m-%d")
+        resp = db.table("market_state").delete().lt("trade_date", cutoff_state).execute()
+        results["market_state"] = len(resp.data) if resp.data else 0
     except Exception as e:
-        results["errors"].append(f"daily_market_snapshot: {e}")
+        results["errors"].append(f"market_state: {e}")
 
     # ── Correlation matrix: 1 year ──
     try:
@@ -933,25 +933,23 @@ def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PHASE 11: DAILY MARKET SNAPSHOT — Rolling Statistical Memory
+# PHASE 11: DAILY MARKET SNAPSHOT — stored in market_state JSONB
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def save_daily_market_snapshot(date_str: str, snapshot: dict) -> bool:
     """
-    Save unified daily market snapshot for percentile ranking,
-    scenario matching, correlations, and divergence detection.
-    snapshot: dict with all metric values (see daily_market_snapshot schema).
+    Save unified daily market snapshot into market_state JSONB.
+    snapshot: dict with all metric values. Stored under state.daily_snapshot.
     """
     db = get_client()
     if not db:
         return False
     try:
-        record = {"date": date_str, "created_at": datetime.now().isoformat()}
-        # Only store non-None values
-        for key, val in snapshot.items():
-            if val is not None:
-                record[key] = val
-        db.table("daily_market_snapshot").upsert(record).execute()
+        record = {
+            "trade_date": date_str,
+            "state": {"daily_snapshot": snapshot},
+        }
+        db.table("market_state").upsert(record, on_conflict="trade_date").execute()
         return True
     except Exception as e:
         print(f"⚠️ save_daily_market_snapshot error: {e}")
@@ -960,8 +958,8 @@ def save_daily_market_snapshot(date_str: str, snapshot: dict) -> bool:
 
 def get_daily_market_snapshots(days: int = 252) -> list:
     """
-    Get historical daily market snapshots for percentile computation.
-    Default 252 days (1 trading year). Max 1095 (3 years).
+    Get historical daily market snapshots from market_state JSONB.
+    Returns list of flat dicts (one per day) for backward compatibility.
     """
     db = get_client()
     if not db:
@@ -970,13 +968,21 @@ def get_daily_market_snapshots(days: int = 252) -> list:
         from datetime import timedelta
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         result = (
-            db.table("daily_market_snapshot")
-            .select("*")
-            .gte("date", cutoff)
-            .order("date")
+            db.table("market_state")
+            .select("trade_date, state")
+            .gte("trade_date", cutoff)
+            .order("trade_date")
             .execute()
         )
-        return result.data if result.data else []
+        if not result.data:
+            return []
+        out = []
+        for row in result.data:
+            ds = (row.get("state") or {}).get("daily_snapshot", {})
+            if ds:
+                ds["date"] = row["trade_date"]
+                out.append(ds)
+        return out
     except Exception as e:
         print(f"⚠️ get_daily_market_snapshots error: {e}")
         return []
@@ -984,7 +990,7 @@ def get_daily_market_snapshots(days: int = 252) -> list:
 
 def get_snapshot_metric_history(metric: str, days: int = 252) -> list:
     """
-    Get a single metric's history from daily_market_snapshot.
+    Get a single metric's history from market_state JSONB daily_snapshot.
     Returns list of (date, value) tuples, filtering out None values.
     """
     db = get_client()
@@ -994,14 +1000,21 @@ def get_snapshot_metric_history(metric: str, days: int = 252) -> list:
         from datetime import timedelta
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         result = (
-            db.table("daily_market_snapshot")
-            .select(f"date, {metric}")
-            .gte("date", cutoff)
-            .not_.is_(metric, "null")
-            .order("date")
+            db.table("market_state")
+            .select("trade_date, state")
+            .gte("trade_date", cutoff)
+            .order("trade_date")
             .execute()
         )
-        return [(r["date"], r[metric]) for r in (result.data or []) if r.get(metric) is not None]
+        if not result.data:
+            return []
+        out = []
+        for row in result.data:
+            ds = (row.get("state") or {}).get("daily_snapshot", {})
+            val = ds.get(metric)
+            if val is not None:
+                out.append((row["trade_date"], val))
+        return out
     except Exception as e:
         print(f"⚠️ get_snapshot_metric_history({metric}) error: {e}")
         return []
@@ -1369,6 +1382,7 @@ def get_sector_rs_history(sector_name: str = None, days: int = 365) -> list:
 def save_market_state(trade_date: str, state) -> bool:
     """
     Save MarketState Pydantic model to market_state table (JSONB).
+    Uses explicit ON CONFLICT to avoid duplicate key violations.
     state: src.state.MarketState instance
     """
     db = get_client()
@@ -1377,7 +1391,7 @@ def save_market_state(trade_date: str, state) -> bool:
     try:
         data = state.to_dict() if hasattr(state, "to_dict") else state
         record = {"trade_date": trade_date, "state": data}
-        db.table("market_state").upsert(record).execute()
+        db.table("market_state").upsert(record, on_conflict="trade_date").execute()
         return True
     except Exception as e:
         print(f"⚠️ save_market_state error: {e}")
@@ -1388,6 +1402,8 @@ def get_market_state(trade_date: str):
     """
     Fetch MarketState from Supabase by date.
     Returns dict or None.
+
+    Non-blocking: prints warnings if core fields are missing.
     """
     db = get_client()
     if not db:
@@ -1395,11 +1411,51 @@ def get_market_state(trade_date: str):
     try:
         result = db.table("market_state").select("*").eq("trade_date", trade_date).limit(1).execute()
         if result.data:
-            return result.data[0].get("state")
+            state = result.data[0].get("state")
+            if state and isinstance(state, dict):
+                if not state.get("final_regime"):
+                    print(f"⚠️ MarketState for {trade_date} missing final_regime")
+                if not state.get("macro"):
+                    print(f"⚠️ MarketState for {trade_date} missing macro data")
+            return state
         return None
     except Exception as e:
         print(f"⚠️ get_market_state error: {e}")
         return None
+
+
+def get_seen_headlines(trade_date: str) -> list:
+    """Get set of seen headline hashes for a date from market_state.
+
+    Returns list of MD5 hashes. Used for cross-job headline dedup.
+    """
+    state = get_market_state(trade_date)
+    if state and isinstance(state, dict):
+        return state.get("seen_headlines", [])
+    return []
+
+
+def save_seen_headlines(trade_date: str, hashes: list) -> bool:
+    """Update seen_headlines list in market_state JSONB.
+
+    Upserts the seen_headlines field without overwriting other state data.
+    """
+    db = get_client()
+    if not db:
+        return False
+    try:
+        # Read existing state to preserve other fields
+        existing = get_market_state(trade_date)
+        if existing and isinstance(existing, dict):
+            existing["seen_headlines"] = hashes
+            record = {"trade_date": trade_date, "state": existing}
+        else:
+            record = {"trade_date": trade_date, "state": {"seen_headlines": hashes}}
+        db.table("market_state").upsert(record, on_conflict="trade_date").execute()
+        return True
+    except Exception as e:
+        print(f"⚠️ save_seen_headlines error: {e}")
+        return False
 
 
 def save_forecast_log(trade_date: str, forecast: dict, outcome: dict = None) -> bool:

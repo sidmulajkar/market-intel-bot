@@ -98,14 +98,18 @@ def grade_yesterday() -> Optional[Dict]:
         pred = result.data[0]
 
         # Get actual NIFTY close for yesterday and day before
-        snap_result = client.table("daily_market_snapshot").select("nifty_close", "date").eq("date", yesterday).order("date", desc=True).limit(2).execute()
-        if not snap_result.data or len(snap_result.data) < 2:
+        from src.db import get_snapshot_metric_history
+        nifty_hist = get_snapshot_metric_history("nifty_close", days=7)
+        # nifty_hist is list of (date, value) — find entries near yesterday
+        closes = []
+        for d, v in nifty_hist:
+            if d <= yesterday and v is not None:
+                closes.append(v)
+        # We need last two values (yesterday + day before)
+        if len(closes) < 2:
             print(f"  ⚠️  Scorecard: Insufficient NIFTY data for {yesterday}")
             return None
-
-        closes = [r.get("nifty_close") for r in snap_result.data if r.get("nifty_close") is not None]
-        if len(closes) < 2:
-            return None
+        closes = closes[-2:]
 
         nifty_return = ((closes[-1] / closes[-2]) - 1) * 100
 

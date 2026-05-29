@@ -18,15 +18,17 @@ _dir = os.path.dirname(os.path.abspath(__file__))
 if _dir not in sys.path:
     sys.path.insert(0, _dir)
 
-# Load API keys
+# Load API keys (supports KEY=value or KEY: value format)
 keyfile = os.path.join(_dir, "..", "apikeys.txt")
 if os.path.exists(keyfile):
     with open(keyfile) as f:
         for line in f:
             line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
+            if line and not line.startswith("#"):
+                sep = "=" if "=" in line else ":"
+                if sep in line:
+                    k, v = line.split(sep, 1)
+                    os.environ.setdefault(k.strip(), v.strip())
 
 # Mock send_text/send_image to capture outputs
 _sent_outputs = []

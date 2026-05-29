@@ -2,32 +2,16 @@
 Sector Relative Strength — Rank 11 Nifty sectors by RS vs Nifty 50.
 Quantified sector rotation: 1W/1M/3M relative strength scores.
 
-Source: yfinance sector index tickers (free, batch fetch).
+Source: yfinance sector index tickers via symbol_map (free, batch fetch).
 """
 import yfinance as yf
 import statistics
 from typing import Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from src.symbol_map import SECTOR_INDICES
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# NIFTY SECTOR INDICES
-# ═══════════════════════════════════════════════════════════════════════════════
-
-SECTOR_INDICES = {
-    "Nifty Bank": "^NSEBANK",
-    "Nifty IT": "^CNXIT",
-    "Nifty Pharma": "^CNXPHARMA",
-    "Nifty Auto": "^CNXAUTO",
-    "Nifty Metal": "^CNXMETAL",
-    "Nifty Energy": "^CNXENERGY",
-    "Nifty FMCG": "^CNXFMCG",
-    "Nifty Realty": "^CNXREALTY",
-    "Nifty PSU Bank": "^CNXPSUBANK",
-    "Nifty Financial Services": "^CNXFINANCE",
-    "Nifty Media": "^CNXMEDIA",
-}
-
+# Canonical benchmark
 NIFTY_50 = "^NSEI"
 
 

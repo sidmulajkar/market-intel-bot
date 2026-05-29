@@ -50,26 +50,39 @@ def reset_nse_session():
     _session_time = None
 
 
-def nse_get(url: str, timeout: int = 15, retries: int = 1) -> requests.Response:
+import time
+
+from src.circuit_breaker import CircuitBreaker
+
+_nse_breaker = CircuitBreaker(name="nse_api", failure_threshold=3, recovery_timeout=300, default_return=None)
+
+
+def nse_get(url: str, timeout: int = 15, retries: int = 1) -> Optional[requests.Response]:
     """
     Make a GET request to NSE API with automatic session management.
-    Retries once on 403 (session expired).
+    Retries once on 403 (session expired). Circuit breaker trips after 3 failures.
     """
-    session = get_nse_session()
+    @_nse_breaker
+    def _do_get():
+        session = get_nse_session()
+        for attempt in range(retries + 1):
+            resp = session.get(url, timeout=timeout)
+            if resp.status_code == 200:
+                return resp
+            elif resp.status_code == 403 and attempt < retries:
+                reset_nse_session()
+                session = get_nse_session()
+                continue
+            else:
+                return resp
+        return resp
 
-    for attempt in range(retries + 1):
-        resp = session.get(url, timeout=timeout)
-        if resp.status_code == 200:
-            return resp
-        elif resp.status_code == 403 and attempt < retries:
-            # Session expired — reset and retry
-            reset_nse_session()
-            session = get_nse_session()
-            continue
-        else:
-            return resp
-
-    return resp
+    result = _do_get()
+    if result is None:
+        return None  # circuit breaker open
+    if not isinstance(result, requests.Response):
+        return None
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

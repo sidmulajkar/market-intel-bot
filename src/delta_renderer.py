@@ -12,6 +12,13 @@ from __future__ import annotations
 
 from typing import Optional, Dict
 
+
+def _fmt_rupee_local(value: float) -> str:
+    """Format rupee value with sign before symbol: -₹655Cr instead of ₹-655Cr."""
+    sign = "-" if value < 0 else "+"
+    return f"{sign}₹{abs(value):,.0f}Cr"
+
+
 # ── Regime card renderer ────────────────────────────────────────────────────
 
 
@@ -76,11 +83,18 @@ def render_regime_card(
     lines.append(f"Confidence: {confidence}")
     lines.append("━" * 26)
 
-    # ── Evidence bullets ───────────────────────────────────────────────────
+    # ── Evidence bullets ──────────────────────────────────────────────────
+    override_reason = getattr(state, "final_override_reason", None) or ""
+    dominant_driver = getattr(state, "final_dominant_driver", "") or ""
     if evidence:
-        lines.append(f"📊 *Evidence:* {evidence['agree_count']}/{evidence['total_count']} signals agree")
-        for bullet in evidence["bullets"]:
-            lines.append(f"  {bullet}")
+        if override_reason:
+            lines.append(f"📊 *Override Active:* {dominant_driver} → {regime_label}")
+            for bullet in evidence["bullets"]:
+                lines.append(f"  {bullet}")
+        else:
+            lines.append(f"📊 *Evidence:* {evidence['agree_count']}/{evidence['total_count']} signals agree")
+            for bullet in evidence["bullets"]:
+                lines.append(f"  {bullet}")
 
     # ── Transition protocol (if gap is significant) ────────────────────────
     transition = _check_transition(state)
@@ -128,8 +142,12 @@ def render_regime_card(
 def _resolve_regime_label(state) -> str:
     """Resolve a single regime label from MarketState.
 
-    Priority: market_phase > bull_bear_normalized > default.
+    Priority: final_regime (arbiter verdict) > market_phase > bull_bear_normalized > default.
     """
+    final = getattr(state, "final_regime", None)
+    if final:
+        return final
+
     phase = getattr(state, "market_phase", None)
     bb_norm = getattr(state, "bull_bear_normalized", None)
 
@@ -155,10 +173,13 @@ def _resolve_regime_label(state) -> str:
 def _resolve_confidence(state) -> str:
     """Resolve confidence from MarketState.
 
-    Based on signal agreement count and bull_bear_confidence.
+    Priority: final_regime_confidence (arbiter) > bull_bear_confidence > fallback.
     """
+    final_conf = getattr(state, "final_regime_confidence", None)
+    if final_conf:
+        return final_conf
+
     bb_conf = getattr(state, "bull_bear_confidence", None)
-    cross_asset = getattr(state, "cross_asset_regime", None)
 
     if bb_conf is not None:
         if bb_conf >= 70:
@@ -204,7 +225,7 @@ def _count_populated_signals(state) -> int:
 def _regime_emoji(label: str) -> str:
     if "BULL" in label.upper():
         return "🟢"
-    if "BEAR" in label.upper():
+    if "BEAR" in label.upper() or "DEFENSIVE" in label.upper():
         return "🔴"
     return "⚪"
 
@@ -234,7 +255,7 @@ def _build_evidence(state, delta: Dict) -> Optional[Dict]:
         else:
             emoji = "🔴"
             action = "selling"
-        bullets.append(f"{emoji} FII: ₹{net:+.0f}Cr ({action})")
+        bullets.append(f"{emoji} FII: {_fmt_rupee_local(net)} ({action})")
 
     # DII
     if f and f.dii_net is not None:
@@ -247,7 +268,7 @@ def _build_evidence(state, delta: Dict) -> Optional[Dict]:
         else:
             emoji = "🔴"
             action = "distributing"
-        bullets.append(f"{emoji} DII: ₹{net:+.0f}Cr ({action})")
+        bullets.append(f"{emoji} DII: {_fmt_rupee_local(net)} ({action})")
 
     # VIX
     if m and m.vix is not None:

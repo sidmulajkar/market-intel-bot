@@ -43,11 +43,9 @@ Analyze the data provided in the blocks below.
 
 OUTPUT FORMAT — Use this exact structure:
 
-📊 REGIME: [Risk-on / Risk-off / Neutral / Transition]
-Confidence: [HIGH / MEDIUM / LOW]
-Dominant factor: [single most important driver]
+⚠️ Do NOT generate a REGIME line — it is provided by the system. Start with HEADLINE.
 
-📈 HEADLINE
+HEADLINE
 [One sentence capturing the most important number and its historical context]
 
 🔑 KEY SIGNALS (3-5 highest-impact)

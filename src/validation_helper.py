@@ -5,7 +5,122 @@ Two entry points:
   1. validate_and_send() — legacy, for callers who already have AI text
   2. ai_generate_and_validate() — universal wrapper: AI call + validate + retry + fallback
 """
+import re
+import hashlib
 from typing import Callable, Dict, Optional
+
+
+# ── Infrastructure Leakage Scrubber ──────────────────────────────
+
+_LEAKAGE_PATTERNS = [
+    "ai brief failed",
+    "fallback sent",
+    "fallback",
+    "quota exhaustion",
+    "ai output fell to",
+    "ai output discarded",
+    "ai output too short",
+    "rejected — sending fallback",
+    "rejected - sending fallback",
+    "ai failed",
+    "manual review recommended",
+    "discarded due to",
+    "raw data provided instead",
+    "unchanged since last send",
+    "validation",
+    "rejected — sending",
+    "quota exceeded",
+    "RESOURCE_EXHAUSTED",
+    "even fallback failed",
+]
+
+_TRADING_SIGNAL_PATTERNS = [
+    r'[Bb]ias:\s*(Long|Short|Buy|Sell)[^\n]*',
+    r'[Bb]ias:.*',
+    r'[Kk]ey levels?:[^\n]*',
+    r'[Uu]nless [Nn]ifty[^\n]*',
+    r'[Uu]pside bias[^\n]*',
+    r'[Dd]ownside bias[^\n]*',
+    r'[Uu]pside[^\n]*(capped|limited|resistance)',
+    r'[Dd]ownside[^\n]*(support|floor)',
+    r'[Mm]onitor [^\n]*developments',
+    r'[Ii]f [Nn]ifty (holds|breaks|crosses)[^\n]*',
+    r'[Ww]atch:.*→.*(cut|reduce|hedge|add|raise|trim|buy|sell)',
+    r'(cut|reduce|hedge|trim|raise)\s+(beta|exposure|allocation|position|weight|cash)',
+    r'(avoid|prefer|accumulate)\s+[A-Z]',
+    r'\b(may|likely|possibly|probably)\s+(test|hit|reach|break|slide|rally|correct)',
+    r'\b(full|partial)\s+(defensive|hedge|cash)',
+    r'\bif\s+\w+\s+(breaks|crosses|holds|sustains)\b',
+]
+
+
+def _strip_trading_signals(text: str) -> str:
+    """Remove trading advice from AI output — keep only factual statements."""
+    lines = text.split('\n')
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            filtered.append(line)
+            continue
+        is_signal = False
+        for pattern in _TRADING_SIGNAL_PATTERNS:
+            if re.search(pattern, stripped):
+                is_signal = True
+                break
+        if not is_signal:
+            filtered.append(line)
+    return '\n'.join(filtered)
+
+
+
+def _scrub_leakage(text: str) -> str:
+    """Detect infrastructure leakage in user-facing text.
+
+    Returns None if leakage detected (caller should use fallback instead).
+    Returns cleaned text if clean.
+    """
+    lower = text.lower()
+    for pattern in _LEAKAGE_PATTERNS:
+        if pattern in lower:
+            return None
+    return text
+
+
+def output_scrubber(text: str) -> str:
+    """Final-pass scrubber before Telegram dispatch.
+
+    Three-stage pipeline:
+      1. _scrub_leakage — catch infrastructure leakage
+      2. _strip_ghost_regime — remove AI-generated regime lines
+      3. _strip_trading_signals — remove trading advice
+
+    If leakage detected, returns _deterministic_fallback({}) instead of
+    None — guaranteed to produce safe text.
+    """
+    cleaned = _scrub_leakage(text)
+    if cleaned is None:
+        return _deterministic_fallback({})
+    cleaned = _strip_ghost_regime(cleaned)
+    return _strip_trading_signals(cleaned)
+
+
+def _strip_ghost_regime(text: str) -> str:
+    """Remove AI-generated regime lines — regime is set by arbiter, not AI."""
+    lines = text.split('\n')
+    filtered = []
+    skip_next = False
+    for line in lines:
+        stripped = line.strip()
+        # Match: REGIME:, emoji + REGIME:, *REGIME:, **REGIME:, etc.
+        if re.match(r'^[*\s]*[\U0001F300-\U0001FAFF]*\s*REGIME[:\s]', stripped, re.IGNORECASE):
+            skip_next = True
+            continue
+        if skip_next and re.match(r'^(Confidence|Dominant)', stripped, re.IGNORECASE):
+            continue
+        skip_next = False
+        filtered.append(line)
+    return '\n'.join(filtered)
 
 
 def validate_and_send(
@@ -34,7 +149,8 @@ def validate_and_send(
     # Basic sanity check
     if not ai_text or not isinstance(ai_text, str) or len(ai_text.split()) < min_words:
         fallback = fallback_fn()
-        send_fn(fallback)
+        cleaned = _scrub_leakage(fallback)
+        send_fn(cleaned if cleaned else _deterministic_fallback({}))
         return False
 
     # Build minimal ground_truth from available data
@@ -51,6 +167,7 @@ def validate_and_send(
 
     if not ground_truth:
         # No ground truth available — skip validation, send as-is
+        ai_text = _strip_ghost_regime(ai_text)
         if fmt_fn:
             send_fn(fmt_fn(ai_text))
         else:
@@ -63,6 +180,7 @@ def validate_and_send(
         result = validate_output(ai_text, ground_truth)
 
         if result["send"]:
+            ai_text = _strip_ghost_regime(ai_text)
             if fmt_fn:
                 send_fn(fmt_fn(ai_text))
             else:
@@ -71,12 +189,14 @@ def validate_and_send(
         else:
             # Major contradiction — use fallback
             fallback = fallback_fn()
-            send_fn(fallback)
+            cleaned = _scrub_leakage(fallback)
+            send_fn(cleaned if cleaned else _deterministic_fallback({}))
             return False
 
     except Exception as e:
         print(f"   ⚠️ Validation error: {e}")
         # On validation error, send as-is (safer than silently dropping)
+        ai_text = _strip_ghost_regime(ai_text)
         if fmt_fn:
             send_fn(fmt_fn(ai_text))
         else:
@@ -129,77 +249,151 @@ def ai_generate_and_validate(
 ) -> bool:
     """Universal wrapper: call AI, validate output, retry on MAJOR violation, fallback.
 
-    Args:
-        ai: AIEngine instance.
-        task: "fast" or "volume" (passed to ai.analyze).
-        prompt: The prompt to send to AI.
-        ground_truth: Dict with current market data for validation.
-            Must include at minimum: nifty_close (for stale level check).
-            Optional: brent, gold, usdinr, vix_percentile, fii_net, dii_net,
-                      absorption_pct, bull_bear_score, cross_asset_regime.
-        output_type: One of "market_open", "market_close", "midday_scan", "weekly_digest".
-        fallback_fn: Callable returning fallback text if all retries fail.
-        send_fn: Callable to send final text.
-        max_retries: Number of targeted retries after MAJOR violation (default 1).
-
-    Returns:
-        True if validated AI output was sent, False if fallback was used.
+    Terminal guarantee: wraps entire flow in try/except. If ANYTHING fails,
+    a deterministic fallback is sent. User never sees infrastructure errors.
     """
+    try:
+        return _ai_generate_and_validate_inner(ai, task, prompt, ground_truth, output_type, fallback_fn, send_fn, max_retries)
+    except Exception as e:
+        print(f"   CRITICAL: ai_generate_and_validate total failure: {e}")
+        try:
+            content = fallback_fn()
+            content = _scrub_leakage(content) if content else None
+            if content is None:
+                content = _deterministic_fallback(ground_truth)
+            send_fn(content)
+        except Exception:
+            print(f"   CRITICAL: even fallback generation failed")
+            send_fn(_deterministic_fallback(ground_truth))
+        return False
+
+
+def _ai_generate_and_validate_inner(
+    ai,
+    task: str,
+    prompt: str,
+    ground_truth: Dict,
+    output_type: str,
+    fallback_fn: Callable[[], str],
+    send_fn: Callable[[str], None],
+    max_retries: int = 1,
+) -> bool:
+    """Inner implementation — see ai_generate_and_validate for terminal wrapper."""
     config = _OUTPUT_TYPE_CONFIG.get(output_type, _OUTPUT_TYPE_CONFIG["market_close"])
     label = config["label"]
     min_words = config["min_words"]
+
+    # Pre-flight quota check — skip AI entirely if quota exhausted
+    if hasattr(ai, 'has_quota') and not ai.has_quota(task):
+        print(f"   ⚠️ AI quota pre-check failed ({label}) — skipping to fallback")
+        _send_fallback(fallback_fn, send_fn, ground_truth)
+        return False
 
     # Step 1: Call AI
     try:
         draft = ai.analyze(task, prompt)
     except Exception as e:
-        print(f"   ⚠️ AI failed ({label}): {e}")
-        send_fn(fallback_fn())
+        print(f"   AI call failed ({label}): {e}")
+        _send_fallback(fallback_fn, send_fn, ground_truth)
         return False
 
     if not draft or not isinstance(draft, str) or len(draft.split()) < min_words:
-        print(f"   ⚠️ AI output too short ({label})")
-        send_fn(fallback_fn())
+        print(f"   AI output too short ({label})")
+        _send_fallback(fallback_fn, send_fn, ground_truth)
         return False
 
     # Step 1b: Schema check for volume tasks (structured Forecast required)
     if task == "volume":
         try:
             if not ai._validate_forecast_schema(draft):
-                print(f"   ⚠️ AI output lacks structured forecast ({label})")
-                send_fn(fallback_fn())
+                print(f"   AI output lacks structured forecast ({label})")
+                _send_fallback(fallback_fn, send_fn, ground_truth)
                 return False
         except Exception as e:
-            print(f"   ⚠️ Schema validation error: {e}")
+            print(f"   Schema validation error: {e}")
             # Continue — schema check is best-effort
 
     # Step 2: Validate
     result = _validate_with_output_type(draft, ground_truth, config)
 
     if result["send"]:
-        send_fn(draft)
+        cleaned = _scrub_leakage(_strip_ghost_regime(draft))
+        if cleaned is not None:
+            send_fn(cleaned)
+        else:
+            print(f"   Leakage detected in AI output — using fallback")
+            _send_fallback(fallback_fn, send_fn, ground_truth)
         return True
 
     # MAJOR violation — build targeted retry prompt
     if max_retries > 0 and result.get("retry_instruction"):
         retry_prompt = _build_retry_prompt(prompt, result, label)
         try:
-            print(f"   🔄 Retrying {label} with targeted correction...")
+            print(f"   Retrying {label} with targeted correction...")
             retry_draft = ai.analyze(task, retry_prompt)
             if retry_draft and isinstance(retry_draft, str) and len(retry_draft.split()) >= min_words:
                 retry_result = _validate_with_output_type(retry_draft, ground_truth, config)
                 if retry_result["send"]:
-                    send_fn(retry_draft)
+                    cleaned = _scrub_leakage(_strip_ghost_regime(retry_draft))
+                    if cleaned is not None:
+                        send_fn(cleaned)
+                    else:
+                        _send_fallback(fallback_fn, send_fn, ground_truth)
                     return True
                 else:
-                    print(f"   ⚠️ Retry still failed ({label}): {retry_result['reason']}")
+                    print(f"   Retry still failed ({label}): {retry_result['reason']}")
         except Exception as e:
-            print(f"   ⚠️ Retry AI failed ({label}): {e}")
+            print(f"   Retry AI failed ({label}): {e}")
 
     # All retries exhausted — fallback
-    print(f"   ⚠️ {label} rejected — sending fallback")
-    send_fn(fallback_fn())
+    print(f"   {label} rejected — sending fallback")
+    _send_fallback(fallback_fn, send_fn, ground_truth)
     return False
+
+
+def _send_fallback(fallback_fn: Callable[[], str], send_fn: Callable[[str], None], ground_truth: Dict) -> None:
+    """Send fallback content, scrubbed for leakage. Guaranteed to emit something."""
+    try:
+        content = fallback_fn()
+    except Exception:
+        content = _deterministic_fallback(ground_truth)
+    cleaned = _scrub_leakage(content) if content else None
+    if cleaned is None:
+        cleaned = _deterministic_fallback(ground_truth)
+    send_fn(cleaned)
+
+
+def _deterministic_fallback(ground_truth: Dict) -> str:
+    """Pure data summary — zero network calls, completes in <1ms."""
+    lines = []
+
+    # Flows summary if available
+    fii = ground_truth.get("fii_net")
+    dii = ground_truth.get("dii_net")
+    if fii is not None or dii is not None:
+        fii_sign = "-" if fii < 0 else "+"
+        fii_str = f"FII {fii_sign}₹{abs(fii):,.0f}Cr" if fii is not None else "FII N/A"
+        dii_sign = "-" if dii < 0 else "+"
+        dii_str = f"DII {dii_sign}₹{abs(dii):,.0f}Cr" if dii is not None else "DII N/A"
+        lines.append(f"Flows: {fii_str} | {dii_str}")
+
+    # Absorption if meaningful
+    absorption = ground_truth.get("absorption_pct")
+    if absorption is not None:
+        try:
+            lines.append(f"Absorption: {float(absorption):.0f}% of FII flow absorbed by DII")
+        except (ValueError, TypeError):
+            pass
+
+    if not lines:
+        # Bare minimum — regime or nothing
+        regime = ground_truth.get("cross_asset_regime")
+        if regime:
+            lines.append(f"Regime: {regime}")
+        else:
+            lines.append("No actionable data available.")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _validate_with_output_type(text: str, ground_truth: Dict, config: Dict) -> Dict:

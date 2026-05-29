@@ -10,21 +10,30 @@ concurrency:
 jobs:
   market-intel-evening:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
 
       - name: 🐍 Python 3.12
+        id: python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip'
+
+      - name: 💾 Cache site-packages
+        uses: actions/cache@v4
+        id: cache-venv
+        with:
+          path: ${{ env.pythonLocation }}
+          key: ${{ runner.os }}-py${{ steps.python.outputs.python-version }}-req-${{ hashFiles('requirements.txt') }}
 
       - name: 📦 Install dependencies
-        run: pip install -r requirements.txt --quiet
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: pip install -r requirements.txt --quiet --disable-pip-version-check
 
       - name: 🤖 Run Evening Market Intel
+        timeout-minutes: 4
         env:
           GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
           GOOGLE_AI_KEY:    ${{ secrets.GOOGLE_AI_KEY }}

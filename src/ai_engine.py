@@ -7,6 +7,14 @@ import re
 import json
 import time
 import requests
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+
+def _fmt_rupee_local(value: float) -> str:
+    """Format rupee value with sign before symbol: -₹655Cr instead of ₹-655Cr."""
+    sign = "-" if value < 0 else "+"
+    return f"{sign}₹{abs(value):,.0f}Cr"
+
 
 # ── GROQ ──────────────────────────────────────────────────────────
 try:
@@ -58,6 +66,7 @@ class AIEngine:
         self.groq_client  = None
         self.google_model = None
         self.google_search_client = None  # google-genai with Search Retrieval
+        self._quota_cache: dict = {}  # {provider: (bool, timestamp)}
 
         if GROQ_AVAILABLE and GROQ_KEY:
             try:
@@ -80,22 +89,90 @@ class AIEngine:
             except Exception as e:
                 print(f"⚠️  Google Search client init failed: {e}")
 
-    def analyze(self, task: str, prompt: str) -> str:
+    def has_quota(self, task: str = "fast") -> bool:
+        """Check if the primary AI provider has quota available.
+
+        Caches result for 60s to avoid repeated test calls.
+        Returns False on 429 errors, True otherwise.
+        """
+        import time
+        provider = "groq" if task == "fast" else "google"
+        cached = self._quota_cache.get(provider)
+        if cached:
+            result, ts = cached
+            if time.time() - ts < 60:
+                return result
+
+        # Quick test: try primary provider
         if task == "fast":
-            return (self._try_groq(prompt)
-                    or self._try_google(prompt)
-                    or self._try_google_search(prompt)
-                    or "⚠️ AI analysis temporarily unavailable.")
-        elif task == "volume":
-            return (self._try_google(prompt)
-                    or self._try_groq(prompt)
-                    or self._try_google_search(prompt)
-                    or "⚠️ AI analysis temporarily unavailable.")
+            result = self._check_groq_quota()
         else:
-            return (self._try_groq(prompt)
-                    or self._try_google(prompt)
-                    or self._try_google_search(prompt)
-                    or "⚠️ AI analysis temporarily unavailable.")
+            result = self._check_google_quota()
+
+        self._quota_cache[provider] = (result, time.time())
+        return result
+
+    def _check_groq_quota(self) -> bool:
+        """Minimal Groq quota check — 10 token call."""
+        if not self.groq_client:
+            return False
+        try:
+            resp = self.groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": "."}],
+                max_tokens=1,
+                timeout=5,
+            )
+            return resp.choices[0].message.content is not None
+        except Exception as e:
+            if "429" in str(e) or "quota" in str(e).lower():
+                print(f"   ⚠️ Groq quota exhausted: {e}")
+                return False
+            return True  # Other errors (network etc) — let main call handle
+
+    def _check_google_quota(self) -> bool:
+        """Minimal Google quota check."""
+        if not self.google_model:
+            return False
+        try:
+            resp = self.google_model.generate_content(".", generation_config=genai.GenerationConfig(max_output_tokens=1, temperature=0))
+            return resp.text is not None
+        except Exception as e:
+            if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
+                print(f"   ⚠️ Google AI quota exhausted: {e}")
+                return False
+            return True
+
+    def analyze(self, task: str, prompt: str, timeout_seconds: int = 15) -> str:
+        """Call AI with hard timeout. Single attempt per provider — no retry chain."""
+        primary = self._try_groq if task == "fast" else self._try_google
+        fallback = self._try_google if task == "fast" else self._try_groq
+
+        # Primary attempt with timeout
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(primary, prompt)
+                result = future.result(timeout=timeout_seconds)
+                if result:
+                    return result
+        except FuturesTimeout:
+            print(f"   AI primary provider timed out ({timeout_seconds}s)")
+        except Exception as e:
+            print(f"   AI primary provider failed: {e}")
+
+        # Fallback attempt with timeout
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(fallback, prompt)
+                result = future.result(timeout=timeout_seconds)
+                if result:
+                    return result
+        except FuturesTimeout:
+            print(f"   AI fallback provider timed out ({timeout_seconds}s)")
+        except Exception as e:
+            print(f"   AI fallback provider failed: {e}")
+
+        return ""
 
     @staticmethod
     def _check_output_quality(content: str, min_words: int = 30) -> str:
@@ -147,61 +224,40 @@ class AIEngine:
     def _try_groq(self, prompt: str) -> str:
         if not self.groq_client:
             return ""
-        for attempt in range(3):
-            try:
-                resp = self.groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user",   "content": prompt},
-                    ],
-                    max_tokens=1000,
-                    temperature=0.3,
-                )
-                raw = resp.choices[0].message.content
-                return self._check_output_quality(raw)
-
-            except Exception as e:
-                err_str = str(e).lower()
-                # BUG FIX: Check for rate limit by string, not exception type
-                if "rate_limit" in err_str or "429" in err_str:
-                    wait = 30 * (2 ** attempt)
-                    print(f"⏳ Groq rate limited — waiting {wait}s")
-                    if attempt < 2:
-                        time.sleep(wait)
-                    else:
-                        return ""
-                else:
-                    print(f"⚠️  Groq error attempt {attempt+1}: {e}")
-                    if attempt < 2:
-                        time.sleep(5)
-                    else:
-                        return ""
-        return ""
+        try:
+            resp = self.groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": prompt},
+                ],
+                max_tokens=1000,
+                temperature=0.3,
+                timeout=10,
+            )
+            raw = resp.choices[0].message.content
+            return self._check_output_quality(raw)
+        except Exception as e:
+            print(f"   Groq failed: {e}")
+            return ""
 
     def _try_google(self, prompt: str) -> str:
         if not self.google_model:
             return ""
-        for attempt in range(3):
-            try:
-                # Prepend system prompt to user prompt (older google-generativeai doesn't support system_instruction)
-                full_prompt = f"[SYSTEM INSTRUCTIONS]\n{SYSTEM_PROMPT}\n\n[USER REQUEST]\n{prompt}"
-                cfg  = genai.GenerationConfig(
-                    max_output_tokens=1000,
-                    temperature=0.3,
-                )
-                resp = self.google_model.generate_content(
-                    full_prompt,
-                    generation_config=cfg
-                )
-                return self._check_output_quality(resp.text)
-            except Exception as e:
-                print(f"⚠️  Google AI error attempt {attempt+1}: {e}")
-                if attempt < 2:
-                    time.sleep(5 * (attempt + 1))
-                else:
-                    return ""
-        return ""
+        try:
+            full_prompt = f"[SYSTEM INSTRUCTIONS]\n{SYSTEM_PROMPT}\n\n[USER REQUEST]\n{prompt}"
+            cfg = genai.GenerationConfig(
+                max_output_tokens=1000,
+                temperature=0.3,
+            )
+            resp = self.google_model.generate_content(
+                full_prompt,
+                generation_config=cfg
+            )
+            return self._check_output_quality(resp.text)
+        except Exception as e:
+            print(f"   Google AI failed: {e}")
+            return ""
 
     def _try_google_search(self, prompt: str) -> str:
         """Gemini with Google Search Grounding — searches the web during generation.
@@ -242,6 +298,16 @@ class AIEngine:
     def sentiment(self, text: str) -> dict:
         if not HF_KEY or not text.strip():
             return {"neutral": 1.0}
+        # Circuit breaker — skip entirely after 3 failures
+        try:
+            from src.circuit_breaker import CircuitBreaker
+            _finbert_breaker = CircuitBreaker(
+                name="finbert", failure_threshold=3, recovery_timeout=300,
+            )
+            if _finbert_breaker.state == "OPEN":
+                return {"neutral": 1.0}
+        except Exception:
+            pass
         API_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
         headers = {"Authorization": f"Bearer {HF_KEY}"}
         text    = text[:500]
@@ -254,6 +320,8 @@ class AIEngine:
                 if resp.status_code == 200:
                     result = resp.json()
                     if result and isinstance(result[0], list):
+                        if '_finbert_breaker' in locals():
+                            _finbert_breaker.record_success()
                         return {r["label"]: round(r["score"], 3)
                                 for r in result[0]}
                 elif resp.status_code == 503:
@@ -264,6 +332,8 @@ class AIEngine:
             except Exception as e:
                 print(f"⚠️  FinBERT error: {e}")
                 time.sleep(5)
+        if '_finbert_breaker' in locals():
+            _finbert_breaker.record_failure()
         return {"neutral": 1.0}
 
     @staticmethod
@@ -601,8 +671,8 @@ Worst call: {scorecard.get('worst_call', 'N/A')}"""
         # Format FII pattern
         fii_block = ""
         if fii_pattern and fii_pattern.get("ok"):
-            fii_block = f"""FII Weekly: ₹{fii_pattern.get('weekly_net',0):+,.0f} Cr
-DII Weekly: ₹{fii_pattern.get('dii_net',0):+,.0f} Cr
+            fii_block = f"""FII Weekly: {_fmt_rupee_local(fii_pattern.get('weekly_net',0))}
+DII Weekly: {_fmt_rupee_local(fii_pattern.get('dii_net',0))}
 Streak: {fii_pattern.get('streak_weeks',0)} weeks"""
 
         # Format regime shift

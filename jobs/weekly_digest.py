@@ -78,6 +78,26 @@ def compute_fii_weekly_pattern() -> dict:
         return {"ok": False}
 
 
+def _get_arbiter_regime() -> dict:
+    """Read arbitrated regime from MarketState — never recompute."""
+    try:
+        from datetime import datetime
+        from src.db import get_latest_market_state
+        today = datetime.now().strftime("%Y-%m-%d")
+        prev = get_latest_market_state(before_date=today)
+        if prev and prev.get("final_regime"):
+            return {
+                "regime": prev["final_regime"],
+                "confidence": prev.get("final_regime_confidence", "MEDIUM"),
+                "dominant_driver": prev.get("final_dominant_driver", ""),
+                "posture_text": "",
+                "watch_levels": "",
+            }
+    except Exception:
+        pass
+    return {"regime": "NEUTRAL", "confidence": "LOW", "dominant_driver": "", "posture_text": "", "watch_levels": ""}
+
+
 def compute_regime_shift() -> dict:
     """Compare Monday vs Friday regime from stored daily snapshots."""
     try:
@@ -236,7 +256,7 @@ def main():
         article["sentiment"] = sent
         if sent:
             sentiments.append(sent)
-    consensus = assess_sentiment_consensus(sentiments) if sentiments else "neutral"
+    consensus = assess_sentiment_consensus(sentiments) if sentiments else None
 
     # ── 3. Compute all signals from stored data ────────────────────
     print("📊 Computing signals from stored data...")
@@ -359,6 +379,17 @@ def main():
         institutional=inst_formatted,
         ai_summary=ai_summary,
     )
+    # Prepend BLUF
+    try:
+        from src.telegram_sender import build_bluf
+        regime_verdict = _get_arbiter_regime()
+        bluf = build_bluf(
+            regime_verdict=regime_verdict,
+        )
+        if bluf:
+            digest = bluf + "\n\n" + digest
+    except Exception:
+        pass
     send_text(digest)
 
     # ── 7. Save snapshot for future weeks ──────────────────────────

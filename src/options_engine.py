@@ -38,9 +38,21 @@ def fetch_nse_options_chain(symbol: str = "NIFTY") -> List[Dict]:
     Returns list of strike-wise OI data including IV.
 
     Uses shared NSE session from nse_session.py for cookie management.
+    Circuit breaker: trips after 3 failures, skips for 5 minutes.
     """
     from datetime import datetime, timedelta
     from src.nse_session import nse_get
+
+    # Circuit breaker check
+    try:
+        from src.circuit_breaker import CircuitBreaker
+        _options_breaker = CircuitBreaker(
+            name="nse_options", failure_threshold=3, recovery_timeout=300,
+        )
+        if _options_breaker.state == "OPEN":
+            return []
+    except Exception:
+        _options_breaker = None
 
     # Use correct endpoint based on symbol type
     if symbol.upper() in INDEX_SYMBOLS:
@@ -118,10 +130,14 @@ def fetch_nse_options_chain(symbol: str = "NIFTY") -> List[Dict]:
             results[0]["_days_to_expiry"] = days_to_exp
 
         results.sort(key=lambda x: x["strike"])
+        if _options_breaker:
+            _options_breaker.record_success()
         return results
 
     except Exception as e:
         print(f"⚠️  Options fetch error: {e}")
+        if _options_breaker:
+            _options_breaker.record_failure()
         return []
 
 

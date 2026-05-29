@@ -4,7 +4,7 @@ Powers: percentile ranking, divergence detection, scenario matching,
 correlation engine, seasonal patterns, relative value, mean reversion.
 
 All computation in Python — zero extra API calls.
-Reads from daily_market_snapshot, macro_anchor_snapshots, fii_dii_flows tables.
+Reads from market_state JSONB (daily_snapshot), macro_anchor_snapshots, fii_dii_flows tables.
 """
 import statistics
 import math
@@ -90,8 +90,8 @@ def rolling_z_score(current: float, history: List[float]) -> float:
 def compute_all_percentiles(snapshot: dict, snapshots: list) -> Dict:
     """
     Compute percentile rankings for ALL metrics in a snapshot.
-    snapshot: today's daily_market_snapshot dict
-    snapshots: list of historical daily_market_snapshot dicts (252+ days)
+    snapshot: today's daily snapshot dict
+    snapshots: list of historical daily snapshot dicts (252+ days)
     Returns dict of {metric: percentile_data} for every metric.
     """
     if not snapshots or len(snapshots) < 10:
@@ -179,7 +179,7 @@ def format_percentile_block(percentiles: Dict) -> str:
 def detect_divergences(snapshot: dict, prev_snapshots: list = None) -> List[Dict]:
     """
     Detect cross-asset divergences that signal hidden risk/opportunity.
-    All inputs from daily_market_snapshot — zero API calls.
+    All inputs from stored daily snapshots — zero API calls.
 
     Divergences detected:
     1. Gold + Dollar both rising (abnormal — systemic stress)
@@ -636,7 +636,7 @@ def _pearson_correlation(x: List[float], y: List[float]) -> Tuple[float, float]:
 def compute_rolling_correlations(snapshots: list, window: int = 90) -> Dict:
     """
     Compute rolling correlations between key signal pairs.
-    Uses stored daily_market_snapshot data.
+    Uses stored daily snapshot data.
     window: number of days for correlation computation.
     """
     if not snapshots or len(snapshots) < window:

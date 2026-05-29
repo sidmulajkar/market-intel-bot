@@ -3,7 +3,7 @@ Cross-Asset Beta Tracker — Rolling 90-day beta between Nifty and macro assets.
 Beta = how much Nifty moves per 1% move in the other asset.
 High beta spike = correlation regime change.
 
-All computation from stored daily_market_snapshot — zero API calls.
+All computation from stored daily snapshots in market_state JSONB — zero API calls.
 """
 import statistics
 from typing import Dict, List, Optional
@@ -41,7 +41,7 @@ def compute_rolling_beta(nifty_returns: List[float], asset_returns: List[float],
 def compute_all_betas(snapshots: List[Dict], window: int = 90) -> Dict:
     """
     Compute rolling betas for Nifty vs all macro assets.
-    Uses daily_market_snapshot data.
+    Uses stored daily snapshot data.
     """
     if not snapshots or len(snapshots) < window:
         return {"ok": False, "message": f"Need {window}+ snapshots, have {len(snapshots)}"}

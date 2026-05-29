@@ -846,10 +846,11 @@ def enrich_formatter_block(block_type: str, raw_lines: List[str],
 # ═══════════════════════════════════════════════════════════════════════
 
 def generate_scenarios(bull_bear_score: float, cross_signals: List[Dict],
-                        macro_context: Dict) -> str:
+                        macro_context: Dict, nifty_price: float = None) -> str:
     """
     Generate probability-weighted scenarios based on current signals.
     Returns formatted string for AI prompt.
+    Always includes Bull/Base/Bear with current price anchored in Base range.
     """
     # Base probabilities from bull/bear score
     if bull_bear_score >= 70:
@@ -886,7 +887,10 @@ def generate_scenarios(bull_bear_score: float, cross_signals: List[Dict],
 
     bull_desc = "Continued inflows, VIX compression, range expansion"
     bear_desc = "Accelerated outflows, VIX spike, support break"
-    base_desc = "Range-bound, mixed flows, awaiting catalyst"
+    if nifty_price:
+        base_desc = f"Range-bound near {nifty_price:,.0f} (±2%), mixed flows, awaiting catalyst"
+    else:
+        base_desc = "Range-bound, mixed flows, awaiting catalyst"
 
     # Adjust descriptions based on context
     if vix == "HIGH":

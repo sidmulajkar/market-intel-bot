@@ -1,15 +1,15 @@
 """
 Sector + Watchlist Heatmap Generator
-Fixed: yfinance batch column access using _safe_series helper
+Symbols resolved via symbol_map. Emoji mapping is local.
 """
 import time
 import pandas as pd
 import yfinance as yf
 from PIL import Image, ImageDraw, ImageFont
-from pilmoji import Pilmoji
 from io import BytesIO
 from datetime import datetime
 import pytz
+from src.symbol_map import SECTOR_INDICES
 
 try:
     from pilmoji import Pilmoji
@@ -17,18 +17,26 @@ try:
 except ImportError:
     PILMOJI_OK = False
 
+# Emoji labels for sectors — symbols come from symbol_map
+_SECTOR_EMOJIS = {
+    "Nifty IT":             "💻",
+    "Nifty Bank":           "🏦",
+    "Nifty Pharma":         "💊",
+    "Nifty Auto":           "🚗",
+    "Nifty FMCG":           "🛒",
+    "Nifty Metal":          "⚙️",
+    "Nifty Energy":         "⚡",
+    "Nifty Realty":         "🏠",
+    "Nifty Financial Services": "💰",
+    "Nifty PSU Bank":       "🏛️",
+    "Nifty Media":          "📺",
+}
+
+# Build NIFTY_SECTORS from symbol_map + local emoji
 NIFTY_SECTORS = {
-    "IT":             {"symbol": "^CNXIT",    "emoji": "💻"},
-    "Bank":           {"symbol": "^NSEBANK",  "emoji": "🏦"},
-    "Pharma":         {"symbol": "^CNXPHARMA","emoji": "💊"},
-    "Auto":           {"symbol": "^CNXAUTO",  "emoji": "🚗"},
-    "FMCG":           {"symbol": "^CNXFMCG",  "emoji": "🛒"},
-    "Metal":          {"symbol": "^CNXMETAL", "emoji": "⚙️"},
-    "Energy":         {"symbol": "^CNXENERGY","emoji": "⚡"},
-    "Realty":         {"symbol": "^CNXREALTY","emoji": "🏠"},
-    "Financial Svcs": {"symbol": "^CNXFIN",   "emoji": "💰"},
-    "PSU Bank":       {"symbol": "^CNXPSUBANK","emoji": "🏛️"},
-    "Media":          {"symbol": "^CNXMEDIA", "emoji": "📺"},
+    short: {"symbol": sym, "emoji": _SECTOR_EMOJIS.get(name, "")}
+    for name, sym in SECTOR_INDICES.items()
+    for short in [name.replace("Nifty ", "")]
 }
 
 BG        = (0,   0,   0)
