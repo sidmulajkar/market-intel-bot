@@ -61,6 +61,7 @@ VALID_RANGES = {
     "^N225":      (5000, 100000),# Nikkei 225
     "LQD":        (50, 200),     # iShares IG Corporate Bond ETF
     "SOXX":       (50, 1000),    # Semiconductor ETF
+    "KWEB":       (5, 200),      # China Internet ETF (KWEB)
 }
 
 # ── Max daily change thresholds — the REAL guard against corrupted data
@@ -87,6 +88,7 @@ _MAX_DAILY_CHANGE_PCT = {
     "^N225":      5.0,
     "LQD":        3.0,
     "SOXX":       5.0,
+    "KWEB":       8.0,
 }
 
 
@@ -399,6 +401,7 @@ def fetch_macro_anchors() -> list:
         {"name": "Nikkei 225",      "symbol": "^N225"},       # Japan equity index
         {"name": "IG Corp Bonds",   "symbol": "LQD"},         # Investment-grade credit stress
         {"name": "Semiconductors",  "symbol": "SOXX"},        # Global growth cycle canary
+        {"name": "China Internet",  "symbol": "KWEB"},        # Regulatory arbitrage proxy
     ]
 
     symbols = [a["symbol"] for a in anchors]

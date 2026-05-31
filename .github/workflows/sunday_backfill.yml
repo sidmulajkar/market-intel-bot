@@ -29,24 +29,13 @@ jobs:
           key: ${{ runner.os }}-py${{ steps.python.outputs.python-version }}-req-${{ hashFiles('requirements.txt') }}
       - run: pip install -r requirements.txt --quiet --disable-pip-version-check
         if: steps.cache-venv.outputs.cache-hit != 'true'
-      - name: 📥 Fetch latest data from yfinance + Supabase
+      - name: 📥 Run Sunday consolidation (Supabase → CSV → git push)
         timeout-minutes: 8
         working-directory: ${{ github.workspace }}
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: python scripts/generate_csvs.py
-      - name: 📤 Commit updated CSVs
-        run: |
-          git config user.name "Market Intel Bot"
-          git config user.email "bot@market-intel.local"
-          git add data/anchor_history.csv data/nifty_history.csv data/fii_dii_history.csv
-          if ! git diff --cached --quiet; then
-            git commit -m "📥 Weekly CSV backfill ($(date +%Y-%m-%d)) [skip ci]"
-            git push
-          else
-            echo "No CSV changes to commit"
-          fi
+        run: python -m src.sunday_backfill
       - name: ° Cleanup — remove stale CSV temp files
         if: always()
         run: rm -f /tmp/nse_options_chain_cache.json 2>/dev/null; echo "Cleanup done"

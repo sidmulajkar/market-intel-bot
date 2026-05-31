@@ -35,7 +35,7 @@ AI-powered Indian market intelligence bot — 14 cron jobs, daily Telegram analy
 
 ## Key Modules (by layer)
 
-**Data:** `data_fetcher` (yfinance batch download for 16 macro anchors, parallel ThreadPoolExecutor fallback), `nse_session` (5-min TTL, circuit-broken), `db` (Supabase CRUD+purge, non-blocking field warnings), `macro_fetcher`, `cftc_fetcher`
+**Data:** `data_fetcher` (yfinance batch download for 16 macro anchors, parallel ThreadPoolExecutor fallback), `nse_session` (5-min TTL, circuit-broken), `db` (Supabase CRUD+purge, non-blocking field warnings), `macro_fetcher`, `cftc_fetcher`, `csv_data` (CSV bootstrap + quality gate + fallback to Supabase/yfinance)
 
 **Context:** `context_engine` (Bull/Bear 8-signal, global risk, phase classifier), `signal_arbitrator` (gap analysis, master signal), `mechanism_map` (24 macro→India mappings), `consequence_engine` (India impact multipliers, regime impact vs 252-day baseline, 30% variance cap, WTI/Brent coherence check)
 
@@ -227,49 +227,42 @@ Median 30D Fwd: -3.4% | Median Max DD: -6.8%
 
 ---
 
-## Supabase Storage Budget (2 GB limit)
+**Supabase Storage Budget (2 GB limit)**
 
-All new data must have a corresponding purge entry in `db.py:purge_old_data()`. Current status:
+All new data must have a corresponding entry in `src/purge_manager.py:RETENTION_POLICY`. Single source of truth — imported by `sunday_backfill.py` and `db.py`.
 
-**Existing purge coverage** (in `db.py:763`):
-| Table | Purge | Retention |
-|-------|-------|-----------|
-| `sent_alerts` | ✅ | 30 days |
-| `market_snapshots` | ✅ | 90 days |
-| `analysis_cache` | ✅ | TTL (90d default) |
-| `fii_dii_flows` | ✅ | 61 trading days |
-| `mf_flows` | ✅ | 124 days |
-| `market_breadth_history` | ✅ | 90 days |
-| `valuation_history` | ✅ | 1095 days (3y) |
-| `daily_predictions` | ✅ | 90 days |
-| `prediction_outcomes` | ✅ | 90 days |
-| `macro_anchor_snapshots` | ✅ | 90 days |
-| `fii_institution_tracker` | ✅ | 180 days |
-| `shareholding_snapshots` | ✅ | 90 days |
-| `options_snapshots` | ✅ | 7 days |
-| `market_state` | ✅ | 1095 days (3y) |
-| `correlation_matrix` | ✅ | 365 days (1y) |
-| `signal_accuracy_log` | ✅ | 365 days (1y) |
-| `divergence_log` | ✅ | 90 days |
+**Three categories:**
+- **HISTORICAL** — archived to CSV Sunday, then purged via two-phase commit (archived=true AND age > retention)
+- **OPERATIONAL** — time-based purge only, no CSV archive
+- **REFERENCE** — never purged (static/config data)
 
-**Missing purge** (to be added alongside implementation):
-| Table | Rows | Span | Suggested Retention | Logic |
-|-------|------|------|---------------------|-------|
-| `stress_history` | 0 | — | 180 days (6mo) | Stress patterns need cross-regime verification |
-| `corporate_actions` | 0 | — | 90 days | Actions expire after ex-date; 90d enough to verify |
-| `clone_history` | 0 | — | 180 days (6mo) | Clone accuracy backtesting needs 6mo+ window |
-| `forecast_log` | 0 | — | 270 days (9mo) | Brier calibration needs maximum cross-regime data |
-| `analytics_ledger` | 0 | — | 270 days (9mo) | Regime shifts are infrequent; need 9mo+ |
-| `cftc_positioning_history` | 0 | — | 270 days (9mo) | Weekly data; 9mo = ~39 rows minimum for signals |
-| `factor_scores_history` | 0 | — | 180 days (6mo) | Factor rotation patterns need multi-regime window |
-| `sector_rs_history` | 0 | — | 180 days (6mo) | Sector rotation analysis needs 6mo |
-| `earnings_surprises` | 0 | — | 730 days (2y) | Quarterly events; 2yr captures 8 quarters across Nifty 50 |
-| `market_internals_history` | 0 | — | 180 days (6mo) | Internals pattern analysis needs 6mo |
-| `daily_market_snapshot` | 262 rows (old) | 2025-05 → 2026-05 | DROP (replaced by market_state JSONB) |
+**Retention summary:**
 
-**Current usage:** ~100MB+ across all tables (well under 2GB). At current growth rates (~5MB/month), we have ~3+ years before hitting the limit even without new features. But purge must be implemented proactively for every table we create.
+| Category | Tables | Purge trigger |
+|----------|--------|---------------|
+| Historical | macro_anchor_snapshots, fii_dii_flows, market_breadth_history, stress_history, valuation_history | archived=true + 365d |
+| Operational | market_state(90d), analysis_cache(7d), sent_alerts(30d), forecast_log(90d), clone_history(180d), signal_accuracy_log(365d), prediction_outcomes(90d), analytics_ledger(90d), cftc_positioning_history(270d), factor_scores_history(180d), sector_rs_history(180d), market_internals_history(180d), corporate_actions(90d), earnings_surprises(730d), options_snapshots(7d) | age-based |
+| Reference | watchlist, mf_watchlist, bot_state | never |
 
----
+**Safety guarantees:**
+- **Two-phase archive**: Row marked `archived=true` before deletion. Purge only deletes rows that are BOTH archived AND older than retention.
+- **Supabase-as-buffer**: Even after CSV write, data stays in Supabase 365 days as live backup.
+- **Git-history-as-backup**: Every Sunday commit is a snapshot. Revert to last week if CSV is corrupted.
+- **Conditional purge**: `sunday_purge.yml` only runs if `sunday_backfill.yml` succeeded (workflow_run conclusion check).
+
+**Usage:**
+
+```python
+from src.purge_manager import purge_expired_tables, get_retention_days, is_historical_table
+
+# Called by sunday_backfill.py (after CSV push succeeds) and db.py (operational purge)
+result = purge_expired_tables(supabase_client, dry_run=True)   # preview
+result = purge_expired_tables(supabase_client, dry_run=False)  # execute
+
+# Helpers
+days = get_retention_days("clone_history")          # → 180
+is_hist = is_historical_table("stress_history")    # → True
+```
 
 ## Execution Plan (Analyst Review — Institutional Terminal 10/10)
 
@@ -457,38 +450,76 @@ Also add `VALID_RANGES` / `_MAX_DAILY_CHANGE_PCT` entries for the 2 new tickers.
 
 **Shift:** CSV is the database for the past. Supabase is the database for the present. Heavy compute moves to Sunday. Weekdays become lightweight reads.
 
+### Data Flow (One Direction Only)
+
+```
+LIVE DATA (yfinance, NSE API)
+         │
+         ▼
+  ┌────────────────┐
+  │  Supabase      │  ← WRITE path for today's data
+  │  (operational) │    Every job writes current day to Supabase
+  └───────┬────────┘
+          │ Sunday 02:00 UTC — consolidation reads last 7 days
+          ▼
+  ┌────────────────┐
+  │  CSV files     │  ← WRITE path for history
+  │  (repo/data/)  │    sunday_backfill.py: read Supabase → append to CSV
+  └───────┬────────┘
+          │ Git push [skip ci]
+          ▼
+  ┌────────────────┐
+  │  Git history   │  ← Immutable snapshot per Sunday
+  └────────────────┘
+
+  WEEKDAY READ PATH (data_fusion.py):
+    CSV (5Y) → Supabase gap (last 7 days not yet archived) → live today
+```
+
 ### Data Files (repo/data/)
 
 | File | Rows | Size | Source | Updated |
 |------|------|------|--------|---------|
-| `anchor_history.csv` | 1,304 | 430 KB | yfinance (5Y) + Supabase overlay | Sunday (delta) |
-| `nifty_history.csv` | 1,235 | 118 KB | yfinance (5Y) | Sunday (delta) |
-| `fii_dii_history.csv` | 58 | 1.6 KB | Supabase only (limited NSE history) | Sunday (delta) |
+| `anchor_history.csv` | ~1,304 | 474 KB | yfinance (5Y) + Supabase overlay | Sunday (delta) |
+| `nifty_history.csv` | ~1,235 | 118 KB | yfinance (5Y) | Sunday (delta) |
+| `fii_dii_history.csv` | ~58 | 1.6 KB | Supabase only (limited NSE history) | Sunday (delta) |
+| `stress_history.csv` | — | — | Supabase stress_history | Sunday (delta) |
 | `econ_calendar_india_2026_27.csv` | 144 | 5.6 KB | Static (manual update) | As needed |
 | `scenario_clones_cache.csv` | — | — | Pre-computed distances | Sunday simulation (Phase 2) |
 | `backtest_results.csv` | — | — | Walk-forward results | Sunday calibration (Phase 2) |
 
-### Architecture Flow
+### Core Modules
 
-```
-CSV (repo/data/) ──┐
-                    ├──→ data_fusion.py ──→ Clone Engine (O(1))
-Supabase (today) ──┘                      Stress Index (instant)
-yfinance (5d batch) ──────────────────→    Pillar Classifier (Phase 2)
-                                           Transmission (Phase 2)
-```
+**`src/sunday_backfill.py`** — The ONLY code that writes to CSV.
+- Reads last 7 days from Supabase for each dataset
+- Appends to CSV with deduplication (keep=last)
+- Validates: no all-NaN cols, no zero prices, no >3% daily gaps, monotonic dates
+- Marks Supabase rows `archived=true` after CSV write (two-phase commit)
+- Git commits + pushes ONLY if ALL datasets succeed
+- Runs conditional purge only if git push succeeded
 
-### Phase 1: CSV Foundation (in progress)
+**`src/purge_manager.py`** — Centralized `RETENTION_POLICY` for all Supabase tables.
+- Single source of truth imported by `sunday_backfill.py` and `db.py`
+- Three categories: HISTORICAL (archived+purge_archived), OPERATIONAL (age-only), REFERENCE (never)
+- `purge_expired_tables()` respects two-phase: only deletes rows that are BOTH `archived=true` AND older than retention
+- `get_retention_days()`, `is_historical_table()`, `archive_tables()` helpers
 
-**Goal:** Move historical data to CSV, eliminate yfinance cold-start from weekday jobs.
+**`src/data_fusion.py`** — Single data access layer for all compute modules.
+- `get_series(dataset, live_df)` → CSV + Supabase gap + live (merge, dedup, sort)
+- `get_baselines(dataset, lookback=252)` → 252D mean for consequence engine
+- `get_current_percentiles(dataset)` → expanding percentiles for pillar classifier
+- `csv_freshness(dataset)` → check if CSV is within 14 days (for optional bypass)
+- Bootstrap: if CSV < 252 rows, pulls older Supabase data to supplement
+
+### Phase 1: CSV Foundation ✅
 
 | Step | File | Status |
 |------|------|--------|
 | 1.1 | `scripts/generate_csvs.py` — one-time backfill from Supabase + yfinance | ✅ Done |
 | 1.2 | `src/csv_data.py` — CSV reader + fusion layer | ✅ Done |
-| 1.3 | Rewire clone_engine, drawdown_anatomy, market_intel to csv_data | ✅ Done |
-| 1.4 | `.github/workflows/sunday_backfill.yml` — 02:00 UTC Sunday, perms: contents: write | ✅ Done |
-| 1.5 | Remaining job files use live-only yfinance (period="5d") | ✅ Verified — no 1y+ calls remain |
+| 1.3 | Rewire clone_engine, stress_index, drawdown_anatomy to csv_data | ✅ Done |
+| 1.4 | `.github/workflows/sunday_backfill.yml` — 02:00 UTC Sunday | ✅ Done |
+| 1.5 | `.github/workflows/sunday_purge.yml` — conditional on backfill success | ✅ Done |
 | 1.6 | Full-day dry-run: 8 jobs, 7 messages, 0 errors | ✅ Done |
 
 **Gate to Phase 2:** Phase 1 must pass a full weekday dry-run with 0 errors.
@@ -528,33 +559,18 @@ yfinance (5d batch) ──────────────────→   
 | midday_scan | 5-8s | 2-3s | ~60% |
 | market_close | 8-12s | 3-5s | ~60% |
 
-### CSV File Details
-
-| File | Columns | Rows | Size | Coverage |
-|------|---------|------|------|----------|
-| `anchor_history.csv` | 23 (21 anchors + Cu/Au ratio + date) | 1,304 | 474 KB | 2021-05-31 to 2026-05-31 |
-| `nifty_history.csv` | 7 (OHLCV + Div + Split) | 1,235 | 118 KB | 2021-05-31 to 2026-05-29 |
-| `fii_dii_history.csv` | 3 (date, FII_Net_Cr, DII_Net_Cr) | 58 | 1.6 KB | 2026-03-02 to 2026-05-29 |
-
 ### SPY + EEM in Anchor CSV
 SPY (S&P 500 ETF) and EEM (MSCI Emerging Markets ETF) added to anchor CSV so clone engine forward-return computation uses zero yfinance calls. Previously these required 2× `yf.Ticker().history(period="5y")` per run.
 
 ### Bootstrap Safety Net
-`csv_data.py:get_nifty_close_series()` reads from CSV and falls back to yfinance if CSV is empty/corrupt. All callers use this function instead of raw `yf.Ticker().history()`. Bootstrap auto-generates ALL CSVs from yfinance on first `load_history()` if any are missing — runs once per session, cached thereafter.
+`src/csv_data.py:get_nifty_close_series()` reads from CSV and falls back to yfinance if CSV is empty/corrupt. All callers use this function instead of raw `yf.Ticker().history()`. Bootstrap auto-generates ALL CSVs from yfinance on first `load_history()` if any are missing — runs once per session, cached thereafter.
 
-### Data Quality Gate (`_is_csv_usable()`)
-`csv_data.py:_load_csv()` rejects CSVs that fail quality checks and treats them as empty (triggering fallback):
+### Data Quality Gate
+`csv_data.py:_load_csv()` rejects CSVs that fail quality checks and treats them as empty (triggering fallback to Supabase/yfinance):
 - **Minimum rows**: 100 for anchors/nifty, 5 for fii_dii
-- **Column integrity**: core columns (USDINR, Brent, DXY, IndiaVIX, Gold for anchors; Close for nifty) must exceed 30% non-NaN ratio
-- **Sparse data fallback**: `get_anchor_history()` falls back to Supabase if a specific symbol has <25% coverage in the requested window
-- **Freshness**: `csv_freshness()` checks if latest data point is within 14 days; modules can call this to decide whether to bypass CSV
-
-### Workflow Fallback Architecture
-- **3 workflows need CSV data**: `market_intel_morning`, `market_intel_evening`, `market_close`
-- **All 16 workflows** have `timeout-minutes: 10` at job + `timeout-minutes: 8` on run steps
-- **No workflow** triggers on `push` — git push from `sunday_backfill.yml` won't loop
-- **sunday_backfill.yml** uses `[skip ci]` in commit message and `permissions: contents: write` to auto-commit updated CSVs
-- First-run cold-start avoided by committing CSVs to repo; bootstrap only fires if CSVs are deleted
+- **Column integrity**: core columns must exceed 30% non-NaN ratio
+- **Sparse data fallback**: falls back to Supabase if a symbol has <25% coverage
+- **Freshness**: `csv_freshness()` checks if latest data point is within 14 days
 
 ## Test Commands
 - `.venv/bin/python3 test_all_outputs.py` — 7 sections, 26 patterns, emoji consistency check

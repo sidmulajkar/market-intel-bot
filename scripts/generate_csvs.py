@@ -17,7 +17,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 ANCHORS = [
     "USDINR=X", "BZ=F", "GC=F", "^INDIAVIX", "DX-Y.NYB", "^TNX",
     "^VIX", "HYG", "CL=F", "JPY=X", "EURUSD=X", "SI=F", "HG=F",
-    "2YY=F", "ES=F", "NQ=F", "^N225", "LQD", "SOXX",
+    "2YY=F", "ES=F", "NQ=F", "^N225", "LQD", "SOXX", "KWEB",
     "SPY", "EEM",
 ]
 
@@ -27,7 +27,7 @@ ANCHOR_RENAME = {
     "^VIX": "CBOE_VIX", "HYG": "HYG", "CL=F": "WTI",
     "JPY=X": "USDJPY", "EURUSD=X": "EURUSD", "SI=F": "Silver",
     "HG=F": "Copper", "2YY=F": "US2Y", "ES=F": "SP500",
-    "NQ=F": "NASDAQ", "^N225": "Nikkei", "LQD": "LQD", "SOXX": "SOXX",
+    "NQ=F": "NASDAQ", "^N225": "Nikkei", "LQD": "LQD", "SOXX": "SOXX", "KWEB": "KWEB",
     "SPY": "SPY", "EEM": "EEM",
 }
 

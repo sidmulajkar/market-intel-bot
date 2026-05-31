@@ -29,7 +29,7 @@ def _fmt_rupee_local(value: float) -> str:
 
 
 # ── Deterministic override thresholds ──────────────────────────────
-USDINR_DEFENSIVE = 95.0
+USDINR_DEFENSIVE = 94.5  # was 95.0 — lowered to catch 94.5-95 range
 BRENT_DEFENSIVE = 90.0
 VIX_EXTREME = 25.0
 FII_STREAK_DEFENSIVE = 5

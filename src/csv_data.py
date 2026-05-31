@@ -21,7 +21,7 @@ CSV_PATHS = {
 MACRO_12D = [
     "DXY", "US10Y", "HYG", "Gold", "Copper", "USDJPY",
     "IndiaVIX", "USDINR", "Brent", "CBOE_VIX", "SP500", "NASDAQ",
-    "LQD", "SOXX", "Nikkei", "WTI", "Silver", "US2Y", "EURUSD",
+    "LQD", "SOXX", "KWEB", "Nikkei", "WTI", "Silver", "US2Y", "EURUSD",
 ]
 
 # Core subset needed for clone engine distance computation
@@ -181,7 +181,7 @@ def _map_symbol_to_col(symbol: str) -> Optional[str]:
         "^VIX": "CBOE_VIX", "HYG": "HYG", "CL=F": "WTI",
         "JPY=X": "USDJPY", "EURUSD=X": "EURUSD", "SI=F": "Silver",
         "HG=F": "Copper", "2YY=F": "US2Y", "ES=F": "SP500",
-        "NQ=F": "NASDAQ", "^N225": "Nikkei", "LQD": "LQD", "SOXX": "SOXX",
+        "NQ=F": "NASDAQ", "^N225": "Nikkei", "LQD": "LQD", "SOXX": "SOXX", "KWEB": "KWEB",
         "SPY": "SPY", "EEM": "EEM",
         "^NSEI": "Close",
     }

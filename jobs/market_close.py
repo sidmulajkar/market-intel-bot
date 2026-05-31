@@ -247,11 +247,22 @@ def main():
         traceback.print_exc()
 
     # ── Big move alerts (computed before AI call — needed for fallback) ──
+    # Suppress US equity movers before 19:00 IST (US cash market opens 9:30 ET = 19:00 IST)
+    # On weekends, suppress US movers entirely (markets closed)
+    from datetime import datetime, timezone, timedelta
+    now_utc = datetime.now(timezone.utc)
+    ist_hour_big = (now_utc + timedelta(hours=5, minutes=30)).hour
+    is_weekend_big = now_utc.weekday() >= 5
+    us_filtered = is_weekend_big or ist_hour_big < 19
+
+    us_gainers = [] if us_filtered else movers.get("us", {}).get("gainers", [])
+    us_losers  = [] if us_filtered else movers.get("us", {}).get("losers", [])
+
     all_movers = (
         movers.get("india", {}).get("gainers", []) +
         movers.get("india", {}).get("losers", []) +
-        movers.get("us", {}).get("gainers", []) +
-        movers.get("us", {}).get("losers", [])
+        us_gainers +
+        us_losers
     )
     big_moves = []
     for m in all_movers:

@@ -412,7 +412,7 @@ def _no_edge_therefore(usdinr: float, brent: float, vix: float) -> str:
     if not levels:
         levels = ["VIX spikes >20", "Brent breaks $96", "FII streak >5 days"]
 
-    return f"No edge. Wait until one of these breaks: {'; '.join(levels[:3])}."
+    return f"No directional consensus. Triggers: {'; '.join(levels[:3])}."
 
 
 def _no_edge_triggers(usdinr: float, brent: float, vix: float, fii_net: float) -> list[str]:

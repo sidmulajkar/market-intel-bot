@@ -1,0 +1,43 @@
+name: 🗑️ Sunday Purge
+
+on:
+  workflow_run:
+    workflows: ["📥 Sunday CSV Backfill"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only run if the backfill workflow succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@v4
+        id: cache-venv
+        with:
+          path: ${{ env.pythonLocation }}
+          key: ${{ runner.os }}-py${{ steps.python.outputs.python-version }}-req-${{ hashFiles('requirements.txt') }}
+      - run: pip install -r requirements.txt --quiet --disable-pip-version-check
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+      - name: 🔍 Dry run — show what would be deleted
+        timeout-minutes: 8
+        working-directory: ${{ github.workspace }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python -c "from src.purge_manager import purge_expired_tables; from src.db import get_client; db = get_client(); result = purge_expired_tables(db, dry_run=True); print('Dry run results:'); [print(f'  {k}: {v} rows') for k,v in result.items() if not str(v).startswith('ERROR')]"
+      - name: 💣 Execute purge (archived=true + age check)
+        timeout-minutes: 8
+        working-directory: ${{ github.workspace }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python -c "from src.purge_manager import purge_expired_tables; from src.db import get_client; db = get_client(); result = purge_expired_tables(db, dry_run=False); print('Purge results:'); [print(f'  {k}: {v} rows deleted') for k,v in result.items() if not str(v).startswith('ERROR') and v != 0]"

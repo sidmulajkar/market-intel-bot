@@ -20,11 +20,11 @@ Z_TO_SCORE_MULTIPLIER = 12
 Z_TO_SCORE_OFFSET = 50
 
 SEVERITY_LABELS = [
-    (80, "🚨 EXTREME"),
-    (65, "⚠️ ELEVATED"),
-    (50, "⚪ MODERATE"),
-    (35, "🟢 LOW"),
-    (0,  "✅ QUIET"),
+    (80, "EXTREME"),
+    (65, "ELEVATED"),
+    (50, "MODERATE"),
+    (35, "LOW"),
+    (0,  "QUIET"),
 ]
 
 
@@ -92,8 +92,8 @@ def compute_stress_index(days: int = 252) -> Dict:
 def _compute_macro_z(symbol: str, days: int, invert: bool = False) -> Optional[float]:
     """Compute Z-score for a macro anchor. invert=True flips sign (e.g. A/D)."""
     try:
-        from src.db import get_macro_history
-        rows = get_macro_history(symbol, days=days)
+        from src.csv_data import get_anchor_history
+        rows = get_anchor_history(symbol, days=days)
         prices = [r["price"] for r in rows if r.get("price") is not None]
         if len(prices) < 20:
             return None
@@ -110,9 +110,11 @@ def _compute_macro_z(symbol: str, days: int, invert: bool = False) -> Optional[f
 def _compute_fii_z(days: int) -> Optional[float]:
     """Compute Z-score for FII net flow (5D cumulative). Negative FII = stress."""
     try:
-        from src.db import get_fii_dii_flows
-        rows = get_fii_dii_flows(days=days)
-        vals = [r.get("fiinet_cr", 0) or 0 for r in rows]
+        from src.csv_data import get_fii_dii_history
+        df = get_fii_dii_history(days=days)
+        if "FII_Net_Cr" not in df.columns:
+            return None
+        vals = df["FII_Net_Cr"].dropna().tolist()
         if len(vals) < 20:
             return None
         mu = mean(vals)
@@ -170,7 +172,7 @@ def _score_to_severity(score: float) -> str:
     for threshold, label in SEVERITY_LABELS:
         if score >= threshold:
             return label
-    return "✅ QUIET"
+    return "QUIET"
 
 
 def format_stress_banner(stress: Dict) -> str:
