@@ -23,9 +23,9 @@ from typing import Optional
 
 
 def _fmt_rupee_local(value: float) -> str:
-    """Format rupee value with sign before symbol: -₹655Cr instead of ₹-655Cr."""
+    """Format rupee value with sign after ₹ symbol: ₹-655Cr (Bloomberg-standard)."""
     sign = "-" if value < 0 else "+"
-    return f"{sign}₹{abs(value):,.0f}Cr"
+    return f"₹{sign}{abs(value):,.0f}Cr"
 
 
 @dataclass
@@ -315,14 +315,14 @@ def compute_posture(
 
 
 def _defensive_therefore(usdinr: float, brent: float, vix: float, fii_net: float) -> str:
-    """DEFENSIVE = Cut beta. No new longs. Hedge existing. Reduce, do not add."""
-    parts = ["Cut beta, hedge, raise cash"]
+    """DEFENSIVE = Neutral positioning, reduce beta exposure."""
+    parts = ["Neutral positioning"]
     if brent >= 90:
-        parts.append("reduce OMCs and oil importers")
+        parts.append("oil-linked sectors exposed")
     if vix >= 20:
-        parts.append("hedge with Nifty PE; reduce position size")
+        parts.append("volatility hedging active")
     if fii_net < -500:
-        parts.append("avoid chasing momentum — FII liquidity drain")
+        parts.append("FII liquidity drain — momentum vulnerable")
     return "; ".join(parts[:3]) + "."
 
 
@@ -339,19 +339,19 @@ def _defensive_triggers(usdinr: float, brent: float, vix: float, current_regime:
         elif current_regime == "DEFENSIVE":
             triggers.append(f"Brent >$96 → escalation; Brent <$85 → de-escalation")
         else:
-            triggers.append(f"Brent $96: monitor — exceeds override threshold")
+            triggers.append(f"Brent >$96 → exceeds override threshold")
     if usdinr > 0:
         if usdinr >= 96:
             triggers.append(f"INR ₹{usdinr:.0f}+ → extreme import pain")
         elif current_regime == "DEFENSIVE":
             triggers.append(f"INR ₹97+ escalates; INR <₹94 → de-escalation (252d baseline: ₹83)")
         else:
-            triggers.append(f"INR ₹96: monitor — at override threshold")
+            triggers.append(f"INR ₹97+ → at override threshold")
     if vix > 0:
         if vix < 20:
-            triggers.append(f"VIX >20: monitor volatility spike")
+            triggers.append(f"VIX >20 → volatility spike")
         else:
-            triggers.append(f"VIX <{vix - 5:.0f}: watch for de-escalation")
+            triggers.append(f"VIX <{vix - 5:.0f} → de-escalation")
     return triggers[:3]
 
 
@@ -438,7 +438,7 @@ def format_posture_card(result: PostureResult, prefix: str = "") -> str:
     lines.append(f"📌 *{label}: {result.posture}*")
     lines.append(f"Confidence: {result.confidence}")
     lines.append(f"  Why: {result.rationale}")
-    lines.append(f"  Action: {result.therefore}")
-    lines.append(f"  Watch: {' | '.join(t for t in result.triggers[:3])}")
+    lines.append(f"  Observation: {result.therefore}")
+    lines.append(f"  Triggers: {' | '.join(t for t in result.triggers[:3])}")
 
     return "\n".join(lines)

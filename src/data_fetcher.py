@@ -55,9 +55,12 @@ VALID_RANGES = {
     "JPY=X":      (50, 500),    # USD/JPY (was ~75 in 2011, ~160 in 2024)
     "EURUSD=X":   (0.5, 2.5),   # EUR/USD (was ~0.83 in 2000, ~1.60 in 2008)
     "2YY=F":      (0.1, 20.0),  # US 2Y yield %
+    "INDIA10Y=X": (4.0, 12.0),  # India 10Y yield %
     "ES=F":       (1000, 20000), # S&P 500 E-mini futures
     "NQ=F":       (2000, 50000), # Nasdaq 100 futures
     "^N225":      (5000, 100000),# Nikkei 225
+    "LQD":        (50, 200),     # iShares IG Corporate Bond ETF
+    "SOXX":       (50, 1000),    # Semiconductor ETF
 }
 
 # ── Max daily change thresholds — the REAL guard against corrupted data
@@ -78,9 +81,12 @@ _MAX_DAILY_CHANGE_PCT = {
     "JPY=X":      3.0,
     "EURUSD=X":   3.0,
     "2YY=F":      10.0,
+    "INDIA10Y=X": 10.0,
     "ES=F":       5.0,
     "NQ=F":       5.0,
     "^N225":      5.0,
+    "LQD":        3.0,
+    "SOXX":       5.0,
 }
 
 
@@ -387,9 +393,12 @@ def fetch_macro_anchors() -> list:
         {"name": "Silver",          "symbol": "SI=F"},        # Industrial precious metal
         {"name": "Copper",          "symbol": "HG=F"},        # Dr. Copper — growth proxy
         {"name": "US 2Y Yield",     "symbol": "2YY=F"},       # Fed expectations
+        {"name": "India 10Y Yield", "symbol": "INDIA10Y=X"},  # Sovereign borrowing cost
         {"name": "S&P 500 Futures", "symbol": "ES=F"},        # US equity futures
         {"name": "Nasdaq Futures",  "symbol": "NQ=F"},        # US tech futures
         {"name": "Nikkei 225",      "symbol": "^N225"},       # Japan equity index
+        {"name": "IG Corp Bonds",   "symbol": "LQD"},         # Investment-grade credit stress
+        {"name": "Semiconductors",  "symbol": "SOXX"},        # Global growth cycle canary
     ]
 
     symbols = [a["symbol"] for a in anchors]
@@ -747,6 +756,44 @@ def fetch_market_breadth() -> Optional[Dict]:
 
     except Exception as e:
         print(f"⚠️  Market breadth: {e}")
+        return None
+
+
+def fetch_nse_volumes() -> Optional[Dict]:
+    """
+    Fetch NSE cash + F&O turnover volume from marketStatus API.
+    Returns dict with cash_volume and fno_volume (turnover in Cr).
+    """
+    url = "https://www.nseindia.com/api/marketStatus"
+    try:
+        session = requests.Session()
+        session.get("https://www.nseindia.com", headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+        }, timeout=10)
+        resp = session.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+        }, timeout=10)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        cash_volume = 0
+        fno_volume = 0
+        for market in data.get("marketState", []):
+            name = market.get("market", "")
+            to = float(market.get("turnover", 0) or 0)
+            if "Capital Market" in name and "Futures" not in name:
+                cash_volume = to
+            elif "Futures" in name or "Options" in name or "F&O" in name or "Fo" in name:
+                fno_volume += to
+        return {
+            "ok": True,
+            "cash_volume": cash_volume,
+            "fno_volume": fno_volume,
+        }
+    except Exception as e:
+        print(f"⚠️ NSE volumes: {e}")
         return None
 
 

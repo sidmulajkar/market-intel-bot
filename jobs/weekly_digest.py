@@ -220,6 +220,89 @@ def compute_institutional_signals() -> dict:
     return signals
 
 
+def compute_self_audit() -> dict:
+    """Compute bot health metrics for weekly self-audit.
+
+    Checks data completeness across key tables, stress index trend,
+    and clone engine availability.
+    """
+    audit: dict = {"ok": False, "notes": []}
+    try:
+        from datetime import datetime, timedelta
+        from src.db import get_client
+
+        client = get_client()
+        today = datetime.now().strftime("%Y-%m-%d")
+        week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+        # Count trading days with market_state data this week
+        try:
+            ms = client.table("market_state")\
+                .select("trade_date")\
+                .gte("trade_date", week_ago)\
+                .execute()
+            ms_dates = set(r["trade_date"][:10] for r in (ms.data or []))
+            audit["market_state_days"] = len(ms_dates)
+        except Exception:
+            audit["market_state_days"] = 0
+
+        # Count fii_dii_flows days
+        try:
+            flows = client.table("fii_dii_flows")\
+                .select("date")\
+                .gte("date", week_ago)\
+                .execute()
+            fii_dates = set(r["date"][:10] for r in (flows.data or []))
+            audit["fii_flow_days"] = len(fii_dates)
+        except Exception:
+            audit["fii_flow_days"] = 0
+
+        # Stress index availability
+        try:
+            stress = client.table("stress_history")\
+                .select("trade_date, score")\
+                .gte("trade_date", week_ago)\
+                .order("trade_date", desc=True)\
+                .execute()
+            stress_rows = stress.data or []
+            audit["stress_available"] = bool(stress_rows)
+            if stress_rows:
+                scores = [float(r["score"]) for r in stress_rows if r.get("score") is not None]
+                audit["stress_avg"] = round(sum(scores) / len(scores), 1) if scores else None
+                audit["stress_trend"] = "rising" if len(scores) >= 2 and scores[0] > scores[-1] * 1.05 else (
+                    "falling" if len(scores) >= 2 and scores[0] < scores[-1] * 0.95 else "stable"
+                )
+        except Exception:
+            audit["stress_available"] = False
+
+        # Clone engine availability
+        try:
+            clones = client.table("clone_history")\
+                .select("trade_date")\
+                .gte("trade_date", week_ago)\
+                .execute()
+            clone_dates = set(r["trade_date"][:10] for r in (clones.data or []))
+            audit["clone_days"] = len(clone_dates)
+        except Exception:
+            audit["clone_days"] = 0
+
+        # Build notes
+        notes = []
+        if audit["market_state_days"] < 2:
+            notes.append(f"MarketState: only {audit['market_state_days']}d this week")
+        if audit["fii_flow_days"] < 2:
+            notes.append(f"FII flows: only {audit['fii_flow_days']}d")
+        if not audit["stress_available"]:
+            notes.append("Stress index: no data")
+        if audit["clone_days"] < 1:
+            notes.append("Clone engine: not active")
+        audit["notes"] = notes
+        audit["ok"] = True
+    except Exception as e:
+        print(f"⚠️ Self-audit: {e}")
+    return audit
+
+
 def main():
     print("=" * 50)
     print("📅 WEEKLY DIGEST STARTING")
@@ -306,6 +389,16 @@ def main():
     except Exception as e:
         print(f"⚠️ Context: {e}")
 
+    # ── 5b. CH: Economic calendar staleness check ──────────────────
+    try:
+        from src.economic_calendar import check_calendar_staleness
+        staleness_warning = check_calendar_staleness()
+    except Exception:
+        staleness_warning = None
+
+    # ── 5c. CH: Weekly self-audit ──────────────────────────────────
+    audit = compute_self_audit()
+
     try:
         prompt = AIEngine.weekly_digest_intelligence_prompt(
             scorecard=scorecard,
@@ -378,6 +471,8 @@ def main():
         movers=movers,
         institutional=inst_formatted,
         ai_summary=ai_summary,
+        staleness_warning=staleness_warning,
+        audit=audit,
     )
     # Prepend BLUF
     try:
@@ -398,7 +493,17 @@ def main():
     except Exception as e:
         print(f"⚠️ Snapshot: {e}")
 
-    # ── 8. Top movers detailed text ────────────────────────────────
+    # ── 8. Corporate Actions Cache (full scan for weekday use) ────
+    try:
+        from src.corporate_actions import fetch_corporate_actions_nse, save_corporate_actions
+        print("📡 Scanning corporate actions for cache...")
+        ca = fetch_corporate_actions_nse()  # full 150-symbol scan
+        save_corporate_actions(ca)
+        print(f"   → Cached {len(ca.get('actions', {}))} corp actions for weekday use")
+    except Exception as e:
+        print(f"⚠️ Corp actions cache: {e}")
+
+    # ── 9. Top movers detailed text ────────────────────────────────
     try:
         movers_text = format_top_movers(movers)
         if movers_text:

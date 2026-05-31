@@ -778,6 +778,10 @@ def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
         "sent_alerts": 0, "snapshots": 0, "analysis_cache": 0,
         "fii_dii": 0, "mf_flows": 0, "breadth": 0, "valuation": 0,
         "predictions": 0, "outcomes": 0, "shareholding": 0,
+        "stress_history": 0, "corporate_actions": 0, "clone_history": 0,
+        "forecast_log": 0, "analytics_ledger": 0, "cftc_positioning": 0,
+        "factor_scores": 0, "sector_rs": 0, "earnings_surprises": 0,
+        "market_internals": 0,
         "errors": []
     }
     cutoff_alert    = (datetime.now() - timedelta(days=days_alert)).strftime("%Y-%m-%d")
@@ -923,12 +927,57 @@ def purge_old_data(days_alert: int = 30, days_snapshot: int = 90) -> dict:
     except Exception as e:
         results["errors"].append(f"divergence_log: {e}")
 
+    # ── T4 table purge definitions (name, retention_days, date_column) ──
+    T4_PURGE = [
+        ("stress_history", 180, "trade_date"),
+        ("clone_history", 180, "trade_date"),
+        ("factor_scores_history", 180, "date"),
+        ("sector_rs_history", 180, "date"),
+        ("market_internals_history", 180, "date"),
+        ("corporate_actions", 90, "ex_date"),
+        ("forecast_log", 270, "date"),
+        ("analytics_ledger", 270, "date"),
+        ("cftc_positioning_history", 270, "date"),
+        ("earnings_surprises", 730, "date"),
+    ]
+    # build key map: table_name → result_key
+    T4_KEY_MAP = {
+        "stress_history": "stress_history",
+        "clone_history": "clone_history",
+        "factor_scores_history": "factor_scores",
+        "sector_rs_history": "sector_rs",
+        "market_internals_history": "market_internals",
+        "corporate_actions": "corporate_actions",
+        "forecast_log": "forecast_log",
+        "analytics_ledger": "analytics_ledger",
+        "cftc_positioning_history": "cftc_positioning",
+        "earnings_surprises": "earnings_surprises",
+    }
+    for table, days, col in T4_PURGE:
+        try:
+            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            resp = db.table(table).delete().lt(col, cutoff).execute()
+            key = T4_KEY_MAP.get(table, table)
+            results[key] = len(resp.data) if resp.data else 0
+        except Exception as e:
+            results.setdefault("errors", []).append(f"{table}: {e}")
+
     print(f"🧹 Purged: {results['sent_alerts']} alerts, {results['snapshots']} snapshots, "
           f"{results['analysis_cache']} cache, {results['fii_dii']} fii_dii, {results['mf_flows']} mf_flows, "
           f"{results.get('breadth', 0)} breadth, {results.get('valuation', 0)} valuation, "
           f"{results.get('predictions', 0)} predictions, {results.get('outcomes', 0)} outcomes, "
           f"{results.get('macro_snapshots', 0)} macro, {results.get('fii_tracker', 0)} fii_tracker, "
-          f"{results.get('shareholding', 0)} shareholding, {results.get('daily_snapshot', 0)} daily_snapshot")
+          f"{results.get('shareholding', 0)} shareholding, {results.get('daily_snapshot', 0)} daily_snapshot"
+          f"{', stress: ' + str(results['stress_history']) if results.get('stress_history') else ''}"
+          f"{', clone: ' + str(results['clone_history']) if results.get('clone_history') else ''}"
+          f"{', corp: ' + str(results['corporate_actions']) if results.get('corporate_actions') else ''}"
+          f"{', forecast: ' + str(results['forecast_log']) if results.get('forecast_log') else ''}"
+          f"{', ledger: ' + str(results['analytics_ledger']) if results.get('analytics_ledger') else ''}"
+          f"{', cftc: ' + str(results['cftc_positioning']) if results.get('cftc_positioning') else ''}"
+          f"{', factor: ' + str(results['factor_scores']) if results.get('factor_scores') else ''}"
+          f"{', sector_rs: ' + str(results['sector_rs']) if results.get('sector_rs') else ''}"
+          f"{', earnings: ' + str(results['earnings_surprises']) if results.get('earnings_surprises') else ''}"
+          f"{', internals: ' + str(results['market_internals']) if results.get('market_internals') else ''}")
     return results
 
 

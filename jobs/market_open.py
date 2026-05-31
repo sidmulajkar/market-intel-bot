@@ -1,13 +1,13 @@
 import sys
 import os
+import hashlib
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data_fetcher    import fetch_global_indices, fetch_top_movers, fetch_general_news, fetch_macro_anchors
-from src.ai_engine       import AIEngine
 from src.telegram_sender import send_text
-from src.validator       import validate_articles, assess_sentiment_consensus
-from src.validation_helper import ai_generate_and_validate, build_ground_truth_from_index
+from src.validator       import validate_articles
 from src.delta           import get_relevant_indices, news_fingerprint_hash
+from src.formatters      import format_options_block
 
 
 def _get_arbiter_regime() -> dict:
@@ -89,22 +89,13 @@ def main():
     movers     = fetch_top_movers(top_n=10)
     raw_news   = fetch_general_news()
 
+    validated_news = validate_articles(raw_news, min_trust=6) if raw_news else []
+
     valid_index = {
         k: v for k, v in index_data.items()
         if v.get("ok") and v.get("price", 0) > 0
     }
     print(f"   Indices: {len(valid_index)}/18 | Movers: {len(movers.get('india',{}).get('gainers',[]))} gainers")
-
-    # ── Validate news + sentiment ──────────────────────────────────
-    ai = AIEngine()
-    validated_news = validate_articles(raw_news, min_trust=6) if raw_news else []
-    sentiments = []
-    for article in validated_news[:3]:
-        sent = ai.sentiment(article.get("headline", ""))
-        article["sentiment"] = sent
-        if sent:
-            sentiments.append(sent)
-    consensus = assess_sentiment_consensus(sentiments) if sentiments else None
 
     # ── Get bull/bear context + macro anchors ──────────────────────
     bull_bear = {}
@@ -215,6 +206,30 @@ def main():
     if news_note:
         lines.append(news_note)
 
+    # ── Corporate Actions (why stocks gap: dividend/bonus/split) ──
+    try:
+        from src.corporate_actions import (
+            NIFTY_50, fetch_corporate_actions_nse, format_corporate_actions,
+            save_corporate_actions, fetch_cached_actions, merge_corporate_actions,
+        )
+        # Live fetch: Nifty 50 only (~50 calls = ~15s)
+        live = fetch_corporate_actions_nse(symbols=NIFTY_50)
+        # Cache read: watchlist actions from Sunday scan
+        cached = fetch_cached_actions()
+        ca_result = merge_corporate_actions(live, cached)
+        ca_str = format_corporate_actions(ca_result)
+        if ca_str:
+            lines.append("")
+            lines.append(ca_str)
+            print(f"   → Corp actions: {len(ca_str)} chars")
+        # Persist to Supabase for downstream jobs
+        try:
+            save_corporate_actions(ca_result)
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"   ⚠️ Corp actions: {e}")
+
     # ── Consequence mapping: macro events → India sector impact ───
     consequence_block = ""
     compound_lines = []
@@ -239,6 +254,29 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Consequence mapping: {e}")
 
+    # ── Bulk/Block Deals ──────────────────────────────────────────
+    deals_block = ""
+    try:
+        from src.insider_tracker import get_market_insider_activity
+        deals = get_market_insider_activity(days=10)
+        if deals.get("ok") and deals.get("symbol_flows"):
+            deal_lines = []
+            for sf in deals["symbol_flows"][:3]:
+                net = sf["net_val_cr"]
+                if abs(net) > 5:  # only show material deals >₹5 Cr
+                    emoji = "🟢" if net > 0 else "🔴"
+                    deal_lines.append(f"{emoji} {sf['symbol']}: {sf['buy_val_cr']:.0f}₹ / {sf['sell_val_cr']:.0f}₹ out → net {sf['net_val_cr']:+.0f}₹ Cr")
+            if deal_lines:
+                deals_block = "📦 *Bulk/Block Deals:*\n" + "\n".join(deal_lines) + "\n⚠️ SEBI filings lag ~10 days"
+                # Store hash for cross-job dedup (midday_scan checks this)
+                try:
+                    from src.db import set_bot_state
+                    set_bot_state("deals_hash_morning", hashlib.md5(deals_block.encode()).hexdigest())
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"   ⚠️ Deals fetch: {e}")
+
     # ── Anomaly scan: stocks >3% pre-market on unusual volume ────
     anomaly_block = ""
     all_india = (
@@ -250,83 +288,77 @@ def main():
         parts = []
         for m in anomalies[:3]:
             emoji = "⚠️"
-            parts.append(f"{emoji} {m['symbol']} {m['change_pct']:+.1f}%")
+            parts.append(f"{m['symbol']} {m['change_pct']:+.1f}%")
         anomaly_block = f"⚡ *Anomalies (3%+):* {'; '.join(parts)}"
 
-    # ── Build ground truth for validation ──────────────────────────
-    gt_extra = {}
-    if bull_bear.get("score") is not None:
-        gt_extra["bull_bear_score"] = bull_bear["score"]
+    # ── Derivatives snapshot (PCR, Max Pain, GEX) ─────────────────
+    derivs_block = ""
+    try:
+        derivs_block = format_options_block(symbol="NIFTY", run_label="morning")
+        print(f"   → Derivatives: {len(derivs_block)} chars")
+    except Exception as e:
+        print(f"   ⚠️ Derivatives: {e}")
+
+    # ── Build Python postscript (no AI — deterministic) ────────────
+    gap_direction = "No Gaps"
+    n_gap_up = len(gap_ups)
+    n_gap_down = len(gap_downs)
+    if n_gap_up > 0 and n_gap_down > 0:
+        gap_direction = f"Mixed Gaps ({n_gap_up} up, {n_gap_down} down)"
+    elif n_gap_up > 0:
+        gap_direction = f"Gap Up ({n_gap_up})"
+    elif n_gap_down > 0:
+        gap_direction = f"Gap Down ({n_gap_down})"
+
+    # Top consequence for postscript
+    top_consequence = ""
     for a in macro_anchors:
         name = a.get("name", "")
-        if name == "India VIX" and a.get("ok") and a.get("price"):
-            gt_extra["india_vix"] = a["price"]
-        elif name == "Brent Crude" and a.get("ok") and a.get("price"):
-            gt_extra["brent"] = a["price"]
-    ground_truth = build_ground_truth_from_index(valid_index, gt_extra if gt_extra else None)
+        if name == "Brent Crude" and a.get("ok") and a.get("price") and a.get("price", 0) >= 80:
+            top_consequence = f"Brent ${a['price']:.0f} CAD material"
+            break
+    if not top_consequence:
+        for a in macro_anchors:
+            name = a.get("name", "")
+            if name == "USD/INR" and a.get("ok") and a.get("price") and a.get("price", 0) >= 87:
+                top_consequence = f"INR ₹{a['price']:.1f} stress"
+                break
+    if not top_consequence:
+        for a in macro_anchors:
+            name = a.get("name", "")
+            if name == "India VIX" and a.get("ok") and a.get("price") and a.get("price", 0) >= 18:
+                top_consequence = f"VIX {a['price']:.1f} elevated"
+                break
 
-    # ── AI opening brief (with universal validation) ───────────────
-    print("🤖 Running AI opening analysis...")
-    try:
-        prompt = AIEngine.market_open_prompt(valid_index, movers, validated_news, bull_bear)
-    except Exception as e:
-        print(f"   ⚠️ Prompt build failed: {e}")
-        prompt = ""
+    posture_line = f"📌 Open Posture: {regime_label} | {gap_direction}"
+    if top_consequence:
+        posture_line += f" | {top_consequence}"
 
-    def make_fallback():
-        """Deterministic opening brief — no AI needed."""
-        parts = []
-        if lines:
-            parts.extend(lines)
-        if consequence_block:
-            parts.append(consequence_block)
-        if anomaly_block:
-            parts.append(anomaly_block)
-        regime_posture = regime_info.get("posture_text", "")
-        if regime_posture:
-            parts.append(f"Posture: {regime_posture}")
-        return "\n".join(parts) if parts else f"Regime: {regime_label}. Opening session begins."
+    # ── Build and send deterministic opening brief ─────────────────
+    nifty = valid_index.get("India", {})
+    reg_emoji = {"BULLISH": "🟢", "NEUTRAL": "🟡", "DEFENSIVE": "🔴"}.get(regime_label, "")
+    nifty_str = f" | Nifty {nifty.get('price'):,.0f}" if nifty.get("price") else ""
+    if nifty.get("price") and nifty.get("change_pct") is not None:
+        sign = "+" if nifty["change_pct"] >= 0 else ""
+        nifty_str += f" ({sign}{nifty['change_pct']:.1f}%)"
 
-    def send_open(text):
-        nifty = valid_index.get("India", {})
-
-        # ── Regime header: single-line reference (full detail in 08:00 Regime Card) ──
-        reg_emoji = {"BULLISH": "🟢", "NEUTRAL": "🟡", "DEFENSIVE": "🔴"}.get(regime_label, "")
-        nifty_str = f" | Nifty {nifty.get('price'):,.0f}" if nifty.get("price") else ""
-        if nifty.get("price") and nifty.get("change_pct") is not None:
-            sign = "+" if nifty["change_pct"] >= 0 else ""
-            nifty_str += f" ({sign}{nifty['change_pct']:.1f}%)"
-
-        msg = "📈 *MARKET OPEN — 9:15 AM IST*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        msg += f"{reg_emoji} *REGIME: {regime_label}*{nifty_str}\n\n"
-
-        # Note: BLUF narrative omitted — consequence layer provides causal data.
-        # The regime header above is the single regime line (phase 31 invariant).
-        if lines:
-            msg += "\n".join(lines) + "\n"
-        if consequence_block:
-            msg += f"\n{consequence_block}"
-        if compound_lines:
-            msg += "\n\n" + "\n".join(compound_lines)
-        if anomaly_block:
-            msg += f"\n\n{anomaly_block}"
-        if text:
-            msg += f"\n\n{text}"
-        msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━"
-        send_text(msg)
-
-    if prompt and ground_truth.get("nifty_close"):
-        ai_generate_and_validate(
-            ai, "fast", prompt, ground_truth,
-            output_type="market_open",
-            fallback_fn=make_fallback,
-            send_fn=send_open,
-            max_retries=1,
-        )
-    else:
-        if not ground_truth.get("nifty_close"):
-            print("   ⚠️ No Nifty price — skipping AI validation")
-        send_text(make_fallback())
+    msg = "📈 *MARKET OPEN — 9:15 AM IST*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg += f"{reg_emoji} *REGIME: {regime_label}*{nifty_str}\n\n"
+    if lines:
+        msg += "\n".join(lines) + "\n"
+    if consequence_block:
+        msg += f"\n{consequence_block}"
+    if compound_lines:
+        msg += "\n\n" + "\n".join(compound_lines)
+    if derivs_block:
+        msg += f"\n\n{derivs_block}"
+    if deals_block:
+        msg += f"\n\n{deals_block}"
+    if anomaly_block:
+        msg += f"\n\n{anomaly_block}"
+    msg += f"\n\n{posture_line}"
+    msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━"
+    send_text(msg)
 
     print("✅ MARKET OPEN COMPLETE")
 

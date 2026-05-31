@@ -22,60 +22,88 @@ def render_scorecard(correct: int, total: int, avg_brier: float) -> str:
         return f"Brier: {avg_brier:.2f} | Calibration: {correct}/{total} ({hit_rate}%){calibration_note}"
 
 
-_HISTORICAL_CONTEXT = {
-    "asian_contagion": {
-        "parallel": "2013 Taper Tantrum parallel",
-        "impact": "INR -20% in 6m, Nifty -8% in 6m, RBI sold $105B reserves",
-    },
-    "geopolitical": {
-        "parallel": "2022 Ukraine conflict parallel",
-        "impact": "India CAD -3.2% of GDP, CPI peaked at 7.8%",
-    },
-    "fii_exodus": {
-        "parallel": "2020 COVID crash, 2022 rate hike exodus",
-        "impact": "Nifty -23% in 1m (2020), FII pulled $15B in 3m (2022)",
-    },
-    "usd_crisis": {
-        "parallel": "2013 Taper Tantrum, 2024-25 INR pressure",
-        "impact": "RBI sold $105B reserves defending INR in 2013",
-    },
-    "oil_shock": {
-        "parallel": "2022 Russia-Ukraine, 2008 oil spike",
-        "impact": "India CAD -3.2% (2022), CPI 7.8% (2022)",
-    },
-}
-
-
 def format_scenario_block(state) -> str:
-    """Render active scenarios block from MarketState.
+    """Render active scenarios + historical clones using Clone Engine (T4.2 / G3).
 
-    Only renders when scenarios are ACTIVE or WATCH.
-    Shows scenario name, confidence, indicator triggers, and historical context.
-    Historical data is factual past events — not AI speculation or prediction.
+    Uses dynamic historical clone engine for 6D macro nearest-neighbor matching
+    with empirical forward returns. Falls back to legacy scenario-only output.
     """
+    clone_skip = ""
+    blocks: list[str] = []
     try:
-        if not state.active_scenarios:
-            return ""
-        lines = ["⚠️ *Active Risk Scenarios* (data-only, historical parallels):"]
-        for s in state.active_scenarios:
-            if s.severity not in ("ACTIVE", "WATCH"):
-                continue
-            emoji = "🚨" if s.severity == "ACTIVE" else "⚠️"
-            display_name = s.name.replace("_", " ").title()
-            ctx = _HISTORICAL_CONTEXT.get(s.name, {})
-            parallel = ctx.get("parallel", "")
-            impact = ctx.get("impact", "")
-            header = f"{emoji} *{display_name}* ({s.confidence})"
-            lines.append(header)
-            for ind in s.indicators[:3]:
-                lines.append(f"  • {ind}")
-            if parallel:
-                lines.append(f"  📜 *Historical parallel:* {parallel}")
-            if impact:
-                lines.append(f"  💥 *Past impact:* {impact}")
-        if len(lines) > 1:
-            return "\n".join(lines)
-        return ""
+        macro = getattr(state, 'macro', None)
+
+        # ── India Clone Engine (T4.2): 6D percentile matching ──
+        if all([
+            getattr(macro, 'vix', None),
+            getattr(macro, 'usdinr', None),
+            getattr(macro, 'brent', None),
+            getattr(macro, 'dxy', None),
+        ]):
+            from src.clone_engine import find_clones, format_clone_block, get_current_fii_5d
+            deriv = getattr(state, 'derivatives', None)
+            fii_5d = get_current_fii_5d()
+            pcr_val = getattr(deriv, 'pcr', None) if deriv else None
+            clone_data = find_clones(
+                current_vix=macro.vix,
+                current_usdinr=macro.usdinr,
+                current_brent=macro.brent,
+                current_dxy=macro.dxy,
+                current_fii_5d=fii_5d,
+                current_pcr=pcr_val,
+            )
+            if clone_data.get("status") == "ok":
+                scenarios = getattr(state, 'active_scenarios', None)
+                clone_block = format_clone_block(clone_data, active_scenarios=scenarios)
+                if clone_block:
+                    blocks.append(clone_block)
+            elif clone_data.get("status") == "insufficient_data":
+                clone_skip = "🔬 Historical Clones: Insufficient data (requires 252+ sessions)"
+
+        # ── Global Clone Engine (G3): 5D global percentile matching + India transmission ──
+        if all([
+            getattr(macro, 'dxy', None),
+            getattr(macro, 'us_10y', None),
+            getattr(macro, 'hyg', None),
+            getattr(macro, 'gold', None),
+            getattr(macro, 'copper', None),
+            getattr(macro, 'usd_jpy', None),
+        ]):
+            from src.clone_engine import find_global_clones, format_global_clone_block
+            global_clone_data = find_global_clones(
+                current_dxy=macro.dxy,
+                current_us_10y=macro.us_10y,
+                current_hyg=macro.hyg,
+                current_gold=macro.gold,
+                current_copper=macro.copper,
+                current_usdjpy=macro.usd_jpy,
+            )
+            if global_clone_data.get("status") == "ok":
+                global_block = format_global_clone_block(global_clone_data)
+                if global_block:
+                    blocks.append(global_block)
+
+        if blocks:
+            return "\n\n".join(blocks)
+
+        # ── Fallback: Legacy scenario-only output ──
+        parts = []
+        if state.active_scenarios:
+            parts.append("⚠️ *Active Risk Scenarios*:")
+            for s in state.active_scenarios:
+                if s.severity not in ("ACTIVE", "WATCH"):
+                    continue
+                emoji = "🚨" if s.severity == "ACTIVE" else "⚠️"
+                display_name = s.name.replace("_", " ").title()
+                header = f"{emoji} *{display_name}* ({s.confidence})"
+                parts.append(header)
+                for ind in s.indicators[:3]:
+                    parts.append(f"  • {ind}")
+            if clone_skip:
+                parts.append("")
+                parts.append(clone_skip)
+            return "\n".join(parts)
+        return clone_skip
     except Exception:
         return ""
 
@@ -94,6 +122,7 @@ def reorder_market_blocks(
     big_moves_block: str,
     sign_off_block: str,
     scenario_block: str = "",
+    drawdown_block: str = "",
 ) -> str:
     """Reorder output blocks based on regime for dynamic India/Global split.
 
@@ -109,6 +138,8 @@ def reorder_market_blocks(
         sections.append(scorecard_block)
     if scenario_block:
         sections.append(scenario_block)
+    if drawdown_block:
+        sections.append(drawdown_block)
 
     if regime in ("DEFENSIVE", "BEARISH"):
         # 50/50 split: interleave India + Global
@@ -151,9 +182,9 @@ def reorder_market_blocks(
 
 
 def _fmt_rupee(value: float) -> str:
-    """Format rupee value with sign before symbol: -₹655Cr instead of ₹-655Cr."""
+    """Format rupee value with sign after ₹ symbol: ₹-655Cr (Bloomberg-standard)."""
     sign = "-" if value < 0 else "+"
-    return f"{sign}₹{abs(value):,.0f}Cr"
+    return f"₹{sign}{abs(value):,.0f}Cr"
 
 
 # Cross-job headline dedup — set of MD5 hashes populated by jobs at start
@@ -327,21 +358,6 @@ def get_percentile_value(metric: str, current_value: float, window: str = "1Y") 
         return _flip_percentile(result.get("percentile", 50), metric)
     except Exception:
         return None
-
-
-def format_4q(what: str, how_big: str, why: str, so_what: str) -> str:
-    """
-    4-question format template: WHAT | HOW BIG | WHY → SO WHAT
-    Every output block should use this pattern.
-    """
-    parts = [what]
-    if how_big:
-        parts.append(how_big)
-    if why:
-        parts.append(why)
-    if so_what:
-        parts.append(f"→ {so_what}")
-    return " | ".join(parts)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -779,6 +795,16 @@ def _format_flows_from_context(fm: Dict, ctx: Optional[Dict] = None) -> str:
         f"Latest day ({fm['date']}): FII {fm['fii_net']:+.0f} Cr | DII {fm['dii_net']:+.0f} Cr",
     ]
 
+    # Flow velocity (5D vs 21D)
+    try:
+        from src.flow_velocity import compute_flow_velocity, format_flow_velocity
+        fv = compute_flow_velocity()
+        fv_str = format_flow_velocity(fv)
+        if fv_str:
+            lines.insert(2, fv_str)
+    except Exception as e:
+        print(f"   ⚠️ Flow velocity: {e}")
+
     # Use pre-computed FII interpretation if available
     if fii_interp.get("ok"):
         lines.append(fii_interp['interpretation'])
@@ -996,6 +1022,16 @@ def _format_flows_from_db() -> str:
             f"Flow Intelligence (FII/DII):",
             f"Latest day ({latest_date}): FII {fii_latest:+.0f} Cr | DII {dii_latest:+.0f} Cr",
         ]
+
+        # Flow velocity (5D vs 21D)
+        try:
+            from src.flow_velocity import compute_flow_velocity, format_flow_velocity
+            fv = compute_flow_velocity()
+            fv_str = format_flow_velocity(fv)
+            if fv_str:
+                lines.append(fv_str)
+        except Exception as e:
+            print(f"   ⚠️ Flow velocity: {e}")
 
         # Streak info
         if fii_streak >= 3:
@@ -2136,7 +2172,7 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
     direction = ""
     if fm.get("ok"):
         fii_net = fm.get("fii_net", 0) or 0
-        streak = fm.get("fii_streak", 0) or 0
+        streak = fm.get("fii_streak_days", fm.get("fii_streak", 0)) or 0
         direction = fm.get("fii_streak_direction", "") or ""
     elif fii.get("ok"):
         fii_net = fii.get("fii_net", 0) or 0
@@ -2569,7 +2605,8 @@ def format_market_state_dashboard(market_phase: Dict, ctx: Dict = None) -> str:
 def format_weekly_digest(scorecard: Dict = None, fii_pattern: Dict = None,
                          regime_shift: Dict = None, movers: Dict = None,
                          institutional: str = "", contrarian: str = "",
-                         ai_summary: str = "") -> str:
+                         ai_summary: str = "", staleness_warning: str = None,
+                         audit: Dict = None) -> str:
     """
     Format the complete weekly digest message.
     Structure ordered by engagement:
@@ -2580,6 +2617,7 @@ def format_weekly_digest(scorecard: Dict = None, fii_pattern: Dict = None,
     5. Institutional Signals
     6. Contrarian / AI Summary
     7. Next Week Preview
+    8. Bot Health (self-audit)
     """
     lines = ["📅 *WEEKLY MARKET DIGEST*"]
     lines.append("━" * 30)
@@ -2691,6 +2729,31 @@ def format_weekly_digest(scorecard: Dict = None, fii_pattern: Dict = None,
         lines.append("")
         lines.append("🔄 *Contrarian Signal*")
         lines.append(contrarian)
+
+    # ── 8. Calendar Staleness Warning ──────────────────────────────
+    if staleness_warning:
+        lines.append("")
+        lines.append(f"📅 {staleness_warning}")
+
+    # ── 9. Bot Health (Self-Audit) ─────────────────────────────────
+    if audit and audit.get("ok"):
+        health = []
+        ms_d = audit.get("market_state_days", 0)
+        fii_d = audit.get("fii_flow_days", 0)
+        health.append(f"{'🟢' if ms_d >= 3 else '🟡'} MarketState: {ms_d}d")
+        health.append(f"{'🟢' if fii_d >= 3 else '🟡'} FII flows: {fii_d}d")
+        if audit.get("stress_available"):
+            stress_line = f"Stress: {audit.get('stress_avg', '?')} ({audit.get('stress_trend', '?')})"
+            health.append(f"{'🟢' if audit.get('stress_avg', 100) < 60 else '🟡'} {stress_line}")
+        if audit.get("clone_days", 0) > 0:
+            health.append(f"🟢 Clones: {audit['clone_days']}d")
+        else:
+            health.append("🟡 Clones: inactive")
+        if audit.get("notes"):
+            for n in audit["notes"][:2]:
+                health.append(f"⚠️ {n}")
+        lines.append("")
+        lines.append("🔧 *Bot Health*: {' | '.join(health)}")
 
     lines.append("")
     lines.append("━" * 30)

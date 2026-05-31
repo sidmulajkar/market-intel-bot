@@ -291,12 +291,16 @@ def compute_gex(options_data: List[Dict], spot_price: float = None, lot_size: in
     else:
         regime = "NEUTRAL GAMMA"
 
+    # Full strike-level data (for magnetic level computation)
+    gex_by_strike_sorted = sorted(gex_by_strike, key=lambda x: x["strike"])
+
     return {
         "ok": True,
         "net_gex_cr": net_gex_cr,
         "regime": regime,
         "flip_level": flip_level,
         "top_strikes": sorted(gex_by_strike, key=lambda x: abs(x["net_gex"]), reverse=True)[:5],
+        "gex_by_strike": gex_by_strike_sorted,
     }
 
 
@@ -821,6 +825,9 @@ def format_derivatives_intel(analysis: Dict) -> str:
     if gex.get("ok"):
         lines.append(f"GEX: {gex['net_gex_cr']:+.0f} Cr per 1% move — {gex['regime']}")
         lines.append(f"GEX Flip Level: {gex['flip_level']}")
+        gex_levels = format_gex_levels(gex, analysis.get("spot_price"))
+        if gex_levels:
+            lines.append(gex_levels)
 
     # Skew
     skew = analysis.get("skew", {})
@@ -848,6 +855,64 @@ def format_derivatives_intel(analysis: Dict) -> str:
             lines.append(f"Unusual: {ua['side']} {ua['strike']} — {ua['signal']} (vol {ua['volume']:,}, OI chg {ua['oi_change']:+,})")
 
     return "\n".join(lines)
+
+
+def format_gex_levels(gex_data: Dict, spot_price: float = None) -> str:
+    """
+    Compute magnetic support/resistance/pin from full strike-level GEX data.
+    Returns formatted string or empty string if data insufficient.
+
+    - Magnetic support: highest positive net GEX below spot
+    - Magnetic resistance: highest negative net GEX above spot
+    - Pin: strike where cumulative GEX crosses zero (from flip_level)
+    """
+    if not gex_data or not gex_data.get("ok"):
+        return ""
+
+    gex_by_strike = gex_data.get("gex_by_strike", [])
+    if not gex_by_strike:
+        return ""
+
+    if spot_price is None:
+        return ""
+
+    support = None
+    resistance = None
+    for g in gex_by_strike:
+        strike = g["strike"]
+        net = g["net_gex"]
+        if strike < spot_price and net > 0:
+            if support is None or net > support["net_gex"]:
+                support = g
+        elif strike > spot_price and net < 0:
+            if resistance is None or abs(net) > abs(resistance["net_gex"]):
+                resistance = g
+
+    def _strength_label(val: float) -> str:
+        if val is None:
+            return ""
+        abs_val = abs(val)
+        if abs_val > 100:
+            return "Strong"
+        elif abs_val > 40:
+            return "Moderate"
+        return "Weak"
+
+    parts = []
+    if support:
+        strength = _strength_label(support["net_gex"])
+        parts.append(f"Support {support['strike']:,.0f} ({strength})")
+    if resistance:
+        strength = _strength_label(resistance["net_gex"])
+        parts.append(f"Resistance {resistance['strike']:,.0f} ({strength})")
+
+    flip = gex_data.get("flip_level")
+    if flip and spot_price:
+        parts.append(f"Pin {flip:,.0f}")
+
+    if parts:
+        return f"🧲 GEX Levels: {' | '.join(parts)}"
+    return ""
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

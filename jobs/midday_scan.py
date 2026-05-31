@@ -1,13 +1,15 @@
 import sys
 import os
+import hashlib
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data_fetcher    import fetch_global_indices, fetch_top_movers, fetch_general_news
 from src.ai_engine       import AIEngine
 from src.telegram_sender import send_text
-from src.validator       import validate_articles, assess_sentiment_consensus
 from src.db              import was_alert_sent, log_alert_sent, get_latest_market_state
+from src.validator       import validate_articles, assess_sentiment_consensus
 from src.validation_helper import ai_generate_and_validate, build_ground_truth_from_index
+from src.formatters      import format_options_block
 
 
 def _get_arbiter_regime() -> dict:
@@ -103,9 +105,21 @@ def main():
     if has_extreme:
         print(f"   ⚡ Skip gate: {len(alerts)} extreme moves detected")
 
+    # ── Composite Stress Index (top banner) ──────────────────────
+    stress_banner = ""
+    try:
+        from src.stress_index import compute_stress_index, format_stress_banner
+        stress = compute_stress_index()
+        if stress.get("ok"):
+            stress_banner = format_stress_banner(stress)
+    except Exception as e:
+        print(f"   ⚠️ Stress index: {e}")
+
     # ── Remove global indices from midday snapshot (Phase 26: stale at 12:30)
     # Build local snapshot only — no global indices at midday
     lines = []
+    if stress_banner:
+        lines.append(stress_banner)
 
     # Nifty + VIX line
     if nifty:
@@ -126,6 +140,30 @@ def main():
     if india_l:
         l_str = ", ".join(f"{m['symbol']} {m['change_pct']:.1f}%" for m in india_l[:3])
         lines.append(f"🔴 Losers: {l_str}")
+
+    # ── Midday breadth (A/D ratio, strength) ─────────────────────
+    try:
+        from src.data_fetcher import fetch_market_breadth
+        breadth = fetch_market_breadth()
+        if breadth and breadth.get("ok"):
+            adv = breadth["advances"]
+            dec = breadth["declines"]
+            if adv == 0 and dec == 0:
+                lines.append("🏥 Midday Breadth: — (market closed)")
+            else:
+                strength = breadth.get("strength", "")
+                lines.append(f"🏥 Midday Breadth: A/D {adv}/{dec} | {strength}")
+    except Exception as e:
+        print(f"   ⚠️ Breadth: {e}")
+
+    # ── Sector RS (rotation phases) ────────────────────────────
+    try:
+        from src.sector_rs import run_sector_rs_analysis
+        sector_result = run_sector_rs_analysis()
+        if sector_result.get("ok") and sector_result.get("phases"):
+            lines.append("🔄 " + sector_result["phases"])
+    except Exception as e:
+        print(f"   ⚠️ Sector RS: {e}")
 
     # News headline (only if fresh — check fingerprint)
     if validated_news:
@@ -160,6 +198,81 @@ def main():
             formatted_alerts.append(f"{emoji} *{sym}* {m['change_pct']:+.1f}% — extreme move")
             log_alert_sent(sym, key)
     alerts = formatted_alerts
+
+    # ── Bulk/Block Deals ──────────────────────────────────────────
+    deals_block = ""
+    try:
+        from src.insider_tracker import get_market_insider_activity
+        deals = get_market_insider_activity(days=10)
+        if deals.get("ok") and deals.get("symbol_flows"):
+            deal_lines = []
+            for sf in deals["symbol_flows"][:3]:
+                net = sf["net_val_cr"]
+                if abs(net) > 5:
+                    emoji = "🟢" if net > 0 else "🔴"
+                    deal_lines.append(f"{emoji} {sf['symbol']}: {sf['buy_val_cr']:.0f}₹ / {sf['sell_val_cr']:.0f}₹ out → net {sf['net_val_cr']:+.0f}₹ Cr")
+            if deal_lines:
+                deals_block = "📦 *Bulk/Block Deals:*\n" + "\n".join(deal_lines) + "\n⚠️ SEBI filings lag ~10 days"
+                # Dedup vs market_open (09:15): skip if hash matches
+                try:
+                    from src.db import get_bot_state
+                    prev = get_bot_state("deals_hash_morning")
+                    if prev and hashlib.md5(deals_block.encode()).hexdigest() == prev:
+                        deals_block = ""
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"   ⚠️ Deals fetch: {e}")
+
+    # ── Derivatives snapshot (PCR, Max Pain, GEX) ─────────────────
+    derivs_block = ""
+    try:
+        derivs_block = format_options_block(symbol="NIFTY", run_label="midday")
+        print(f"   → Derivatives: {len(derivs_block)} chars")
+    except Exception as e:
+        print(f"   ⚠️ Derivatives: {e}")
+
+    # ── Options Momentum (delta vs 09:15 baseline) ─────────────────
+    opt_delta_str = ""
+    try:
+        from src.options_engine import get_latest_snapshot, run_options_analysis
+        morning = get_latest_snapshot("NIFTY", "morning")
+        midday_analysis = run_options_analysis("NIFTY", store=True, run_label="midday")
+        if morning and midday_analysis.get("ok"):
+            delta_parts = []
+            mp_m = morning.get("pcr")
+            mp_c = midday_analysis.get("pcr", {}).get("pcr")
+            if mp_m and mp_c and abs(mp_c - mp_m) > 0.01:
+                arrow = "↑" if mp_c > mp_m else "↓"
+                delta_parts.append(f"PCR {mp_m:.2f} → {mp_c:.2f} {arrow}")
+
+            gex_m = morning.get("gex")
+            gex_c = midday_analysis.get("gex", {}).get("net_gex_cr")
+            if gex_m is not None and gex_c is not None and abs(gex_c - gex_m) > 10:
+                arrow = "↑" if gex_c > gex_m else "↓"
+                delta_parts.append(f"GEX ₹{gex_m:+.0f}Cr → ₹{gex_c:+.0f}Cr {arrow}")
+
+            skew_m = morning.get("skew_25d")
+            skew_c = midday_analysis.get("skew", {}).get("skew_25d")
+            if skew_m is not None and skew_c is not None and abs(skew_c - skew_m) > 0.3:
+                arrow = "↑" if skew_c > skew_m else "↓"
+                delta_parts.append(f"Skew {skew_m:+.1f} → {skew_c:+.1f} {arrow}")
+
+            if delta_parts:
+                opt_delta_str = "📊 Options Delta (vs 09:15): " + " | ".join(delta_parts)
+            # GEX magnetic levels from midday snapshot
+            try:
+                from src.options_engine import format_gex_levels
+                gex_lvl = format_gex_levels(midday_analysis.get("gex", {}), midday_analysis.get("spot_price"))
+                if gex_lvl:
+                    opt_delta_str = (opt_delta_str + "\n" + gex_lvl) if opt_delta_str else gex_lvl
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"   ⚠️ Options delta: {e}")
+
+    if opt_delta_str:
+        lines.append(opt_delta_str)
 
     # ── AI midday brief (with universal validation) ────────────────
     print("🤖 Running AI midday analysis...")
@@ -213,6 +326,10 @@ def main():
             msg += "\n".join(lines)
             if text:
                 msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{text}"
+            if derivs_block:
+                msg += f"\n\n{derivs_block}"
+            if deals_block:
+                msg += f"\n\n{deals_block}"
             if alerts:
                 msg += f"\n\n⚠️ *Extreme Moves:*\n" + "\n".join(alerts)
             msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_Mid-session check_"
@@ -229,6 +346,10 @@ def main():
         # No ground truth or no prompt — send unvalidated (degraded)
         msg = "📊 *MIDDAY MARKET SCAN*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         msg += "\n".join(lines)
+        if derivs_block:
+            msg += f"\n\n{derivs_block}"
+        if deals_block:
+            msg += f"\n\n{deals_block}"
         if alerts:
             msg += f"\n\n⚠️ *Extreme Moves:*\n" + "\n".join(alerts)
         msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_Mid-session check_"

@@ -1,0 +1,145 @@
+date,event,category,impact
+2026-06-01,India GDP (Q4 FY26),GDP,H
+2026-06-01,India Fiscal Deficit (Apr),Fiscal,M
+2026-06-02,US ISM Manufacturing,Global,H
+2026-06-02,India Manufacturing PMI (May),Macro,M
+2026-06-03,RBI MPC Meeting (Day 1),RBI,H
+2026-06-04,RBI MPC Decision,RBI,H
+2026-06-05,India Services PMI (May),Macro,M
+2026-06-05,US NFP (May),Global,H
+2026-06-10,India CPI (May),CPI/WPI,H
+2026-06-10,India IIP (Apr),Macro,M
+2026-06-10,US CPI (May),Global,H
+2026-06-11,US FOMC Decision,Global,H
+2026-06-15,India WPI (May),CPI/WPI,M
+2026-06-18,BOJ Policy Decision,Global,M
+2026-06-22,India Trade Balance,Macro,M
+2026-06-25,US Core PCE,Global,M
+2026-07-01,India Manufacturing PMI (Jun),Macro,M
+2026-07-02,India Services PMI (Jun),Macro,M
+2026-07-02,US NFP (Jun),Global,H
+2026-07-10,India CPI (Jun),CPI/WPI,H
+2026-07-10,India IIP (May),Macro,M
+2026-07-15,India WPI (Jun),CPI/WPI,M
+2026-07-21,India Trade Balance,Macro,M
+2026-07-22,India Union Budget 2026-27,Fiscal,H
+2026-07-28,US FOMC Decision,Global,H
+2026-07-31,India Fiscal Deficit (Jun),Fiscal,M
+2026-08-01,India Manufacturing PMI (Jul),Macro,M
+2026-08-04,India Services PMI (Jul),Macro,M
+2026-08-05,RBI MPC Meeting (Day 1),RBI,H
+2026-08-06,RBI MPC Decision,RBI,H
+2026-08-07,US NFP (Jul),Global,H
+2026-08-12,India CPI (Jul),CPI/WPI,H
+2026-08-12,India IIP (Jun),Macro,M
+2026-08-13,US CPI (Jul),Global,H
+2026-08-17,India WPI (Jul),CPI/WPI,M
+2026-08-20,India Trade Balance,Macro,M
+2026-08-28,India GDP (Q1 FY27),GDP,H
+2026-09-01,India Manufacturing PMI (Aug),Macro,M
+2026-09-02,US ISM Manufacturing,Global,M
+2026-09-03,US NFP (Aug),Global,H
+2026-09-04,India Services PMI (Aug),Macro,M
+2026-09-10,India CPI (Aug),CPI/WPI,H
+2026-09-10,India IIP (Jul),Macro,M
+2026-09-15,India WPI (Aug),CPI/WPI,M
+2026-09-15,US FOMC Decision,Global,H
+2026-09-18,India Trade Balance,Macro,M
+2026-09-30,India Fiscal Deficit (Jul),Fiscal,M
+2026-10-01,India Manufacturing PMI (Sep),Macro,M
+2026-10-02,US NFP (Sep),Global,H
+2026-10-05,India Services PMI (Sep),Macro,M
+2026-10-07,RBI MPC Meeting (Day 1),RBI,H
+2026-10-08,RBI MPC Decision,RBI,H
+2026-10-13,India CPI (Sep),CPI/WPI,H
+2026-10-13,India IIP (Aug),Macro,M
+2026-10-14,US CPI (Sep),Global,H
+2026-10-15,India WPI (Sep),CPI/WPI,M
+2026-10-20,India Trade Balance,Macro,M
+2026-10-29,US FOMC Decision,Global,M
+2026-10-31,India Fiscal Deficit (Aug),Fiscal,M
+2026-11-02,India Manufacturing PMI (Oct),Macro,M
+2026-11-04,India Services PMI (Oct),Macro,M
+2026-11-05,US NFP (Oct),Global,H
+2026-11-06,US FOMC Decision,Global,H
+2026-11-12,India CPI (Oct),CPI/WPI,H
+2026-11-12,India IIP (Sep),Macro,M
+2026-11-17,India WPI (Oct),CPI/WPI,M
+2026-11-20,India Trade Balance,Macro,M
+2026-11-28,India GDP (Q2 FY27),GDP,H
+2026-12-01,India Manufacturing PMI (Nov),Macro,M
+2026-12-02,RBI MPC Meeting (Day 1),RBI,H
+2026-12-03,RBI MPC Decision,RBI,H
+2026-12-04,US NFP (Nov),Global,H
+2026-12-07,India Services PMI (Nov),Macro,M
+2026-12-10,India CPI (Nov),CPI/WPI,H
+2026-12-10,India IIP (Oct),Macro,M
+2026-12-11,US CPI (Nov),Global,H
+2026-12-15,India WPI (Nov),CPI/WPI,M
+2026-12-16,US FOMC Decision,Global,H
+2026-12-18,India Trade Balance,Macro,M
+2026-12-31,India Fiscal Deficit (Sep),Fiscal,M
+2027-01-01,India Manufacturing PMI (Dec),Macro,M
+2027-01-05,India Services PMI (Dec),Macro,M
+2027-01-07,US NFP (Dec),Global,H
+2027-01-13,India CPI (Dec),CPI/WPI,H
+2027-01-13,India IIP (Nov),Macro,M
+2027-01-14,US CPI (Dec),Global,H
+2027-01-20,India Trade Balance,Macro,M
+2027-01-27,US FOMC Decision,Global,H
+2027-01-31,India Fiscal Deficit (Oct),Fiscal,M
+2027-02-01,India Union Budget 2027-28,Fiscal,H
+2027-02-01,India Manufacturing PMI (Jan),Macro,M
+2027-02-03,India Services PMI (Jan),Macro,M
+2027-02-03,RBI MPC Meeting (Day 1),RBI,H
+2027-02-04,RBI MPC Decision,RBI,H
+2027-02-05,US NFP (Jan),Global,H
+2027-02-10,India CPI (Jan),CPI/WPI,H
+2027-02-10,India IIP (Dec),Macro,M
+2027-02-15,India WPI (Jan),CPI/WPI,M
+2027-02-19,India Trade Balance,Macro,M
+2027-02-26,India GDP (Q3 FY27),GDP,H
+2027-02-28,India Fiscal Deficit (Nov),Fiscal,M
+2027-03-01,India Manufacturing PMI (Feb),Macro,M
+2027-03-03,India Services PMI (Feb),Macro,M
+2027-03-05,US NFP (Feb),Global,H
+2027-03-10,India CPI (Feb),CPI/WPI,H
+2027-03-10,India IIP (Jan),Macro,M
+2027-03-12,US CPI (Feb),Global,H
+2027-03-15,India WPI (Feb),CPI/WPI,M
+2027-03-17,US FOMC Decision,Global,H
+2027-03-19,India Trade Balance,Macro,M
+2027-03-31,India Fiscal Deficit (Dec),Fiscal,M
+2027-04-01,India Manufacturing PMI (Mar),Macro,M
+2027-04-05,India Services PMI (Mar),Macro,M
+2027-04-05,US NFP (Mar),Global,H
+2027-04-07,RBI MPC Meeting (Day 1),RBI,H
+2027-04-08,RBI MPC Decision,RBI,H
+2027-04-13,India CPI (Mar),CPI/WPI,H
+2027-04-13,India IIP (Feb),Macro,M
+2027-04-15,India WPI (Mar),CPI/WPI,M
+2027-04-20,India Trade Balance,Macro,M
+2027-04-30,India Fiscal Deficit (Jan),Fiscal,M
+2027-05-01,India Manufacturing PMI (Apr),Macro,M
+2027-05-04,India Services PMI (Apr),Macro,M
+2027-05-05,US NFP (Apr),Global,H
+2027-05-07,US FOMC Decision,Global,H
+2027-05-12,India CPI (Apr),CPI/WPI,H
+2027-05-12,India IIP (Mar),Macro,M
+2027-05-14,US CPI (Apr),Global,H
+2027-05-17,India WPI (Apr),CPI/WPI,M
+2027-05-20,India Trade Balance,Macro,M
+2027-05-31,India GDP (Q4 FY27),GDP,H
+2027-05-31,India Fiscal Deficit (Feb),Fiscal,M
+2027-06-01,India Manufacturing PMI (May),Macro,M
+2027-06-02,RBI MPC Meeting (Day 1),RBI,H
+2027-06-03,RBI MPC Decision,RBI,H
+2027-06-04,US NFP (May),Global,H
+2027-06-07,India Services PMI (May),Macro,M
+2027-06-10,India CPI (May),CPI/WPI,H
+2027-06-10,India IIP (Apr),Macro,M
+2027-06-11,US CPI (May),Global,H
+2027-06-15,India WPI (May),CPI/WPI,M
+2027-06-16,US FOMC Decision,Global,H
+2027-06-18,India Trade Balance,Macro,M
+2027-06-30,India Fiscal Deficit (Mar),Fiscal,M

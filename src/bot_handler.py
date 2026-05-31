@@ -33,7 +33,13 @@ from src.db import (
     list_mf_watchlist,
     get_watchlist,
     get_mf_watchlist,
+    get_fii_dii_flows,
+    get_sector_rs_history,
+    get_client,
 )
+from src.stress_index import compute_stress_index, get_stress_history
+from src.consequence_engine import compute_consequence, CONSEQUENCE_MULTIPLIERS
+from src.options_engine import get_latest_snapshot
 
 TOKEN   = os.environ.get("TELEGRAM_TOKEN",  "")
 CHAT_ID = str(os.environ.get("TELEGRAM_CHAT_ID", ""))
@@ -55,6 +61,14 @@ HELP_TEXT = """
 `/removemf 119598` — Remove MF scheme
 `/listmf` — Show all MF schemes
 `/searchmf bluechip` — Search MF by name
+
+📊 *MARKET INTEL:*
+`/stress` — Composite stress index + top drivers
+`/clone` — Historical macro clones + forward returns
+`/flows` — FII/DII net flows + velocity
+`/gex` — Options GEX levels + max pain + PCR
+`/sectors` — Sector RS leaders + laggards
+`/whatif brent 100` — Consequence simulation for any variable
 
 ℹ️ *INFO:*
 `/status` — Bot health check
@@ -402,6 +416,330 @@ def handle_status(chat_id: str) -> None:
     )
     _send(chat_id, msg)
 
+# ── MARKET INTEL COMMANDS ──────────────────────────────────────────
+
+def handle_stress(chat_id: str) -> None:
+    """Show composite stress index from latest snapshot."""
+    try:
+        history = get_stress_history(days=5)
+        if not history:
+            _send(chat_id, "⚠️ No stress data available (may be weekend or market holiday)")
+            return
+        latest = history[-1]
+        score = latest.get("stress_score", 0)
+        date = latest.get("trade_date", "?")
+        # Levels
+        if score >= 80:
+            level = "🚨 EXTREME"
+        elif score >= 60:
+            level = "🔴 HIGH"
+        elif score >= 40:
+            level = "🟡 ELEVATED"
+        elif score >= 20:
+            level = "🟢 MODERATE"
+        else:
+            level = "✅ LOW"
+        msg = (
+            f"📊 *Composite Stress Index*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Score: *{score:.1f}* / 100 ({level})\n"
+            f"Date: {date}\n\n"
+        )
+        # Show trend
+        if len(history) >= 2:
+            prev = history[-2].get("stress_score", 0)
+            delta = score - prev
+            arrow = "↑" if delta > 1 else "↓" if delta < -1 else "→"
+            msg += f"Trend: {arrow} {delta:+.1f} vs prev day\n"
+        # Component breakdown via live compute
+        try:
+            current = compute_stress_index()
+            if current.get("ok"):
+                comps = current.get("components", {})
+                msg += f"\n*Top drivers:*\n"
+                for k, v in sorted(comps.items(), key=lambda x: abs(x[1]), reverse=True)[:4]:
+                    label = k.replace("_", " ").title()
+                    msg += f"  • {label}: {v:+.1f}\n"
+        except Exception:
+            pass
+        _send(chat_id, msg)
+    except Exception as e:
+        _send(chat_id, f"⚠️ Error fetching stress index: {e}")
+
+
+def handle_clone(chat_id: str) -> None:
+    """Show latest historical macro clones."""
+    try:
+        db = get_client()
+        if not db:
+            _send(chat_id, "⚠️ Database not connected")
+            return
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+        result = (
+            db.table("clone_history")
+            .select("*")
+            .gte("trade_date", cutoff)
+            .order("trade_date", desc=True)
+            .limit(9)
+            .execute()
+        )
+        rows = result.data if result.data else []
+        if not rows:
+            _send(chat_id, "⚠️ No clone data available (computed during market hours)")
+            return
+        # Group by trade_date, show latest group
+        latest_group = rows[0]["trade_date"]
+        clones = [r for r in rows if r["trade_date"] == latest_group][:3]
+        msg = (
+            f"🔬 *Historical Clones (Macro State)*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        )
+        for c in clones:
+            fwd = c.get("nifty_30d_fwd")
+            dd = c.get("max_dd")
+            fwd_str = f"{fwd:+.1f}%" if fwd is not None else "N/A"
+            dd_str = f"{dd:+.1f}%" if dd is not None else "N/A"
+            msg += (
+                f"📅 {c['clone_date']} | Dist: {c['distance']:.2f}\n"
+                f"   30D Fwd: {fwd_str} | Max DD: {dd_str}\n\n"
+            )
+        # Summary line
+        valid_fwds = [c.get("nifty_30d_fwd") for c in clones if c.get("nifty_30d_fwd") is not None]
+        if valid_fwds:
+            median = sorted(valid_fwds)[len(valid_fwds)//2]
+            msg += f"Median 30D Fwd: {median:+.1f}%\n"
+        msg += f"\n_Last computed: {latest_group}_"
+        _send(chat_id, msg)
+    except Exception as e:
+        _send(chat_id, f"⚠️ Error fetching clones: {e}")
+
+
+def handle_flows(chat_id: str) -> None:
+    """Show latest FII/DII flows and velocity."""
+    try:
+        flows = get_fii_dii_flows(days=10)
+        if not flows:
+            _send(chat_id, "⚠️ No flow data available")
+            return
+        # Latest day
+        latest = flows[-1]
+        msg = (
+            f"🏦 *FII / DII Flows*\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"Latest: {latest['date']}\n"
+            f"FII Net: *₹{latest.get('fiinet_cr', 0):+,.0f} cr*\n"
+            f"DII Net: *₹{latest.get('diinet_cr', 0):+,.0f} cr*\n"
+            f"Net: *₹{latest.get('net_cr', 0):+,.0f} cr*\n\n"
+        )
+        # 5D cumulative
+        recent = flows[-5:]
+        if recent:
+            fii_5d = sum(r.get("fiinet_cr", 0) or 0 for r in recent)
+            dii_5d = sum(r.get("diinet_cr", 0) or 0 for r in recent)
+            msg += f"*5D Cumulative:*\n"
+            msg += f"FII: ₹{fii_5d:+,.0f} cr | DII: ₹{dii_5d:+,.0f} cr\n"
+            # Velocity label
+            if fii_5d < -5000:
+                msg += f"🔄 FII: Accelerating selling\n"
+            elif fii_5d < -2000:
+                msg += f"🔁 FII: Sustained selling\n"
+            elif fii_5d > 5000:
+                msg += f"🔄 FII: Strong buying\n"
+            else:
+                msg += f"➡️ FII: Mixed / neutral\n"
+        # Streak detection (simplified)
+        streaks = []
+        for r in reversed(flows):
+            net = r.get("net_cr", 0) or 0
+            if net > 0:
+                streaks.append("B")
+            elif net < 0:
+                streaks.append("S")
+            else:
+                break
+        if len(streaks) >= 3:
+            direction = "buying 📈" if streaks[0] == "B" else "selling 📉"
+            msg += f"\n*Streak:* {len(streaks)}d of {direction}"
+        _send(chat_id, msg)
+    except Exception as e:
+        _send(chat_id, f"⚠️ Error fetching flows: {e}")
+
+
+def handle_gex(chat_id: str) -> None:
+    """Show latest options GEX levels, max pain, PCR."""
+    try:
+        snap = get_latest_snapshot("NIFTY", "morning")
+        if not snap:
+            snap = get_latest_snapshot("NIFTY", "evening")
+        if not snap:
+            _send(chat_id, "⚠️ No options snapshot available (traded during market hours)")
+            return
+        msg = (
+            f"🧲 *Options Snapshot (NIFTY)*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        )
+        if snap.get("spot_price"):
+            msg += f"Spot: *{snap['spot_price']:,.0f}*\n"
+        if snap.get("max_pain"):
+            msg += f"Max Pain: *{snap['max_pain']:,.0f}*\n"
+        if snap.get("pcr"):
+            msg += f"PCR: *{snap['pcr']:.2f}*"
+            sig = snap.get("pcr_signal", "")
+            if sig:
+                msg += f" ({sig})"
+            msg += "\n"
+        if snap.get("gex") is not None:
+            gex = snap["gex"]
+            msg += f"GEX: *₹{gex:+,.0f} cr*"
+            if gex > 500:
+                msg += " (positive gamma — volatility dampening)"
+            elif gex < -500:
+                msg += " (negative gamma — volatility amplifying)"
+            msg += "\n"
+        if snap.get("skew_25d") is not None:
+            msg += f"Skew (25d): *{snap['skew_25d']:.2f}*\n"
+        # Support/resistance zones if stored
+        sz = snap.get("support_zone", [])
+        if sz and isinstance(sz, list) and len(sz) >= 2:
+            msg += f"Support zone: {sz[0]:,.0f}–{sz[1]:,.0f}\n"
+        rz = snap.get("resistance_zone", [])
+        if rz and isinstance(rz, list) and len(rz) >= 2:
+            msg += f"Resistance zone: {rz[0]:,.0f}–{rz[1]:,.0f}\n"
+        msg += f"\n_Run: {snap.get('run', '?')} | {snap.get('date', '?')}_"
+        _send(chat_id, msg)
+    except Exception as e:
+        _send(chat_id, f"⚠️ Error fetching options data: {e}")
+
+
+def handle_sectors(chat_id: str) -> None:
+    """Show latest sector RS leaders and laggards."""
+    try:
+        rows = get_sector_rs_history(days=3)
+        if not rows:
+            _send(chat_id, "⚠️ No sector RS data available")
+            return
+        # Group by date, get latest
+        dates = sorted(set(r["date"] for r in rows), reverse=True)
+        latest_date = dates[0]
+        latest = [r for r in rows if r["date"] == latest_date]
+        if not latest:
+            _send(chat_id, "⚠️ No sector data for latest date")
+            return
+        # Sort by rs_score
+        sorted_sectors = sorted(latest, key=lambda x: abs(x.get("rs_score", 0) or 0), reverse=True)
+        msg = (
+            f"📊 *Sector Relative Strength*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Date: {latest_date}\n\n"
+        )
+        leaders = [s for s in sorted_sectors if (s.get("rs_score", 0) or 0) > 0][:5]
+        laggards = [s for s in sorted_sectors if (s.get("rs_score", 0) or 0) < 0][:5]
+        if leaders:
+            msg += "*Leaders:*\n"
+            for s in leaders:
+                rs = s.get("rs_score", 0) or 0
+                mom = s.get("momentum_1m", 0) or 0
+                arrow = "↑" if mom > 0 else "↓"
+                msg += f"  🟢 {s.get('sector_name', '?')}: {rs:+.2f}σ {arrow}\n"
+        if laggards:
+            msg += f"\n*Laggards:*\n"
+            for s in laggards:
+                rs = s.get("rs_score", 0) or 0
+                mom = s.get("momentum_1m", 0) or 0
+                arrow = "↑" if mom > 0 else "↓"
+                msg += f"  🔴 {s.get('sector_name', '?')}: {rs:+.2f}σ {arrow}\n"
+        # Turnover ratio if available
+        trs = [s.get("turnover_ratio") for s in latest if s.get("turnover_ratio") is not None]
+        if trs:
+            avg_tr = sum(trs) / len(trs)
+            msg += f"\nAvg turnover ratio: {avg_tr:.2f}\n"
+        _send(chat_id, msg)
+    except Exception as e:
+        _send(chat_id, f"⚠️ Error fetching sector data: {e}")
+
+
+def handle_whatif(chat_id: str, args: str) -> None:
+    """Simulate consequence of a macro variable change."""
+    if not args:
+        vars_list = ", ".join(sorted(CONSEQUENCE_MULTIPLIERS.keys()))
+        _send(
+            chat_id,
+            f"❌ Usage: `/whatif <variable> <value>`\n\n"
+            f"Available variables: {vars_list}\n\n"
+            f"Examples:\n"
+            f"  `/whatif brent 100` — Oil at $100\n"
+            f"  `/whatif usdinr 90` — Rupee at ₹90\n"
+            f"  `/whatif india_vix 25` — VIX at 25\n"
+            f"  `/whatif gold 5000` — Gold at ₹5000/bbl"
+        )
+        return
+    parts = args.strip().split(None, 1)
+    if len(parts) < 2:
+        _send(
+            chat_id,
+            f"❌ Please provide both variable and value\n"
+            f"Example: `/whatif brent 100`"
+        )
+        return
+    variable = parts[0].lower().strip()
+    try:
+        current_value = float(parts[1])
+    except ValueError:
+        _send(chat_id, "❌ Value must be a number")
+        return
+    # Validate variable (with common aliases)
+    ALIASES = {
+        "vix": "india_vix",
+        "usd": "usdinr",
+        "dollar": "usdinr",
+        "rupee": "usdinr",
+        "inr": "usdinr",
+        "oil": "brent",
+        "crude": "brent",
+        "10y": "us_10y",
+        "us10y": "us_10y",
+        "dxy": "dxy",
+        "dollar_index": "dxy",
+        "gold": "gold",
+        "copper": "copper",
+        "hyg": "hyg",
+        "wti": "wti",
+    }
+    canonical = ALIASES.get(variable, variable.replace("-", "_").replace("/", "_"))
+    if canonical not in CONSEQUENCE_MULTIPLIERS:
+        vars_list = ", ".join(sorted(CONSEQUENCE_MULTIPLIERS.keys()))
+        _send(
+            chat_id,
+            f"❌ Unknown variable: `{variable}`\n\n"
+            f"Available: {vars_list}\n\n"
+            f"Examples:\n"
+            f"  `/whatif brent 100` — Oil at $100\n"
+            f"  `/whatif usdinr 90` — Rupee at ₹90\n"
+            f"  `/whatif india_vix 25` — VIX at 25\n"
+            f"  `/whatif gold 5000` — Gold at ₹5000\n"
+            f"  `/whatif us_10y 5` — US 10Y at 5%"
+        )
+        return
+    result = compute_consequence(canonical, current_value, change_value=current_value)
+    if not result:
+        _send(chat_id, f"⚠️ No consequence mapping for `{variable}` at that level")
+        return
+    msg = (
+        f"🔮 *What If: {variable} = {current_value}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+    lines = result.get("lines", [])
+    for line in lines[:5]:
+        msg += f"  • {line}\n"
+    severity = result.get("severity", "")
+    if severity:
+        sev_map = {"neutral": "⚪", "elevated": "🟡", "high": "🔴", "extreme": "🚨", "stress": "🔴"}
+        emoji = sev_map.get(severity.lower(), "⚪")
+        msg += f"\nSeverity: {emoji} {severity}\n"
+    _send(chat_id, msg)
+
+
 def handle_unknown(chat_id: str, text: str) -> None:
     """Handle unrecognised commands"""
     _send(
@@ -460,6 +798,12 @@ def process_update(update: Dict) -> None:
         "/listmf":    lambda: handle_listmf(chat_id),
         "/searchmf":  lambda: handle_searchmf(chat_id, args),
         "/status":    lambda: handle_status(chat_id),
+        "/stress":    lambda: handle_stress(chat_id),
+        "/clone":     lambda: handle_clone(chat_id),
+        "/flows":     lambda: handle_flows(chat_id),
+        "/gex":       lambda: handle_gex(chat_id),
+        "/sectors":   lambda: handle_sectors(chat_id),
+        "/whatif":    lambda: handle_whatif(chat_id, args),
     }
 
     handler = dispatch.get(command)

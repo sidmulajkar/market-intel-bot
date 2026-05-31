@@ -11,9 +11,9 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 
 
 def _fmt_rupee_local(value: float) -> str:
-    """Format rupee value with sign before symbol: -₹655Cr instead of ₹-655Cr."""
+    """Format rupee value with sign after ₹ symbol: ₹-655Cr (Bloomberg-standard)."""
     sign = "-" if value < 0 else "+"
-    return f"{sign}₹{abs(value):,.0f}Cr"
+    return f"₹{sign}{abs(value):,.0f}Cr"
 
 
 # ── GROQ ──────────────────────────────────────────────────────────
@@ -26,24 +26,18 @@ except ImportError:
     GROQ_AVAILABLE = False
     print("⚠️  groq not installed")
 
-# ── GOOGLE ────────────────────────────────────────────────────────
-try:
-    import google.generativeai as genai
-    GOOGLE_AVAILABLE = True
-except ImportError:
-    GOOGLE_AVAILABLE = False
-    print("⚠️  google-generativeai not installed")
-
-# ── GOOGLE SEARCH GROUNDING (via google-genai) ─────────────────────
-# Uses Gemini with Google Search Retrieval — Gemini can search the web
-# during generation to verify numbers, find fresh news, fill API gaps.
-GOOGLE_SEARCH_AVAILABLE = False
+# ── GOOGLE (google-genai SDK, replaces deprecated google.generativeai) ─
 try:
     from google import genai as genai_client
     from google.genai import types as genai_types
+    GOOGLE_AVAILABLE = True
     GOOGLE_SEARCH_AVAILABLE = True
 except ImportError:
-    pass  # google-genai not installed — search grounding unavailable
+    genai_client = None
+    genai_types = None
+    GOOGLE_AVAILABLE = False
+    GOOGLE_SEARCH_AVAILABLE = False
+    print("⚠️  google-genai not installed")
 
 GROQ_KEY   = os.environ.get('GROQ_API_KEY',  '')
 GOOGLE_KEY = os.environ.get('GOOGLE_AI_KEY', '')
@@ -76,18 +70,9 @@ class AIEngine:
 
         if GOOGLE_AVAILABLE and GOOGLE_KEY:
             try:
-                genai.configure(api_key=GOOGLE_KEY)
-                # Updated: gemini-1.5-flash deprecated, using gemini-2.0-flash
-                self.google_model = genai.GenerativeModel('gemini-2.0-flash')
+                self.google_client = genai_client.Client(api_key=GOOGLE_KEY)
             except Exception as e:
                 print(f"⚠️  Google AI init failed: {e}")
-
-        # Google Search Grounding — uses google-genai SDK
-        if GOOGLE_SEARCH_AVAILABLE and GOOGLE_KEY:
-            try:
-                self.google_search_client = genai_client.Client(api_key=GOOGLE_KEY)
-            except Exception as e:
-                print(f"⚠️  Google Search client init failed: {e}")
 
     def has_quota(self, task: str = "fast") -> bool:
         """Check if the primary AI provider has quota available.
@@ -134,10 +119,14 @@ class AIEngine:
 
     def _check_google_quota(self) -> bool:
         """Minimal Google quota check."""
-        if not self.google_model:
+        if not self.google_client:
             return False
         try:
-            resp = self.google_model.generate_content(".", generation_config=genai.GenerationConfig(max_output_tokens=1, temperature=0))
+            resp = self.google_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=".",
+                config=genai_types.GenerateContentConfig(max_output_tokens=1, temperature=0),
+            )
             return resp.text is not None
         except Exception as e:
             if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
@@ -250,17 +239,17 @@ class AIEngine:
             return ""
 
     def _try_google(self, prompt: str) -> str:
-        if not self.google_model:
+        if not self.google_client:
             return ""
         try:
             full_prompt = f"[SYSTEM INSTRUCTIONS]\n{SYSTEM_PROMPT}\n\n[USER REQUEST]\n{prompt}"
-            cfg = genai.GenerationConfig(
-                max_output_tokens=1000,
-                temperature=0.3,
-            )
-            resp = self.google_model.generate_content(
-                full_prompt,
-                generation_config=cfg
+            resp = self.google_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=full_prompt,
+                config=genai_types.GenerateContentConfig(
+                    max_output_tokens=1000,
+                    temperature=0.3,
+                ),
             )
             return self._check_output_quality(resp.text)
         except Exception as e:
@@ -275,11 +264,11 @@ class AIEngine:
         The model can verify our numbers against live sources and find
         fresh news that our APIs missed.
         """
-        if not self.google_search_client:
+        if not self.google_client:
             return ""
         try:
             print("   🔍 Falling back to Gemini + Google Search grounding...")
-            response = self.google_search_client.models.generate_content(
+            response = self.google_client.models.generate_content(
                 model='gemini-2.0-flash',
                 contents=f"[SYSTEM]\n{SYSTEM_PROMPT}\n\n[USER]\n{prompt}",
                 config=genai_types.GenerateContentConfig(
@@ -380,71 +369,19 @@ Write a morning market brief. Rules:
 - Every claim must cite a specific number (%, ₹Cr, price level)
 - Reference actual headlines from the news above
 - No generic statements ("markets are mixed" is banned)
-- Be direct — what happened, what it means, what to do
+- Be direct — what happened, what it means
 - Max 200 words
+- CRITICAL CONSTRAINT: You are a data formatter, not an analyst. Do not forecast, predict, or advise. Write strictly in the present tense. Use exact data provided.
 
 Structure:
 1. 📊 [One number that captures today — pick the most important]
 2. 🌍 Global News: 3-4 editorial bullets with ⦿ prefix, each citing a specific data point from the indices/headlines
-3. 🇮🇳 India News: 2-3 editorial bullets with ⦿ prefix, what this means for Nifty
-4. 📈 Market Impact: What this means for Nifty today — be specific (gap expected? key level?)
-5. ⚠️ Risk: One thing that could go wrong
-6. 🎯 Watch: One trigger level or event to monitor
+3. 🇮🇳 India News: 2-3 editorial bullets with ⦿ prefix, reference actual Nifty data
+4. 📈 Market Impact: current macro data regime context (reference macro anchors index)
+5. ⚠️ Risk: active scenario from scenario engine (if any)
 """
 
     @staticmethod
-    def stock_analysis_prompt(symbol: str, data: dict, news: list, tech_context: dict = None) -> str:
-        # Format news with trust scores and sentiment
-        if news:
-            news_lines = []
-            for n in news[:5]:
-                headline = n.get("headline", "")[:60]
-                trust = n.get("trust_score", 0)
-                source = n.get("source", "unknown")
-                sent = n.get("sentiment", {})
-                sent_label = max(sent, key=sent.get) if sent else "neutral"
-                news_lines.append(f"• {headline} ({source}, Trust:{trust}/10, {sent_label})")
-            news_text = "\n".join(news_lines)
-        else:
-            news_text = "No recent news."
-
-        vol_note = "🚨 VOLUME SPIKE" if data.get("volume_spike") else "Normal"
-
-        # Format technical context
-        tech_block = ""
-        if tech_context:
-            ma20 = tech_context.get("ma20", 0)
-            price = tech_context.get("price", 0)
-            ma_diff = ((price - ma20) / ma20 * 100) if ma20 > 0 else 0
-            ma_status = "Above" if ma_diff > 0 else "Below"
-            tech_block = f"""
-Technical context (from 1-month data):
-• Price vs 20D SMA: {ma_status} ({ma_diff:+.1f}%)
-• 5-day momentum: {tech_context.get('momentum_5d', 'N/A')}
-• Monthly return: {tech_context.get('monthly_return', 0):+.2f}%
-"""
-
-        return f"""
-Analyze {symbol}:
-Price: {data.get('price','N/A')}
-Day Change: {data.get('day_change',0):+.2f}%
-Volume: {data.get('volume',0):,} vs Avg {data.get('avg_volume',0):,} → {vol_note}
-7D Range: {data.get('week_low')} to {data.get('week_high')}
-1M Range: {data.get('month_low')} to {data.get('month_high')}
-{tech_block}
-News (weighted by trust score):
-{news_text}
-
-5 bullets:
-1. Trend: Bullish/Bearish/Neutral + reason (consider technicals)
-2. Key Levels: Support and Resistance
-3. News Impact: Positive/Negative/Neutral (weight high-trust sources)
-4. Signal: BUY / SELL / HOLD / WATCH
-5. Risk: Low/Medium/High + main risk
-
-Use trust scores to weight news reliability. Consider technicals in your trend assessment.
-"""
-
     @staticmethod
     def eod_summary_prompt(watchlist_data: dict, news_items: list = None, consensus_sentiment: str = "neutral") -> str:
         lines = []
@@ -474,70 +411,16 @@ End-of-day watchlist:
 
 Market sentiment: {consensus_sentiment.upper()}
 
-Provide (base on actual news, not speculation):
+Provide factual summary based on data only:
 1. Top winner and loser today
 2. Overall market mood (reference news sentiment)
-3. What patterns/levels to watch (not "overnight events")
-4. One trade idea for tomorrow with rationale
+3. Regime posture and derivatives snapshot
+4. Historical context from scenario engine (if active)
 
 Under 200 words. Do NOT invent events. Use the news provided.
+CRITICAL CONSTRAINT: You are a data formatter, not an analyst. Do not forecast, predict, or advise. The session is STARTING NOW — describe opening posture, not closed session. Use PRESENT TENSE only. Use exact data provided.
 """
 
-    @staticmethod
-    def midday_market_prompt(global_indices: dict, top_movers: dict,
-                             news_items: list = None, bull_bear: dict = None) -> str:
-        # Format global indices (top 5 by absolute change)
-        idx_lines = []
-        if global_indices:
-            sorted_idx = sorted(
-                [(c, d) for c, d in global_indices.items() if d.get("ok")],
-                key=lambda x: abs(x[1].get("change_pct", 0)),
-                reverse=True
-            )
-            for country, d in sorted_idx[:5]:
-                sign = "+" if d.get("change_pct", 0) >= 0 else ""
-                idx_lines.append(f"{d.get('flag','')} {country}: {sign}{d.get('change_pct',0):.2f}%")
-
-        # Format top movers
-        gainers, losers = [], []
-        if top_movers:
-            for m in top_movers.get("india", {}).get("gainers", [])[:3]:
-                gainers.append(f"{m['symbol']} +{m['change_pct']:.1f}%")
-            for m in top_movers.get("india", {}).get("losers", [])[:3]:
-                losers.append(f"{m['symbol']} {m['change_pct']:.1f}%")
-
-        # Format news
-        news_block = ""
-        if news_items:
-            news_lines = []
-            for n in news_items[:3]:
-                headline = n.get("headline", "")[:60]
-                trust = n.get("trust_score", 0)
-                source = n.get("source", "unknown")
-                news_lines.append(f"• {headline} ({source}, Trust:{trust}/10)")
-            if news_lines:
-                news_block = f"\nHeadlines:\n{chr(10).join(news_lines)}"
-
-        # Bull/bear context
-        bb_line = ""
-        if bull_bear and bull_bear.get("ok"):
-            bb_line = f"\nBull/Bear Score: {bull_bear.get('score', 'N/A')}/100 ({bull_bear.get('label', 'N/A')})"
-
-        return f"""
-Midday market snapshot:
-Global indices: {chr(10).join(idx_lines) if idx_lines else 'No data'}
-Top gainers: {' | '.join(gainers) if gainers else 'No data'}
-Top losers: {' | '.join(losers) if losers else 'No data'}
-{news_block}
-{bb_line}
-
-Provide a sharp 3-point midday brief:
-1. Market Mood — what's driving sentiment right now
-2. What Changed — any shift since morning (flows, global moves, news)
-3. What to Watch — key level or event for the afternoon session
-
-Under 80 words. No disclaimers. Be direct.
-"""
 
     @staticmethod
     def eod_market_prompt(top_movers: dict, global_indices: dict = None,
@@ -595,12 +478,13 @@ Sentiment: {consensus_sentiment.upper()}
 {news_block}
 {bb_line}
 
-Provide (based on actual data, not speculation):
+Provide factual EOD summary:
 1. What happened today + why (reference news and flows)
-2. Sector rotation story (which sectors led/lagged)
-3. What to watch tomorrow
+2. Sector RS ranking (leaders/laggards from data)
+3. Derivatives setup and scenario context
 
 Under 150 words. Reference news trust scores. No disclaimers.
+CRITICAL CONSTRAINT: You are a data formatter, not an analyst. Do not forecast, predict, or advise. Write strictly in the present tense. Use exact data provided.
 """
 
     @staticmethod
@@ -616,7 +500,10 @@ Under 150 words. Reference news trust scores. No disclaimers.
             )
             for country, d in sorted_idx[:5]:
                 sign = "+" if d.get("change_pct", 0) >= 0 else ""
-                idx_lines.append(f"{d.get('flag','')} {country}: {sign}{d.get('change_pct',0):.2f}%")
+                label = country
+                if country == "India":
+                    label = "India (Previous Close)"
+                idx_lines.append(f"{d.get('flag','')} {label}: {sign}{d.get('change_pct',0):.2f}%")
 
         # Format pre-market movers
         gap_ups, gap_downs = [], []
@@ -646,7 +533,7 @@ Under 150 words. Reference news trust scores. No disclaimers.
             bb_line = f"\nBull/Bear Score: {bull_bear.get('score', 'N/A')}/100 ({bull_bear.get('label', 'N/A')})"
 
         return f"""
-Indian market opening at 9:15 AM IST.
+SESSION OPENING at 9:15 AM IST. All Indian price data below is PREVIOUS SESSION CLOSE — the current session is BEGINNING NOW. Do NOT use past tense for India.
 
 Overnight global moves:
 {chr(10).join(idx_lines) if idx_lines else 'No data'}
@@ -656,12 +543,13 @@ Gap downs: {' | '.join(gap_downs) if gap_downs else 'None'}
 {news_block}
 {bb_line}
 
-Give a sharp 3-point opening brief:
+Give a sharp factual opening brief:
 1. Opening Mood + reason (weight high-trust news sources)
-2. Sectors to watch today
-3. Key Nifty level to watch
+2. Pre-market movers and consequence layer data
+3. Present regime posture and derivative setup
 
 Under 100 words. No disclaimers. Reference trust scores.
+CRITICAL CONSTRAINT: You are a data formatter, not an analyst. Do not forecast, predict, or advise. Write strictly in the present tense. Use exact data provided.
 """
 
     @staticmethod
@@ -756,13 +644,13 @@ News this week:
 
 {bb_line}
 
-Provide a sharp weekly narrative:
+Provide a factual weekly summary:
 1. What happened this week + why (reference FII pattern, regime shift, news)
 2. What smart money is doing (institutional signals — sector regime, risk appetite, FII footprint)
-3. Contrarian opportunity — what's the crowd missing?
-4. Next week preview — key events, levels, what to watch
+3. Next week macro calendar and active scenarios
 
 Under 200 words. Be direct. Reference data, not opinions.
+CRITICAL CONSTRAINT: You are a data formatter, not an analyst. Do not forecast, predict, or advise. Write strictly in the present tense. Use exact data provided.
 """
 
     @staticmethod
@@ -784,8 +672,9 @@ Weekly brief:
 1. This Week's Theme
 2. Key Global Story
 3. India Standout performer
-4. Next Week Outlook
-5. Watchlist Focus for next week
+4. Historical context from current regime state
+5. Macro calendar for next week
 
 Under 250 words.
+CRITICAL CONSTRAINT: You are a data formatter, not an analyst. Do not forecast, predict, or advise. Write strictly in the present tense. Use exact data provided.
 """

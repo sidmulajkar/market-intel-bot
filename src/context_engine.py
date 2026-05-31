@@ -11,9 +11,9 @@ from typing import Dict, List, Optional
 
 
 def _fmt_rupee_local(value: float) -> str:
-    """Format rupee value with sign before symbol: -₹655Cr instead of ₹-655Cr."""
+    """Format rupee value with sign after ₹ symbol: ₹-655Cr (Bloomberg-standard)."""
     sign = "-" if value < 0 else "+"
-    return f"{sign}₹{abs(value):,.0f}Cr"
+    return f"₹{sign}{abs(value):,.0f}Cr"
 
 
 # Supabase imports

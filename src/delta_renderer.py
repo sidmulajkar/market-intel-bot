@@ -14,9 +14,9 @@ from typing import Optional, Dict
 
 
 def _fmt_rupee_local(value: float) -> str:
-    """Format rupee value with sign before symbol: -₹655Cr instead of ₹-655Cr."""
+    """Format rupee value with sign after ₹ symbol: ₹-655Cr (Bloomberg-standard)."""
     sign = "-" if value < 0 else "+"
-    return f"{sign}₹{abs(value):,.0f}Cr"
+    return f"₹{sign}{abs(value):,.0f}Cr"
 
 
 # ── Regime card renderer ────────────────────────────────────────────────────
@@ -431,17 +431,17 @@ def _check_transition(state) -> Optional[Dict]:
 
         if gap.get("is_significant") and gap.get("gap", 0) >= 10:
             direction = gap.get("direction", "")
-            actions = []
+            facts = []
             if "COMPLACENCY" in direction:
-                actions.append("Action: Hedge longs, reduce size, wait for alignment")
+                facts.append("Price-vs-structural gap: sentiment bullish but fundamentals weakening")
             elif "FEAR" in direction:
-                actions.append("Action: Watch for oversold bounce, scale in cautiously")
+                facts.append("Price-vs-structural gap: sentiment bearish but fundamentals stable")
             else:
-                actions.append("Action: Reduce momentum exposure while divergence persists")
+                facts.append("Price-vs-structural gap: significant divergence across signals")
 
             return {
                 "label": "Transition Phase",
-                "actions": actions,
+                "actions": facts,
             }
     except Exception:
         pass

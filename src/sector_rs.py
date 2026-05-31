@@ -124,6 +124,18 @@ def compute_relative_strength(sector_data: Dict) -> List[Dict]:
         else:
             flow = "MIXED"
 
+        # Phase classification: LEADING / PEAKING / LAGGING / RECOVERING
+        def _classify_phase(score: float, mom: float) -> str:
+            if score >= 50 and mom > 0:
+                return "LEADING"
+            elif score >= 50 and mom <= 0:
+                return "PEAKING"
+            elif score < 50 and mom > 0:
+                return "RECOVERING"
+            return "LAGGING"
+
+        phase = _classify_phase(rs_score, momentum_1m)
+
         sectors.append({
             "name": name,
             "price": data.get("price"),
@@ -133,6 +145,7 @@ def compute_relative_strength(sector_data: Dict) -> List[Dict]:
             "rs_score": rs_score,
             "momentum_1m": momentum_1m,
             "flow": flow,
+            "phase": phase,
             "return_1d": data.get("1d", 0),
         })
 
@@ -200,6 +213,38 @@ def format_sector_rs(sectors: List[Dict]) -> str:
     return "\n".join(lines)
 
 
+def format_sector_phases(sectors: List[Dict]) -> str:
+    """
+    Format sector rotation phases: sectors grouped by LEADING/PEAKING/RECOVERING/LAGGING.
+    Uses Z-score of momentum_1m for σ notation.
+    """
+    if not sectors:
+        return ""
+
+    # Compute Z-score for momentum_1m across sectors
+    mom_values = [s.get("momentum_1m", 0) for s in sectors]
+    mean_mom = statistics.mean(mom_values) if mom_values else 0
+    std_mom = statistics.stdev(mom_values) if len(mom_values) > 1 else 1
+    if std_mom == 0:
+        std_mom = 1
+
+    # Group by phase
+    phases = {"LEADING": [], "PEAKING": [], "RECOVERING": [], "LAGGING": []}
+    for s in sectors:
+        phase = s.get("phase", "LAGGING")
+        if phase in phases:
+            z = (s.get("momentum_1m", 0) - mean_mom) / std_mom
+            arrow = "↑" if s.get("momentum_1m", 0) > 0 else "↓"
+            phases[phase].append(f"{s['name'][:10]} ({z:+.1f}σ, {arrow})")
+
+    lines = []
+    for phase in ["LEADING", "PEAKING", "RECOVERING", "LAGGING"]:
+        if phases[phase]:
+            lines.append(f"{phase}: {' | '.join(phases[phase])}")
+
+    return " 🔄 ".join(lines)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -218,11 +263,13 @@ def run_sector_rs_analysis() -> Dict:
         return {"ok": False, "message": "Could not compute relative strength"}
 
     formatted = format_sector_rs(sectors)
+    phases = format_sector_phases(sectors)
 
     return {
         "ok": True,
         "sectors": sectors,
         "formatted": formatted,
+        "phases": phases,
         "nifty_price": sector_data.get("Nifty 50", {}).get("price"),
     }
 

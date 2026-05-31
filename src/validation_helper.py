@@ -34,7 +34,7 @@ _LEAKAGE_PATTERNS = [
     "even fallback failed",
 ]
 
-_TRADING_SIGNAL_PATTERNS = [
+_BLOCKED_PATTERNS = [
     r'[Bb]ias:\s*(Long|Short|Buy|Sell)[^\n]*',
     r'[Bb]ias:.*',
     r'[Kk]ey levels?:[^\n]*',
@@ -59,11 +59,23 @@ _TRADING_SIGNAL_PATTERNS = [
     r'[Ss]uggesting\s+caution',  # "suggesting caution" — advice language
     r'[Ss]hould\s+(watch|consider|avoid|hedge|monitor|raise|cut|reduce|trim|accumulate|remain|be)',  # advisory "should"
     r'\bset\s+direction\b',      # "set direction" — prediction language
+    # Structural speculation patterns (Phase 35 — P0)
+    r'\b(could|would|will|might|shall)\b',              # Future tense modals
+    r'if\s+.*?,\s+.*?(rally|decline|fall|rise|move|break|slide|climb)',  # If-then conditionals
+    r'[Rr]ange\s+[Tt]rade[^\n]*',                       # Range trade (trading signal)
+    r'(?<=\.)\s*(watch|monitor|avoid|prefer|hedge|accumulate|capitalize|stay)\b',  # Sentence-start imperatives
+    r'^\s*(watch|monitor|avoid|prefer|hedge|accumulate|capitalize|stay)\b',         # Line-start imperatives
+    r'(?:^|Action:\s*)(watch|monitor|avoid|prefer|hedge|accumulate|capitalize|stay|scale\s+in)\b',  # Imperatives after Action: prefix
+    r'\b(oversold\s+bounce|scale\s+in\s+cautiously)\b', # Directional prediction + trading action
+    r'\b(elevated|strong|weak|material|significant|moderate|substantial|robust|firm)\b(?!\s+[\d₹$%\-])',  # Unqualified adjectives (must have number after)
+    r'→\s*(Nifty|Bank|Market|Sensex|Sector|Index)',    # Conditional arrow advice
+    # Clone block speculation protection (T4.2)
+    r'(Clone|clone|Historical Clone).*?(could|may|might|will|if|likely|possibly|probably)',
 ]
 
 
 def _strip_trading_signals(text: str) -> str:
-    """Remove trading advice from AI output — keep only factual statements."""
+    """Remove trading advice and speculative language from AI output — keep only factual statements."""
     lines = text.split('\n')
     filtered = []
     for line in lines:
@@ -72,7 +84,7 @@ def _strip_trading_signals(text: str) -> str:
             filtered.append(line)
             continue
         is_signal = False
-        for pattern in _TRADING_SIGNAL_PATTERNS:
+        for pattern in _BLOCKED_PATTERNS:
             if re.search(pattern, stripped):
                 is_signal = True
                 break
@@ -125,6 +137,10 @@ def _strip_ghost_regime(text: str) -> str:
             skip_next = True
             continue
         if skip_next and re.match(r'^(Confidence|Dominant)', stripped, re.IGNORECASE):
+            continue
+        # Ghost phase labels appended below regime card — not in canonical set
+        if re.match(r'^[*\s]*[🟡🔴]?\s*[*\s]*(Transition|Cautious|Recovery|Consolidation|Breakdown)\s+Phase\b', stripped, re.IGNORECASE):
+            skip_next = True
             continue
         skip_next = False
         filtered.append(line)

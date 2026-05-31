@@ -419,7 +419,7 @@ def main():
                 state.macro.dxy_signal = dxy.get("signal", "FLAT")
 
         # Populate flows
-        fii_ctx = ctx.get("fii_dii_context", {})
+        fii_ctx = ctx.get("fii_context", {})
         if fii_ctx.get("ok"):
             state.flows.fii_net = fii_ctx.get("fii_net")
             state.flows.dii_net = fii_ctx.get("dii_net")
@@ -542,6 +542,16 @@ def main():
                 regime_card += brier_line
         except Exception:
             pass
+
+        # ── Economic Calendar ─────────────────────────────────
+        try:
+            from src.economic_calendar import get_upcoming_events, format_calendar
+            cal_events = get_upcoming_events(days=7)
+            cal_str = format_calendar(cal_events)
+            if cal_str:
+                regime_card += "\n\n" + cal_str
+        except Exception as e:
+            print(f"   ⚠️ Calendar: {e}")
 
         if regime_card:
             merged = ""

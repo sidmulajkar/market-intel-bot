@@ -35,6 +35,11 @@ def fetch_macro(state: MarketState) -> MarketState:
                 "HYG": ("hyg", None),
                 "CL=F": ("wti", None),
                 "HG=F": ("copper", None),
+                "LQD": ("lqd", None),
+                "SOXX": ("soxx", None),
+                "JPY=X": ("usd_jpy", None),
+                "ES=F": ("es", None),
+                "NQ=F": ("nq", None),
             }
             if symbol in name_map:
                 field, change_field = name_map[symbol]
@@ -50,8 +55,13 @@ def fetch_macro(state: MarketState) -> MarketState:
     state.macro.us_10y = macro_data.get("us_10y")
     state.macro.cboe_vix = macro_data.get("cboe_vix")
     state.macro.hyg = macro_data.get("hyg")
+    state.macro.lqd = macro_data.get("lqd")
+    state.macro.soxx = macro_data.get("soxx")
     state.macro.wti = macro_data.get("wti")
     state.macro.copper = macro_data.get("copper")
+    state.macro.usd_jpy = macro_data.get("usd_jpy")
+    state.macro.es = macro_data.get("es")
+    state.macro.nq = macro_data.get("nq")
     state.macro.vix_change_pct = macro_data.get("vix_change_pct")
     state.macro.usdinr_change_pct = macro_data.get("usdinr_change_pct")
     state.macro.brent_change_pct = macro_data.get("brent_change_pct")

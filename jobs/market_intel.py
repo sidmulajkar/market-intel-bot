@@ -230,7 +230,7 @@ def render_deterministic_intel(raw_data: dict, mode: str = "morning") -> str:
     if fii_net is not None:
         key_lines.append(f"  FII: ₹{fii_net:+,.0f}Cr")
         if fii_streak and abs(fii_streak) >= 3:
-            direction = "buying" if fii_streak > 0 else "selling"
+            direction = "buying" if fii_net > 0 else "selling"
             key_lines.append(f"  FII {direction} streak: {abs(fii_streak)} days")
 
     if dii_net is not None:
@@ -249,6 +249,125 @@ def render_deterministic_intel(raw_data: dict, mode: str = "morning") -> str:
 
 
 # ── CLI ────────────────────────────────────────────────────────────
+def _save_morning_fingerprint(snapshot_data: dict, state) -> None:
+    """Save morning snapshot fingerprint for evening delta comparison."""
+    try:
+        import json
+        from datetime import datetime
+        from src.db import set_bot_state
+        fp = {
+            "nifty_close": snapshot_data.get("nifty_close"),
+            "vix": snapshot_data.get("india_vix"),
+            "usdinr": snapshot_data.get("usdinr"),
+            "brent": snapshot_data.get("brent"),
+            "fii_net": snapshot_data.get("fii_net"),
+            "regime": getattr(state, "final_regime", None),
+        }
+        set_bot_state(f"morning_fingerprint_{datetime.now().strftime('%Y-%m-%d')}", json.dumps(fp))
+        print(f"   ✅ Morning fingerprint saved")
+    except Exception as e:
+        print(f"   ⚠️ Morning fingerprint: {e}")
+
+
+def _check_evening_delta() -> bool:
+    """Compare evening metrics against morning fingerprint. Send compressed if no change. Returns True if sent."""
+    try:
+        import json
+        from datetime import datetime
+        from src.db import get_bot_state, get_market_state
+        from src.data_fetcher import fetch_macro_anchors, fetch_global_indices
+        from src.context_engine import get_fii_dii_context
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        raw = get_bot_state(f"morning_fingerprint_{today_str}")
+        if not raw:
+            return False
+
+        morning = json.loads(raw)
+        evening_anchors = fetch_macro_anchors() or []
+        evening_indices = fetch_global_indices() or {}
+
+        def _get(name):
+            for a in evening_anchors:
+                if a.get("name") == name and a.get("ok") and a.get("price"):
+                    return a["price"]
+            return None
+
+        e_vix = _get("India VIX")
+        e_usdinr = _get("USD/INR")
+        e_brent = _get("Brent Crude")
+        e_nifty = evening_indices.get("India", {}).get("price")
+
+        e_fii = None
+        try:
+            fii_ctx = get_fii_dii_context(days=5)
+            if fii_ctx.get("ok"):
+                e_fii = fii_ctx.get("fii_net")
+        except Exception:
+            pass
+
+        persisted = get_market_state(today_str)
+        e_regime = persisted.get("final_regime") if persisted else None
+
+        # Thresholds: diff beyond these → run full analysis
+        m_nifty = morning.get("nifty_close")
+        if m_nifty and e_nifty and abs(e_nifty - m_nifty) / m_nifty > 0.003:
+            return False
+        m_vix = morning.get("vix")
+        if m_vix and e_vix and abs(e_vix - m_vix) > 1.5:
+            return False
+        m_usdinr = morning.get("usdinr")
+        if m_usdinr and e_usdinr and abs(e_usdinr - m_usdinr) / m_usdinr > 0.005:
+            return False
+        m_brent = morning.get("brent")
+        if m_brent and e_brent and abs(e_brent - m_brent) / m_brent > 0.03:
+            return False
+        m_fii = morning.get("fii_net")
+        if m_fii is not None and e_fii is not None and abs(e_fii - m_fii) > 500:
+            return False
+        m_regime = morning.get("regime")
+        if m_regime and e_regime and e_regime != m_regime:
+            return False
+
+        # No material change — send compressed
+        override = persisted.get("final_override_reason", "") if persisted else ""
+        macro_data = persisted.get("macro", {}) if persisted else {}
+        u = macro_data.get("usdinr", "")
+        b = macro_data.get("brent", "")
+        v = macro_data.get("vix", "")
+        triggers = []
+        if u:
+            triggers.append(f"USDINR ₹{u}")
+        if b:
+            triggers.append(f"Brent ${b}")
+        if v:
+            triggers.append(f"VIX {v}")
+        trigger_str = ", ".join(triggers[:3])
+        regime_label = (e_regime or morning.get("regime", "NEUTRAL")).lower().title()
+        compressed = f"📌 *EVENING INTEL CHECK:* {regime_label}"
+        if trigger_str:
+            compressed += f" | {trigger_str}"
+        if e_regime == "DEFENSIVE" and override:
+            compressed += f" | Override: {override}"
+        try:
+            from src.economic_calendar import get_high_impact_soon
+            hi = get_high_impact_soon(days=2)
+            if hi:
+                compressed += f" | ⚠️ {hi}"
+            else:
+                compressed += " | Tracking — no material change."
+        except Exception:
+            compressed += " | Tracking — no material change."
+
+        from src.telegram_sender import send_text
+        send_text(compressed)
+        print("   ✅ Delta Tracker: no material change — compressed")
+        return True
+    except Exception as e:
+        print(f"   ⚠️ Delta Tracker check: {e}")
+        return False
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "morning"
     if mode not in ("morning", "evening"):
@@ -258,6 +377,11 @@ def main():
     print("=" * 50)
     print(f"📊 MARKET INTEL ({mode.upper()}) STARTING")
     print("=" * 50)
+
+    # Evening delta check: skip full computation if nothing changed
+    if mode == "evening" and _check_evening_delta():
+        print("✅ MARKET INTEL COMPLETE (compressed — no delta)")
+        return
 
     # Load master prompt
     try:
@@ -306,6 +430,17 @@ def main():
             print(f"   → Breadth: {len(breadth_str)} chars")
     except Exception as e:
         print(f"   ⚠️ Breadth: {e}")
+
+    # ── ECONOMIC CALENDAR (Block 1 — event risk context) ──────────
+    try:
+        from src.economic_calendar import get_upcoming_events, format_calendar
+        cal_events = get_upcoming_events(days=7)
+        cal_str = format_calendar(cal_events)
+        if cal_str:
+            blocks["block_1"] = blocks.get("block_1", "") + "\n\n" + cal_str
+            print(f"   → Calendar: {len(cal_str)} chars")
+    except Exception as e:
+        print(f"   ⚠️ Calendar: {e}")
 
     # ── BLOCK 2: Macro Anchors ───────────────────────────────────
     print(f"   ⏱️ Block 1: {_time.time()-_t0:.1f}s")
@@ -578,7 +713,23 @@ def main():
     else:
         print("🔄 BLOCK 7: Insider Activity")
         try:
-            blocks["block_7"] = format_insider_activity()
+            insider_str = format_insider_activity()
+            turnover_str = ""
+            try:
+                from src.turnover_ratio import compute_turnover_ratio, format_turnover
+                from src.data_fetcher import fetch_nse_volumes
+                vols = fetch_nse_volumes()
+                if vols and vols.get("ok"):
+                    tr = compute_turnover_ratio(vols.get("fno_volume", 0), vols.get("cash_volume", 0))
+                    turnover_str = format_turnover(tr)
+            except Exception as e2:
+                print(f"   ⚠️ Turnover ratio: {e2}")
+            if insider_str and turnover_str:
+                blocks["block_7"] = insider_str + "\n\n" + turnover_str
+            elif turnover_str:
+                blocks["block_7"] = turnover_str
+            else:
+                blocks["block_7"] = insider_str or ""
             print(f"   → {len(blocks['block_7'])} chars")
         except Exception as e:
             print(f"   ⚠️ {e}")
@@ -607,7 +758,41 @@ def main():
         else:
             print("🔄 BLOCK 10: MF Flows")
             try:
-                blocks["block_10"] = format_mf_flows()
+                mf_str = format_mf_flows()
+                carry_str = ""
+                try:
+                    anchors = fetch_macro_anchors()
+                    india_10y = us_10y = None
+                    for a in anchors or []:
+                        if a.get("name") == "India 10Y Yield" and a.get("ok"):
+                            india_10y = a["price"]
+                        elif a.get("name") == "US 10Y Yield" and a.get("ok"):
+                            us_10y = a["price"]
+                    parts = []
+                    if india_10y is not None and us_10y is not None:
+                        spread = india_10y - us_10y
+                        hist = get_daily_market_snapshots(days=10)
+                        spread_vals = []
+                        for snap in hist:
+                            iy = snap.get("india_10y")
+                            uy = snap.get("us_10y")
+                            if iy and uy:
+                                spread_vals.append(iy - uy)
+                        spread_note = ""
+                        if len(spread_vals) >= 3:
+                            from statistics import mean
+                            avg_spread = mean(spread_vals)
+                            if abs(spread - avg_spread) > 0.2:
+                                spread_note = " ↑ widening vs 5D avg" if spread > avg_spread else " ↓ narrowing vs 5D avg"
+                        parts.append(f"IND-US 10Y spread: {spread:.1f}%{spread_note}")
+                    fno_o, fno_a = run_fno_analysis_with_data()
+                    if fno_a and fno_a.get("fii_long_short_ratio"):
+                        parts.append(f"FII F&O L/S: {fno_a['fii_long_short_ratio']:.2f}x")
+                    if parts:
+                        carry_str = "\n\n📊 Post-Close: " + " | ".join(parts)
+                except Exception as e2:
+                    print(f"   ⚠️ Post-close carry: {e2}")
+                blocks["block_10"] = (mf_str + carry_str) if mf_str else carry_str or ""
                 print(f"   → {len(blocks['block_10'])} chars")
             except Exception as e:
                 print(f"   ⚠️ {e}")
@@ -658,6 +843,8 @@ def main():
                     snapshot_data["us_10y"] = a["price"]
                 elif name == "Copper" and a.get("ok"):
                     snapshot_data["copper"] = a["price"]
+                elif name == "India 10Y Yield" and a.get("ok"):
+                    snapshot_data["india_10y"] = a["price"]
 
         # FII/DII
         from src.context_engine import get_fii_dii_context
@@ -1598,17 +1785,100 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Prediction tracking: {e}")
 
+    # ── Composite Stress Index (top banner) ──────────────────────
+    stress_banner = ""
+    try:
+        from src.stress_index import compute_stress_index, format_stress_banner, save_stress_index
+        stress = compute_stress_index()
+        if stress.get("ok"):
+            stress_banner = format_stress_banner(stress)
+            save_stress_index(stress)
+    except Exception as e:
+        print(f"   ⚠️ Stress index: {e}")
+
+    # ── Historical Clone Engine (T4.2 / G3) ──────────────────────────
+    clone_blocks: list[str] = []
+    try:
+        from src.clone_engine import find_clones, find_global_clones, format_clone_block, format_global_clone_block, get_current_fii_5d, save_clones
+        from src.state import MarketState
+        _macro_v = getattr(state, 'macro', None)
+        _deriv_v = getattr(state, 'derivatives', None)
+
+        # India Clone (T4.2)
+        if all([
+            getattr(_macro_v, 'vix', None),
+            getattr(_macro_v, 'usdinr', None),
+            getattr(_macro_v, 'brent', None),
+            getattr(_macro_v, 'dxy', None),
+        ]):
+            _fii_5d = get_current_fii_5d() or getattr(getattr(state, 'flow_metrics', None), 'fii_5d_total', None)
+            _pcr = getattr(_deriv_v, 'pcr', None)
+            _clone_data = find_clones(
+                current_vix=_macro_v.vix,
+                current_usdinr=_macro_v.usdinr,
+                current_brent=_macro_v.brent,
+                current_dxy=_macro_v.dxy,
+                current_fii_5d=_fii_5d,
+                current_pcr=_pcr,
+            )
+            if _clone_data.get("status") == "ok":
+                _scenarios = getattr(state, 'active_scenarios', None)
+                _cb = format_clone_block(_clone_data, active_scenarios=_scenarios)
+                if _cb:
+                    clone_blocks.append(_cb)
+                try:
+                    save_clones(datetime.now().strftime("%Y-%m-%d"), _clone_data)
+                except Exception:
+                    pass
+
+        # Global Clone (G3)
+        if all([
+            getattr(_macro_v, 'dxy', None),
+            getattr(_macro_v, 'us_10y', None),
+            getattr(_macro_v, 'hyg', None),
+            getattr(_macro_v, 'gold', None),
+            getattr(_macro_v, 'copper', None),
+            getattr(_macro_v, 'usd_jpy', None),
+        ]):
+            _global_data = find_global_clones(
+                current_dxy=_macro_v.dxy,
+                current_us_10y=_macro_v.us_10y,
+                current_hyg=_macro_v.hyg,
+                current_gold=_macro_v.gold,
+                current_copper=_macro_v.copper,
+                current_usdjpy=_macro_v.usd_jpy,
+            )
+            if _global_data.get("status") == "ok":
+                _gb = format_global_clone_block(_global_data)
+                if _gb:
+                    clone_blocks.append(_gb)
+
+        clone_block = "\n\n".join(clone_blocks) if clone_blocks else ""
+    except Exception as e:
+        print(f"   ⚠️ Clone engine: {e}")
+        clone_block = ""
+
     # ── Send Telegram ───────────────────────────────────────────
     # Validate AI response - never send blank
     if validate_ai_response(analysis, min_words=50):
         bluf = _build_market_intel_bluf(snapshot_data)
         header = "*MARKET INTEL ({mode})*".format(mode=mode.upper())
-        msg = header + "\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        msg = ""
+        if stress_banner:
+            msg += stress_banner + "\n"
+        if clone_block:
+            msg += clone_block + "\n"
+        msg += header + "\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         if bluf:
             msg += bluf + "\n\n"
         msg += analysis + "\n\n━━━━━━━━━━━━━━━━━━━━━━━━"
         send_text(msg)
         print("✅ Market Intel sent")
+        if mode == "morning":
+            try:
+                _save_morning_fingerprint(snapshot_data, state)
+            except NameError:
+                print("   ⚠️ Morning fingerprint: state unavailable")
     else:
         # Fallback: AI failed — check if regime changed since morning card
         from src.db import get_market_state
@@ -1628,7 +1898,17 @@ def main():
                         vix_moved = True
                     break
 
-        if current_regime and not vix_moved:
+        # Parse stress score from banner (e.g., "95" from "EXTREME (95/100)")
+        stress_score = None
+        if stress_banner:
+            import re
+            m = re.search(r'\((\d+)/100\)', stress_banner)
+            if m:
+                stress_score = int(m.group(1))
+
+        # Compress to one-liner only if: regime unchanged, VIX stable, AND stress not extreme
+        stress_extreme = stress_score is not None and stress_score >= 80
+        if current_regime and not vix_moved and not stress_extreme:
             # Regime unchanged, VIX stable → compress to one-liner with key context
             override = persisted.get("final_override_reason", "") if persisted else ""
             macro_data = persisted.get("macro", {}) if persisted else {}
@@ -1647,17 +1927,28 @@ def main():
                 f"📌 *{mode_label} INTEL CHECK:* "
                 f"{current_regime}".lower().title()
             )
+            if stress_banner:
+                compressed = stress_banner + "\n" + compressed
             if trigger_str:
                 compressed += f" | {trigger_str}"
             if current_regime == "DEFENSIVE" and override:
                 compressed += f" | Override: {override}"
-            compressed += f" | No new catalyst."
+            # Check for high-impact calendar events
+            try:
+                from src.economic_calendar import get_high_impact_soon
+                hi = get_high_impact_soon(days=2)
+                if hi:
+                    compressed += f" | ⚠️ {hi}"
+                else:
+                    compressed += f" | No new catalyst."
+            except Exception:
+                compressed += f" | No new catalyst."
             send_text(compressed)
             print(f"   → Intel compressed to one-liner — regime unchanged, no delta")
         else:
             # Regime changed or VIX moved → send full deterministic fallback
             ctx_for_fallback = getattr(format_context_block, 'last_ctx', None) or {}
-            fii_dii = ctx_for_fallback.get("fii_dii_context", {})
+            fii_dii = ctx_for_fallback.get("fii_context", {})
             fii_data = {
                 "fii_net": fii_dii.get("fii_net"),
                 "dii_net": fii_dii.get("dii_net"),
@@ -1671,6 +1962,10 @@ def main():
                 "movers": movers,
                 "snapshot_data": snapshot_data,
             }, mode=mode)
+            if stress_banner:
+                fallback = stress_banner + "\n" + fallback
+            if clone_block:
+                fallback += "\n" + clone_block
             send_text(fallback)
             print("⚠️ AI response too short - sent fallback")
 

@@ -23,9 +23,9 @@ from src.posture_engine import compute_posture, PostureResult
 
 
 def _fmt_rupee_local(value: float) -> str:
-    """Format rupee value with sign before symbol: -₹655Cr instead of ₹-655Cr."""
+    """Format rupee value with sign after ₹ symbol: ₹-655Cr (Bloomberg-standard)."""
     sign = "-" if value < 0 else "+"
-    return f"{sign}₹{abs(value):,.0f}Cr"
+    return f"₹{sign}{abs(value):,.0f}Cr"
 
 
 # ── Deterministic override thresholds ──────────────────────────────
@@ -33,6 +33,8 @@ USDINR_DEFENSIVE = 95.0
 BRENT_DEFENSIVE = 90.0
 VIX_EXTREME = 25.0
 FII_STREAK_DEFENSIVE = 5
+STRESS_INDEX_OVERRIDE = 80        # Force DEFENSIVE if stress >80 for 2 days
+STRESS_INDEX_LOOKBACK = 3         # Check last N days for consecutive high stress
 COMPOUND_STRESS_THRESHOLD = 2  # 2+ variables at ELEVATED/HIGH/STRESS/EXTREME
 
 
@@ -124,12 +126,80 @@ def arbitrate_regime(state, flow_metrics: Optional[Dict] = None) -> RegimeVerdic
 
     # Check compound stress score (if consequences available)
     if not override_regime:
-        compound_stress = _compute_compound_stress(state)
+        compound_stress, stress_names = _compute_compound_stress(state)
         if compound_stress >= COMPOUND_STRESS_THRESHOLD:
             override_regime = "DEFENSIVE"
             override_confidence = "HIGH" if compound_stress >= 2 else "MEDIUM"
-            override_reason = "compound_stress"
-            drivers.append(f"{compound_stress} variables stressed")
+            override_reason = "concurrent_breach"
+            names_str = ", ".join(stress_names)
+            drivers.append(f"{compound_stress} variables stressed ({names_str})")
+
+    # Check Stress Index >80 for 2+ consecutive days → force DEFENSIVE
+    if not override_regime:
+        try:
+            from src.stress_index import get_stress_history
+            recent = get_stress_history(days=STRESS_INDEX_LOOKBACK)
+            high_stress_days = sum(1 for r in recent if r.get("stress_score", 0) > STRESS_INDEX_OVERRIDE)
+            if high_stress_days >= 2:
+                override_regime = "DEFENSIVE"
+                override_confidence = "HIGH"
+                override_reason = "stress_index"
+                drivers.append(f"Stress Index >{STRESS_INDEX_OVERRIDE} for {high_stress_days}/2 days")
+        except Exception:
+            pass
+
+    # ── Layer 1.5: Global Regime Override ─────────────────────────
+    global_regime = None
+    try:
+        if getattr(state, "macro", None) and hasattr(state, "macro"):
+            # Build macro anchors list from state
+            m = state.macro
+            macro_list = []
+            if getattr(m, "usdinr", None) is not None:
+                macro_list.append({"name": "USD/INR", "ok": True, "price": m.usdinr, "change_pct": 0})
+            if getattr(m, "dxy", None) is not None:
+                macro_list.append({"name": "Dollar Index", "ok": True, "price": m.dxy, "change_pct": 0})
+            if getattr(m, "vix", None) is not None:
+                # CBOE VIX may be in state, or we use India VIX as proxy
+                macro_list.append({"name": "CBOE VIX", "ok": True, "price": m.vix, "change_pct": 0})
+            if getattr(m, "brent", None) is not None:
+                macro_list.append({"name": "Brent Crude", "ok": True, "price": m.brent, "change_pct": 0})
+            if getattr(m, "gold", None) is not None:
+                macro_list.append({"name": "Gold", "ok": True, "price": m.gold, "change_pct": 0})
+            # Cu/Au from state or use gold/copper anchors
+            if getattr(m, "copper", None) is not None:
+                macro_list.append({"name": "Copper", "ok": True, "price": m.copper, "change_pct": 0})
+            if getattr(m, "us_10y", None) is not None:
+                macro_list.append({"name": "US 10Y Yield", "ok": True, "price": m.us_10y, "change_pct": 0})
+            if getattr(m, "usd_jpy", None) is not None:
+                macro_list.append({"name": "USD/JPY", "ok": True, "price": m.usd_jpy, "change_pct": 0})
+            if getattr(m, "hyg", None) is not None:
+                macro_list.append({"name": "US High Yield", "ok": True, "price": m.hyg, "change_pct": 0})
+            if getattr(m, "lqd", None) is not None:
+                macro_list.append({"name": "IG Corp Bonds", "ok": True, "price": m.lqd, "change_pct": 0})
+            if getattr(m, "es", None) is not None:
+                macro_list.append({"name": "S&P 500 Futures", "ok": True, "price": m.es, "change_pct": 0})
+            if getattr(m, "nq", None) is not None:
+                macro_list.append({"name": "Nasdaq Futures", "ok": True, "price": m.nq, "change_pct": 0})
+
+            if macro_list:
+                from src.global_arbiter import compute_global_regime
+                global_regime = compute_global_regime(macro_list)
+                gr = global_regime.get("regime", "GLOBAL_NEUTRAL")
+                # Persist to state
+                state.global_regime = gr
+                if gr in ("GLOBAL_STAGFLATION", "GLOBAL_LIQUIDITY_DRAWDOWN"):
+                    if not override_regime:
+                        override_regime = "DEFENSIVE"
+                        override_confidence = "HIGH"
+                        override_reason = "global_" + gr.lower()
+                        drivers.append(f"Global: {global_regime['label']}")
+                elif gr == "GLOBAL_RISK_OFF":
+                    if not override_regime:
+                        # Cap India regime: apply after statistical composite
+                        pass
+    except Exception as e:
+        print(f"   ⚠️ Global arbiter: {e}")
 
     # ── Build verdict ─────────────────────────────────────────────
     if override_regime:
@@ -144,6 +214,15 @@ def arbitrate_regime(state, flow_metrics: Optional[Dict] = None) -> RegimeVerdic
         confidence = "HIGH" if data_count >= 5 else "MEDIUM" if data_count >= 3 else "LOW"
         dominant_driver = _dominant_driver_from_bb(state)
         narrative = _narrative_from_bb(bb_norm, market_phase, data_count)
+
+        # Global RISK_OFF cap: ban BULL, cap at NEUTRAL
+        if global_regime and global_regime.get("regime") == "GLOBAL_RISK_OFF":
+            if regime == "BULLISH":
+                regime = "NEUTRAL"
+                narrative += " (capped at NEUTRAL — global risk-off)"
+                if "Global" not in dominant_driver:
+                    dominant_driver = "Global risk-off overlay"
+            narrative += " Global risk-off overlay active."
 
     # ── Layer 3: Scenario detection (multi-variable patterns) ─────
     try:
@@ -183,6 +262,11 @@ def arbitrate_regime(state, flow_metrics: Optional[Dict] = None) -> RegimeVerdic
         forced_regime=regime,  # align posture with arbitrated regime
     )
 
+    # Align posture confidence with verdict confidence (single source of truth)
+    if posture and posture.confidence != confidence:
+        from dataclasses import replace
+        posture = replace(posture, confidence=confidence)
+
     return RegimeVerdict(
         regime=regime,
         confidence=confidence,
@@ -193,15 +277,17 @@ def arbitrate_regime(state, flow_metrics: Optional[Dict] = None) -> RegimeVerdic
     )
 
 
-def _compute_compound_stress(state) -> int:
-    """Count how many macro variables are at stressed levels.
+def _compute_compound_stress(state) -> tuple:
+    """Count how many macro variables are at stressed levels and return their names.
 
     Used by the deterministic override layer.
+    Returns (count, [list of variable names]).
     """
     m = getattr(state, "macro", None)
     f = getattr(state, "flows", None)
 
     stress_count = 0
+    stress_names = []
 
     if m:
         vix = _safe(getattr(m, "vix", None))
@@ -211,22 +297,28 @@ def _compute_compound_stress(state) -> int:
 
         if vix >= 20:
             stress_count += 1
+            stress_names.append("VIX")
         if usdinr >= USDINR_DEFENSIVE:
             stress_count += 1
+            stress_names.append("USDINR")
         if brent >= BRENT_DEFENSIVE:
             stress_count += 1
+            stress_names.append("Brent")
         if dxy >= 105:  # DXY extreme
             stress_count += 1
+            stress_names.append("DXY")
 
     if f:
         fii_net = _safe(getattr(f, "fii_net", None))
         fii_streak = getattr(f, "fii_streak_days", 0)
         if fii_net < -500:
             stress_count += 1
+            stress_names.append("FII")
         if fii_streak >= FII_STREAK_DEFENSIVE:
             stress_count += 1
+            stress_names.append("FII streak")
 
-    return stress_count
+    return stress_count, stress_names
 
 
 def _regime_from_bull_bear(bb_norm: Optional[float], market_phase: Optional[str]) -> str:

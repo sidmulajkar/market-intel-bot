@@ -22,6 +22,7 @@ _CONSEQUENCE_RANGES = {
     "copper":    (1, 20),
     "cboe_vix":  (5, 150),
     "hyg":       (20, 120),
+    "india_10y": (4.0, 12.0),
 }
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -139,11 +140,30 @@ CONSEQUENCE_MULTIPLIERS = {
     },
     "hyg": {
         "unit": "$",
-        "description": "US High Yield Bond ETF (credit stress proxy)",
+        "description": "High Yield Corporate Bond ETF",
         "interpretation": {
-            "falling": "Credit stress rising, risk-off, liquidity tightening",
-            "rising": "Risk appetite returning, credit spreads narrowing",
+            "falling": "Credit stress — HYG <$75 signals risk-off, EM outflows likely",
+            "rising": "Risk-on — HYG >$80 signals credit markets open, EM carry trade active",
         },
+        "thresholds": {},
+        "sectors_bearish": [],
+        "sectors_bullish": [],
+    },
+    "india_10y": {
+        "unit": "%",
+        "description": "India 10-Year G-Sec Yield",
+        "per_unit": {
+            "fii_flow_cr": {"value": -800, "label": "FII flow sensitivity", "format": "FII sensitivity {:+.0f} Cr/yr per 1% move"},
+            "borrowing_cost_bps": {"value": 100, "label": "Govt borrowing cost", "format": "borrowing cost {:+.0f} bps pass-through"},
+            "nifty_pe_impact": {"value": -0.5, "label": "Nifty PE compression", "format": "Nifty PE compression {:+.1f}x per 1% yield rise"},
+        },
+        "thresholds": {
+            "stress": 7.5,
+            "elevated": 6.5,
+            "favorable": 6.0,
+        },
+        "sectors_bearish": ["BFSI (HDFC Bank, ICICI Bank)", "NBFCs"],
+        "sectors_bullish": ["BFSI (widening NIMs)"],
     },
 }
 
@@ -224,6 +244,7 @@ _BASELINE = {
     "wti": 75.0,
     "india_vix": 15.0,
     "copper": 4.5,
+    "india_10y": 7.0,  # India 10Y G-Sec yield — ~7% post-2022 normal
 }
 
 
@@ -249,10 +270,10 @@ def _compute_regime_impact(variable: str, current_value: float) -> list:
     if abs_deviation < threshold:
         return []
 
-    # VARIANCE CAP: If deviation > 30%, baseline/unit mismatch likely.
+    # VARIANCE CAP: If deviation > 50%, baseline/unit mismatch likely.
     # Suppress the line entirely — emitting 62% gold deviation destroys trust.
-    if abs_deviation > 30.0:
-        print(f"⚠️  Consequence engine: {variable} deviation {abs_deviation:.0f}% exceeds 30% cap — suppressing (likely baseline/unit mismatch)")
+    if abs_deviation > 50.0:
+        print(f"⚠️  Consequence engine: {variable} deviation {abs_deviation:.0f}% exceeds 50% cap — suppressing (likely baseline/unit mismatch)")
         return []
 
     spec = CONSEQUENCE_MULTIPLIERS.get(variable, {})
@@ -267,27 +288,56 @@ def _compute_regime_impact(variable: str, current_value: float) -> list:
             lines.append(f"INR ₹{current_value:.1f} vs ₹{baseline:.0f} baseline ({abs_deviation:.0f}% deviation): IT margin headwind, CAD relief")
 
     elif variable == "brent":
-        lines.append(f"Brent ${current_value:.0f} {direction} baseline ({abs(deviation_pct):.0f}%): elevated import costs, CPI pressure, OMC margin squeeze")
+        spread = current_value - baseline
+        cr_impact = spread * 1500  # ~₹1,500 Cr/yr per $1 above baseline
+        sign_cr = "+" if cr_impact >= 0 else ""
+        lines.append(f"Brent ${current_value:.0f} {direction} baseline ({abs(deviation_pct):.0f}%): ₹{abs(cr_impact):,.0f}Cr/yr import bill | CPI pressure, OMC margin squeeze")
 
     elif variable == "wti":
-        lines.append(f"WTI ${current_value:.0f} {direction} baseline ({abs(deviation_pct):.0f}%): CAD pressure, INR impact")
+        spread = current_value - baseline
+        cr_impact = spread * 1200
+        sign_cr = "+" if cr_impact >= 0 else ""
+        lines.append(f"WTI ${current_value:.0f} {direction} baseline ({abs(deviation_pct):.0f}%): ₹{abs(cr_impact):,.0f}Cr/yr CAD pressure")
 
     elif variable == "gold":
-        lines.append(f"Gold ${current_value:,.0f} {direction} baseline (${baseline:.0f}, {abs(deviation_pct):.0f}% deviation): import cost pressure")
+        spread = current_value - baseline
+        cr_impact = spread * 30 / 100  # ~$3B/yr per +$100, ₹ conversion ≈ ₹30 Cr per $1
+        lines.append(f"Gold ${current_value:,.0f} {direction} baseline (${baseline:.0f}, {abs(deviation_pct):.0f}%): ₹{abs(cr_impact):,.0f}Cr/yr import cost")
 
     elif variable == "dxy":
-        lines.append(f"DXY {direction} baseline by {abs(deviation_pct):.1f}% ({baseline:.1f} → {current_value:.1f})")
+        # Dynamic DXY→INR elasticity from rolling regression (falls back to 0.85)
+        try:
+            dxy_elas = compute_dxy_inr_elasticity()
+            dxy_beta = dxy_elas.get("slope", 0.85) if dxy_elas else 0.85
+            if abs(dxy_beta) < 0.3:  # sanity guard: implausible beta from low-correlation data
+                dxy_beta = 0.85
+        except Exception:
+            dxy_beta = 0.85
+        inr_impact = abs(deviation_pct) * 150  # ~₹150 Cr/yr per % DXY deviation
+        impact_label = "pressure" if deviation_pct > 0 else "relief"
+        lines.append(f"DXY {direction} baseline by {abs(deviation_pct):.1f}% ({baseline:.1f} → {current_value:.1f}): "
+                     f"₹{inr_impact:,.0f}Cr/yr FII {impact_label} (β={dxy_beta:.2f})")
 
     elif variable == "us_10y":
         bps_diff = (current_value - baseline) * 100
         fii_dir = "outflow" if deviation_pct > 0 else "inflow"
         lines.append(f"US10Y {direction} baseline by {abs(bps_diff):.0f}bps: FII {fii_dir} pressure")
 
+    elif variable == "india_10y":
+        spread_bps = (current_value - baseline) * 100
+        impact_dir = "widening" if spread_bps > 0 else "narrowing"
+        nifty_pe = -0.5 * (current_value - baseline)  # -0.5x PE per 1% yield rise
+        lines.append(f"India 10Y {direction} baseline by {abs(spread_bps):.0f}bps ({baseline:.1f}% → {current_value:.1f}%): "
+                     f"spread {impact_dir} — Nifty PE drag {nifty_pe:+.1f}x; FII sensitivity ₹{abs(spread_bps) * 8:,.0f} Cr/yr")
+
     elif variable == "india_vix":
         lines.append(f"VIX {direction} baseline by {abs(deviation_pct):.0f}% ({baseline:.1f} → {current_value:.1f})")
 
     elif variable == "copper":
-        lines.append(f"Copper {direction} baseline by {abs(deviation_pct):.0f}% ({baseline:.2f} → {current_value:.2f})")
+        spread = current_value - baseline
+        cr_impact = spread * 500  # ~₹500 Cr/yr per $1 copper move on industrial input costs
+        lines.append(f"Copper {direction} baseline by {abs(deviation_pct):.0f}% ({baseline:.2f} → {current_value:.2f}): "
+                     f"₹{abs(cr_impact):,.0f}Cr/yr industrial input cost | capex cycle sensitivity")
 
     return lines
 
@@ -481,6 +531,8 @@ def format_consequence_line(variable: str, consequence: dict) -> str:
                 price_context += f" ({change_pct:+.1f}%)"
 
         if price_context:
+            if summary.startswith(price_context.split()[0]):
+                return f"{prefix} {summary}"
             return f"{prefix} {price_context}: {summary}"
         return f"{prefix} {summary}"
 
@@ -512,6 +564,7 @@ def compute_all_consequences(anchor_data: list, fii_data: dict = None) -> dict:
             "HG=F": "copper",
             "^VIX": "cboe_vix",
             "HYG": "hyg",
+            "INDIA10Y=X": "india_10y",
         }
 
         for anchor in anchor_data:
@@ -630,6 +683,190 @@ def compute_compound_consequences(anchor_data: list) -> list:
         return []
 
 
+def compute_net_fii_carry_yield() -> dict:
+    """Compute Net FII Carry Yield: IND-US 10Y Spread - INR 1M Forward Premium.
+
+    Thresholds:
+        < 2%: elastic — FII flows sensitive to rate differential
+        > 4%: insulated — India yield advantage anchors FII
+
+    Returns dict with keys: spread, forward_premium, net_carry, regime, detail
+    or {} on failure.
+    """
+    try:
+        from src.db import get_client
+        from datetime import datetime, timedelta
+        import numpy as np
+
+        db = get_client()
+        if not db:
+            return {}
+
+        # Fetch INDIA10Y and ^TNX from macro_anchor_snapshots (last 60 days)
+        cutoff = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+        result = (
+            db.table("macro_anchor_snapshots")
+            .select("date, symbol, price")
+            .gte("date", cutoff)
+            .in_("symbol", ["INDIA10Y=X", "^TNX", "USDINR=X"])
+            .order("date")
+            .execute()
+        )
+        if not result.data:
+            return {}
+
+        # Get latest INDIA10Y, US10Y
+        india_10y = None
+        us_10y = None
+        usdinr = None
+        for row in reversed(result.data):
+            if row["symbol"] == "INDIA10Y=X" and india_10y is None:
+                india_10y = row["price"]
+            elif row["symbol"] == "^TNX" and us_10y is None:
+                us_10y = row["price"]
+            elif row["symbol"] == "USDINR=X" and usdinr is None:
+                usdinr = row["price"]
+            if india_10y and us_10y and usdinr:
+                break
+
+        if not india_10y or not us_10y:
+            return {}
+
+        spread = india_10y - us_10y  # e.g., 7.0 - 4.45 = 2.55%
+
+        # Approximate INR 1M forward premium from USDINR trend (simple 21D annualized return)
+        usdinr_prices = []
+        for row in result.data:
+            if row["symbol"] == "USDINR=X" and row["price"]:
+                usdinr_prices.append((row["date"], row["price"]))
+        forward_premium = 0.0
+        if len(usdinr_prices) >= 21:
+            recent = sorted(usdinr_prices, key=lambda x: x[0])
+            p0 = recent[-21][1]
+            p1 = recent[-1][1]
+            # Annualized forward premium from 21D INR depreciation rate
+            daily_rate = (p1 - p0) / p0 / 21
+            forward_premium = daily_rate * 365 * 100  # convert to % annualized
+
+        net_carry = spread - forward_premium
+
+        if net_carry < 2.0:
+            regime = "elastic"
+        elif net_carry > 4.0:
+            regime = "insulated"
+        else:
+            regime = "neutral"
+
+        return {
+            "spread": round(spread, 2),
+            "forward_premium": round(forward_premium, 2),
+            "net_carry": round(net_carry, 2),
+            "regime": regime,
+            "detail": (
+                f"IND-US 10Y spread: {spread:.2f}% | "
+                f"INR 1M fwd premium: {forward_premium:.2f}% | "
+                f"Net carry: {net_carry:.2f}%"
+            ),
+        }
+    except Exception as e:
+        print(f"⚠️ compute_net_fii_carry_yield: {e}")
+        return {}
+
+
+def compute_dxy_inr_elasticity() -> dict:
+    """Compute dynamic DXY→INR elasticity via 60-day rolling regression.
+
+    Replaces hardcoded 0.85 coefficient with OLS slope from
+    macro_anchor_snapshots history.
+
+    Returns:
+        dict with keys: slope (beta), rbi_intervention (bool),
+                        dii_defense (bool), detail (str)
+        or {} on failure.
+    """
+    try:
+        from src.db import get_client
+        from datetime import datetime, timedelta
+        import numpy as np
+
+        db = get_client()
+        if not db:
+            return {}
+        cutoff = (datetime.now() - timedelta(days=70)).strftime("%Y-%m-%d")
+        result = (
+            db.table("macro_anchor_snapshots")
+            .select("date, symbol, price")
+            .gte("date", cutoff)
+            .in_("symbol", ["DX-Y.NYB", "USDINR=X"])
+            .order("date")
+            .execute()
+        )
+        if not result.data or len(result.data) < 30:
+            return {}
+
+        # Build aligned time series
+        from collections import defaultdict
+        by_date = defaultdict(dict)
+        for row in result.data:
+            d = row["date"][:10]
+            by_date[d][row["symbol"]] = row["price"]
+
+        dates = sorted(by_date.keys())
+        dxy_vals = []
+        usdinr_vals = []
+        for d in dates:
+            row = by_date[d]
+            if "DX-Y.NYB" in row and "USDINR=X" in row:
+                dxy_vals.append(row["DX-Y.NYB"])
+                usdinr_vals.append(row["USDINR=X"])
+
+        if len(dxy_vals) < 30:
+            return {}
+
+        # Keep last 60 points
+        dxy_vals = dxy_vals[-60:]
+        usdinr_vals = usdinr_vals[-60:]
+
+        # OLS: USDINR = alpha + beta * DXY
+        dxy_arr = np.array(dxy_vals, dtype=float)
+        usdinr_arr = np.array(usdinr_vals, dtype=float)
+        dxy_mean = dxy_arr.mean()
+        usdinr_mean = usdinr_arr.mean()
+        dxy_demeaned = dxy_arr - dxy_mean
+        usdinr_demeaned = usdinr_arr - usdinr_mean
+        beta = np.sum(dxy_demeaned * usdinr_demeaned) / np.sum(dxy_demeaned ** 2)
+
+        # Current values
+        current_dxy = dxy_vals[-1]
+        current_usdinr = usdinr_vals[-1]
+
+        # Expected INR given DXY from historical beta
+        expected_inr = usdinr_mean + beta * (current_dxy - dxy_mean)
+        excess_depreciation = current_usdinr - expected_inr
+
+        # Signals
+        rbi_intervention = excess_depreciation > (0.02 * current_usdinr)  # >2% excess
+        dii_defense = excess_depreciation < (-0.02 * current_usdinr)     # < -2% (INR stronger than expected)
+
+        return {
+            "slope": round(beta, 4),
+            "current": {"dxy": current_dxy, "usdinr": current_usdinr},
+            "expected_inr": round(expected_inr, 2),
+            "excess_depreciation": round(excess_depreciation, 2),
+            "rbi_intervention": bool(rbi_intervention),
+            "dii_defense": bool(dii_defense),
+            "n_points": len(dxy_vals),
+            "detail": (
+                f"DXY→INR elasticity: {beta:.4f} (60d rolling)"
+                f"{' | ⚠️ RBI intervention signal' if rbi_intervention else ''}"
+                f"{' | DII defense active' if dii_defense else ''}"
+            ),
+        }
+    except Exception as e:
+        print(f"⚠️ compute_dxy_inr_elasticity: {e}")
+        return {}
+
+
 # Severity sort order for headwind/tailwind hierarchy
 _SEVERITY_SCORE = {
     "EXTREME": 5,   # worst headwind
@@ -642,7 +879,7 @@ _SEVERITY_SCORE = {
 }
 
 # Variables that are headwinds when elevated (positive deviation = bad for India)
-_HEADWIND_WHEN_HIGH = {"usdinr", "brent", "wti", "dxy", "us_10y", "india_vix", "cboe_vix", "gold"}
+_HEADWIND_WHEN_HIGH = {"usdinr", "brent", "wti", "dxy", "us_10y", "india_10y", "india_vix", "cboe_vix", "gold"}
 # Variables that are tailwinds when elevated (positive deviation = good for India)
 _TAILWIND_WHEN_HIGH = {"copper", "hyg"}  # copper = growth, HYG = risk-on
 
@@ -687,6 +924,7 @@ _INDIA_RELEVANCE_TIER = {
     # Tier 2: Show if ELEVATED+ severity
     "dxy": 2, "us_10y": 2, "wti": 2,
     # Tier 3: Suppress unless EXTREME
+    "india_10y": 2,
     "gold": 3, "copper": 3, "hyg": 3, "cboe_vix": 3,
 }
 
@@ -733,7 +971,7 @@ def format_consequence_block(consequences: dict) -> str:
                 continue
             spec = CONSEQUENCE_MULTIPLIERS.get(var, {})
             desc = spec.get("description", var.upper())
-            full_line = f"{desc}: {line}"
+            full_line = line  # format_consequence_line already includes price context
 
             severity = cons.get("severity", "NEUTRAL")
             tier = _INDIA_RELEVANCE_TIER.get(var, 2)

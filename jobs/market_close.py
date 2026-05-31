@@ -133,8 +133,8 @@ def main():
             dii_net = fm.get("dii_net")
             absorption = fm.get("absorption_ratio")
             if fii_net is not None or dii_net is not None:
-                fii_str = f"FII Net: ₹{fii_net:+,.0f} Cr" if fii_net is not None else "FII: n/a"
-                dii_str = f"DII Net: ₹{dii_net:+,.0f} Cr" if dii_net is not None else "DII: n/a"
+                fii_str = f"FII Net: ₹{fii_net:+,.0f}Cr" if fii_net is not None else "FII: n/a"
+                dii_str = f"DII Net: ₹{dii_net:+,.0f}Cr" if dii_net is not None else "DII: n/a"
                 abs_str = f"Absorption: {absorption:.0f}%" if absorption is not None else ""
                 flows_block = f"📊 *Flows:* {fii_str} | {dii_str}"
                 if abs_str:
@@ -233,6 +233,15 @@ def main():
         if parts:
             derivs_block = f"📉 *Derivatives:* {' | '.join(parts)}"
             print(f"   ✅ Derivatives block built: {' | '.join(parts)}")
+        # GEX magnetic levels (from live fetch if available)
+        try:
+            from src.options_engine import format_gex_levels
+            if 'live' in dir() and live and live.get("ok"):
+                gex_lvl = format_gex_levels(live.get("gex", {}), live.get("spot_price"))
+                if gex_lvl:
+                    derivs_block += f"\n{gex_lvl}" if derivs_block else gex_lvl
+        except Exception:
+            pass
     except Exception:
         import traceback
         traceback.print_exc()
@@ -271,8 +280,12 @@ def main():
         india_drivers.append(f"{top['symbol']} {top['change_pct']:+.1f}% (top India mover)")
     us_all = movers.get("us", {}).get("gainers", []) + movers.get("us", {}).get("losers", [])
     if us_all:
-        top_us = max(us_all, key=lambda x: abs(x.get("change_pct", 0)))
-        us_drivers.append(f"{top_us['symbol']} {top_us['change_pct']:+.1f}% (top US mover)")
+        # Suppress individual US equity movers before 7 PM IST (US cash market opens at 9:30 ET)
+        from datetime import datetime, timezone, timedelta
+        ist_hour = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).hour
+        if ist_hour >= 19:
+            top_us = max(us_all, key=lambda x: abs(x.get("change_pct", 0)))
+            us_drivers.append(f"{top_us['symbol']} {top_us['change_pct']:+.1f}% (top US mover)")
 
     # ── Overnight handoff (Phase 26: US/Europe live) ──────────────
     overnight_note = ""
@@ -353,6 +366,16 @@ def main():
     if regime_label in ("DEFENSIVE", "BEARISH"):
         sign_off = "_Evening macro watch continues. Evening intel at 18:00._"
 
+    # ── Drawdown anatomy ──────────────────────────────────────────
+    drawdown_block = ""
+    try:
+        from src.drawdown_anatomy import run_drawdown_analysis
+        dd_result = run_drawdown_analysis(current_price=nifty.get("price") if nifty else None)
+        if dd_result.get("ok") and dd_result.get("formatted"):
+            drawdown_block = dd_result["formatted"]
+    except Exception as e:
+        print(f"   ⚠️ Drawdown: {e}")
+
     def send_eod(text):
         from src.formatters import reorder_market_blocks, format_scenario_block
 
@@ -396,6 +419,7 @@ def main():
             big_moves_block=big_moves_block,
             sign_off_block=f"━━━━━━━━━━━━━━━━━━━━━━━━\n{sign_off}",
             scenario_block=scenario_block,
+            drawdown_block=drawdown_block,
         )
         send_text(msg)
 

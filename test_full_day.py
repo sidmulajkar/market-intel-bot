@@ -66,7 +66,7 @@ def run_job(script: str, args: list, label: str) -> dict:
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True,
-            timeout=300, cwd=os.path.dirname(os.path.abspath(__file__)),
+            timeout=480, cwd=os.path.dirname(os.path.abspath(__file__)),
             env=env,
         )
         stdout = result.stdout

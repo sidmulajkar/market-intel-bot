@@ -243,3 +243,59 @@ def build_bluf(regime_verdict=None, bull_bear: dict = None, nifty_price: float =
     # No regime verdict — return empty rather than computing legacy composite.
     # Callers should pass the arbiter verdict to get meaningful BLUF text.
     return ""
+
+
+def pin_message(message_id: int, disable_notification: bool = True) -> bool:
+    """Pin a message to the chat. Returns True on success."""
+    if DRY_RUN:
+        print(f"📌 [DRY RUN] Would pin message {message_id}")
+        return True
+    r = _post("pinChatMessage", json={
+        "chat_id": CHAT_ID,
+        "message_id": message_id,
+        "disable_notification": disable_notification,
+    })
+    return r.get("ok", False)
+
+
+def send_pinned_glossary() -> bool:
+    """Send and pin the inline glossary to the group. Zero AI, zero live API calls."""
+    from src.formatters import GLOSSARY_TIER1, GLOSSARY_TIER2
+
+    text = (
+        "📌 *GLOSSARY*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "*Tier 1 (Confusing terms — explained every session):*\n"
+    )
+    for term in sorted(GLOSSARY_TIER1):
+        text += f"• {term} — {GLOSSARY_TIER1[term]}\n"
+    text += "\n*Tier 2 (Common terms — explained once per day):*\n"
+    for term in sorted(GLOSSARY_TIER2):
+        text += f"• {term} — {GLOSSARY_TIER2[term]}\n"
+    text += (
+        "\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "_Pinned reference — updated by Market Intel Bot_"
+    )
+
+    if DRY_RUN:
+        print("\n" + "=" * 60)
+        print("📌 [DRY RUN] Pinned Glossary:")
+        print(text)
+        print("=" * 60)
+        return True
+
+    r = _post("sendMessage", json={
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True,
+    })
+
+    if not r.get("ok"):
+        print(f"⚠️  Failed to send glossary: {r.get('description')}")
+        return False
+
+    message_id = r.get("result", {}).get("message_id")
+    if message_id:
+        return pin_message(message_id)
+    return False

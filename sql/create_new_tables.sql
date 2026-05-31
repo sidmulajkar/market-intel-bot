@@ -51,6 +51,47 @@ CREATE INDEX IF NOT EXISTS idx_breadth_history_date
 -- DELETE FROM market_breadth_history WHERE date < NOW() - INTERVAL '90 days';
 
 
+-- 3. STRESS HISTORY (T4.1)
+-- Stores daily composite stress index (Z-score weighted, 0-100).
+-- Used by: market_intel.py/midday_scan.py top banner, regime_arbiter.py override hook
+-- Written by: src/stress_index.py save_stress_index()
+
+CREATE TABLE IF NOT EXISTS stress_history (
+    trade_date    DATE PRIMARY KEY,
+    stress_score  DOUBLE PRECISION NOT NULL,
+    raw_stress    DOUBLE PRECISION,
+    top_driver_1  TEXT,
+    top_driver_2  TEXT,
+    created_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_stress_history_date
+    ON stress_history (trade_date DESC);
+
+
+-- 4. CORPORATE ACTIONS (T3.2)
+-- Stores dividend/bonus/split/buyback events from NSE corp-info API.
+-- Used by: jobs/market_open.py at 09:15 to explain pre-market gaps.
+-- Written by: src/corporate_actions.py save_corporate_actions()
+
+CREATE TABLE IF NOT EXISTS corporate_actions (
+    symbol       TEXT NOT NULL,
+    ex_date      TEXT NOT NULL,
+    action_type  TEXT NOT NULL,
+    detail       TEXT,
+    fetched_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (symbol, ex_date, action_type)
+);
+
+-- Index for fast date-range queries
+CREATE INDEX IF NOT EXISTS idx_corp_actions_ex_date
+    ON corporate_actions (ex_date DESC);
+
+-- Auto-purge: delete rows older than 14 days (actions expire after ex-date)
+-- DELETE FROM corporate_actions WHERE fetched_date < NOW() - INTERVAL '14 days';
+
+
 -- ============================================================
 -- VERIFICATION QUERIES (run after creating tables)
 -- ============================================================
@@ -58,9 +99,9 @@ CREATE INDEX IF NOT EXISTS idx_breadth_history_date
 -- Check tables exist:
 SELECT table_name FROM information_schema.tables
 WHERE table_schema = 'public'
-AND table_name IN ('valuation_history', 'market_breadth_history');
+AND table_name IN ('valuation_history', 'market_breadth_history', 'stress_history', 'corporate_actions');
 
--- Expected: 2 rows
+-- Expected: 4 rows
 
 -- Check indexes:
 SELECT indexname FROM pg_indexes
@@ -564,4 +605,47 @@ AND table_name IN (
     'sector_rs_history', 'earnings_surprises', 'market_internals_history',
     'market_state', 'forecast_log', 'analysis_cache',
     'analytics_ledger', 'shareholding_snapshots'
+);
+
+
+-- ============================================================
+-- 21. CLONE HISTORY (T4.2) — Historical Clone Engine results
+-- Stores top-3 daily clone matches with forward returns.
+-- Written by: src/clone_engine.py save_clones()
+-- Read by: market_intel.py / market_close.py (via format_clone_block)
+-- Retention: 30 days (historical context window)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS clone_history (
+    trade_date      DATE NOT NULL,
+    clone_date      DATE NOT NULL,
+    distance        DOUBLE PRECISION,
+    scenario_label  TEXT,
+    nifty_30d_fwd   DOUBLE PRECISION,
+    nifty_60d_fwd   DOUBLE PRECISION,
+    max_dd          DOUBLE PRECISION,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (trade_date, clone_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_clone_history_trade_date
+    ON clone_history (trade_date DESC);
+
+-- ============================================================
+-- FINAL VERIFICATION: Check all 21 tables exist
+-- ============================================================
+
+SELECT table_name FROM information_schema.tables
+WHERE table_schema = 'public'
+AND table_name IN (
+    'valuation_history', 'market_breadth_history',
+    'daily_predictions', 'prediction_outcomes',
+    'macro_anchor_snapshots', 'fii_institution_tracker',
+    'daily_market_snapshot', 'correlation_matrix',
+    'signal_accuracy_log', 'divergence_log',
+    'cftc_positioning_history', 'factor_scores_history',
+    'sector_rs_history', 'earnings_surprises', 'market_internals_history',
+    'market_state', 'forecast_log', 'analysis_cache',
+    'analytics_ledger', 'shareholding_snapshots',
+    'clone_history'
 );

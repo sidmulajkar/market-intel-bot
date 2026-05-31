@@ -2,6 +2,8 @@
 Scenario Engine — Multi-variable pattern detection for market regimes.
 
 Detects named scenarios from MarketState + flow metrics data.
+Also finds historical clones: 3 closest dates matching current macro conditions.
+
 All thresholds are data-anchored (yfinance, NSE, Supabase).
 No AI speculation — purely deterministic.
 
@@ -9,6 +11,7 @@ Usage:
     detector = ScenarioDetector(state, flow_metrics=ctx.get("flow_metrics"))
     scenarios = detector.detect()
     state.active_scenarios = scenarios
+    state.historical_clones = find_historical_clones(state)  # dynamic context
 """
 from __future__ import annotations
 
@@ -280,3 +283,95 @@ class ScenarioDetector:
                 indicators=indicators,
             )
         return None
+
+
+# ═════════════════════════════════════════════════════════════════════
+# HISTORICAL CLONE LOOKUP — Dynamic nearest-neighbor matching
+# ═════════════════════════════════════════════════════════════════════
+
+def find_historical_clones(state: MarketState, max_clones: int = 3) -> List[Dict]:
+    """
+    Find historical dates with macro conditions closest to current state.
+
+    Queries Supabase market_state table for historical records, computes
+    normalized Euclidean distance across key variables (USDINR, Brent,
+    VIX, DXY, Gold), and returns the closest matches with forward context.
+
+    Returns list of dicts (one per clone) with:
+      - date, similarity, macro snapshot, regime, confidence
+
+    Falls back to empty list if DB unavailable — caller should suppress
+    the clones section entirely in that case.
+    """
+    try:
+        from src.db import get_market_state
+        from datetime import datetime, timedelta
+
+        current = {
+            "usdinr": state.macro.usdinr,
+            "brent": state.macro.brent,
+            "vix": state.macro.vix,
+            "dxy": state.macro.dxy,
+            "gold": state.macro.gold,
+        }
+
+        # Skip if essential data missing
+        if not all([current["usdinr"], current["brent"], current["vix"], current["dxy"]]):
+            return []
+
+        # Fetch historical states (last 3 years)
+        today = datetime.now()
+        candidates = []
+        for d in range(1, 1095):  # ~3 years
+            ts = (today - timedelta(days=d)).strftime("%Y-%m-%d")
+            ms = get_market_state(ts)
+            if ms and ms.get("macro"):
+                m = ms["macro"]
+                h_usdinr = m.get("usdinr")
+                h_brent = m.get("brent")
+                h_vix = m.get("vix")
+                h_dxy = m.get("dxy")
+                h_gold = m.get("gold")
+                if h_usdinr and h_brent and h_vix and h_dxy:
+                    # Normalized Euclidean distance (weights: USDINR 0.3, Brent 0.3, VIX 0.2, DXY 0.2)
+                    d_usdinr = ((current["usdinr"] - h_usdinr) / max(h_usdinr, 1)) ** 2 * 0.3
+                    d_brent = ((current["brent"] - h_brent) / max(h_brent, 1)) ** 2 * 0.3
+                    d_vix = ((current["vix"] - h_vix) / max(h_vix, 1)) ** 2 * 0.2
+                    d_dxy = ((current["dxy"] - h_dxy) / max(h_dxy, 1)) ** 2 * 0.2
+                    distance = (d_usdinr + d_brent + d_vix + d_dxy) ** 0.5
+                    candidates.append({
+                        "date": ts,
+                        "distance": distance,
+                        "usdinr": h_usdinr,
+                        "brent": h_brent,
+                        "vix": h_vix,
+                        "dxy": h_dxy,
+                        "gold": h_gold,
+                        "regime": ms.get("final_regime"),
+                        "bull_bear_score": ms.get("bull_bear_normalized"),
+                    })
+
+        if not candidates:
+            return []
+
+        # Sort by distance (lowest = closest match)
+        candidates.sort(key=lambda x: x["distance"])
+
+        # Return top N, excluding same-week dates to avoid clustering
+        selected = []
+        seen_weeks = set()
+        for c in candidates:
+            week_key = c["date"][:7]  # YYYY-MM
+            if week_key not in seen_weeks:
+                c["similarity"] = round((1 - c["distance"]) * 100, 1)
+                del c["distance"]
+                selected.append(c)
+                seen_weeks.add(week_key)
+            if len(selected) >= max_clones:
+                break
+
+        return selected
+
+    except Exception as e:
+        print(f"⚠️ Historical clone lookup failed: {e}")
+        return []
