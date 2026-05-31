@@ -259,7 +259,7 @@ def main():
             headline = n.get("headline", "")[:60]
             trust = n.get("trust_score", 0)
             source = n.get("source", "unknown")
-            news_lines.append(f"• {headline} ({source}, Trust:{trust}/10)")
+            news_lines.append(f"• {headline} ({source}, trust {trust}/10)")
 
         news_block = f"\nToday's news:\n{chr(10).join(news_lines)}\n"
 

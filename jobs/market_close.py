@@ -281,9 +281,12 @@ def main():
     us_all = movers.get("us", {}).get("gainers", []) + movers.get("us", {}).get("losers", [])
     if us_all:
         # Suppress individual US equity movers before 7 PM IST (US cash market opens at 9:30 ET)
+        # Also suppress on weekends Sat/Sun when US markets are closed
         from datetime import datetime, timezone, timedelta
-        ist_hour = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).hour
-        if ist_hour >= 19:
+        now_utc = datetime.now(timezone.utc)
+        ist_hour = (now_utc + timedelta(hours=5, minutes=30)).hour
+        is_weekend = now_utc.weekday() >= 5  # Sat=5, Sun=6
+        if not is_weekend and ist_hour >= 19:
             top_us = max(us_all, key=lambda x: abs(x.get("change_pct", 0)))
             us_drivers.append(f"{top_us['symbol']} {top_us['change_pct']:+.1f}% (top US mover)")
 

@@ -450,8 +450,115 @@ Also add `VALID_RANGES` / `_MAX_DAILY_CHANGE_PCT` entries for the 2 new tickers.
 
 **Final verification (2026-05-31):** All 7/7 test suites pass. 8 jobs, 7 messages, 0 errors in full-day dry run. `data/econ_calendar_india_2026_27.csv` (5.6KB, 144 events) tracked in repo. Supabase `stress_history`/`corporate_actions`/`clone_history` tables exist. 15 workflow files pass infrastructure audit (cache@v4, timeout, python-id, env vars).
 
+---
+## CSV-First Architecture (Phase 1–3)
+
+**Core insight:** Historical macro data is immutable. Every weekday job was refetching 5 years of unchanging data from yfinance — 14 `period="5y"` calls per market_intel run just for the clone engine.
+
+**Shift:** CSV is the database for the past. Supabase is the database for the present. Heavy compute moves to Sunday. Weekdays become lightweight reads.
+
+### Data Files (repo/data/)
+
+| File | Rows | Size | Source | Updated |
+|------|------|------|--------|---------|
+| `anchor_history.csv` | 1,304 | 430 KB | yfinance (5Y) + Supabase overlay | Sunday (delta) |
+| `nifty_history.csv` | 1,235 | 118 KB | yfinance (5Y) | Sunday (delta) |
+| `fii_dii_history.csv` | 58 | 1.6 KB | Supabase only (limited NSE history) | Sunday (delta) |
+| `econ_calendar_india_2026_27.csv` | 144 | 5.6 KB | Static (manual update) | As needed |
+| `scenario_clones_cache.csv` | — | — | Pre-computed distances | Sunday simulation (Phase 2) |
+| `backtest_results.csv` | — | — | Walk-forward results | Sunday calibration (Phase 2) |
+
+### Architecture Flow
+
+```
+CSV (repo/data/) ──┐
+                    ├──→ data_fusion.py ──→ Clone Engine (O(1))
+Supabase (today) ──┘                      Stress Index (instant)
+yfinance (5d batch) ──────────────────→    Pillar Classifier (Phase 2)
+                                           Transmission (Phase 2)
+```
+
+### Phase 1: CSV Foundation (in progress)
+
+**Goal:** Move historical data to CSV, eliminate yfinance cold-start from weekday jobs.
+
+| Step | File | Status |
+|------|------|--------|
+| 1.1 | `scripts/generate_csvs.py` — one-time backfill from Supabase + yfinance | ✅ Done |
+| 1.2 | `src/csv_data.py` — CSV reader + fusion layer | ✅ Done |
+| 1.3 | Rewire clone_engine, drawdown_anatomy, market_intel to csv_data | ✅ Done |
+| 1.4 | `.github/workflows/sunday_backfill.yml` — 02:00 UTC Sunday, perms: contents: write | ✅ Done |
+| 1.5 | Remaining job files use live-only yfinance (period="5d") | ✅ Verified — no 1y+ calls remain |
+| 1.6 | Full-day dry-run: 8 jobs, 7 messages, 0 errors | ✅ Done |
+
+**Gate to Phase 2:** Phase 1 must pass a full weekday dry-run with 0 errors.
+
+### Phase 2: 12D Pillar Intelligence
+
+**Goal:** Structural regime detection via 12D macro vector, dynamic transmission mechanics.
+
+| Step | File | Status |
+|------|------|--------|
+| 2.1 | `src/pillar_classifier.py` — 6 pillars (Stagflation, De-dollarization, Tech Cycle, Regulatory, West Asia, EM Contagion, Carry Unwind) | Pending |
+| 2.2 | Retroactive validation against historical data (check which dates trigger which pillars) | Pending |
+| 2.3 | `src/transmission_mechanics.py` — RBI dilemma, USD debt, freight→CPI, carry yield | Pending |
+| 2.4 | `data/scenario_clones_cache.csv` — pre-computed clone distances | Pending |
+| 2.5 | `.github/workflows/sunday_simulation.yml` — 02:15 UTC Sunday | Pending |
+| 2.6 | `.github/workflows/sunday_calibration.yml` — 02:30 UTC Sunday | Pending |
+
+**Gate to Phase 3:** Pillar calibration must pass backtest against 4 historical episodes (2013 Taper, 2018 EM, 2020 COVID, 2022 Fed).
+
+### Phase 3: Intraday Pulse
+
+**Goal:** 30-min intraday scanner during market hours (9:15–15:30 IST).
+
+| Step | File | Status |
+|------|------|--------|
+| 3.1 | `jobs/intraday_pulse.py` — Nifty spot + VIX scanner | Pending |
+| 3.2 | `.github/workflows/intraday_pulse.yml` — `*/30 3:45-10:00 1-5` | Pending |
+| 3.3 | Supabase `intraday_pulse` table | Pending |
+
+### Weekday Runtime Reduction
+
+| Job | Before (~s) | After (~s) | Savings |
+|-----|-----------|-----------|---------|
+| market_intel (morning) | 35-100s | 5-10s | ~86% |
+| market_intel (evening) | 35-100s | 5-10s | ~86% |
+| market_open | 8-12s | 3-5s | ~60% |
+| midday_scan | 5-8s | 2-3s | ~60% |
+| market_close | 8-12s | 3-5s | ~60% |
+
+### CSV File Details
+
+| File | Columns | Rows | Size | Coverage |
+|------|---------|------|------|----------|
+| `anchor_history.csv` | 23 (21 anchors + Cu/Au ratio + date) | 1,304 | 474 KB | 2021-05-31 to 2026-05-31 |
+| `nifty_history.csv` | 7 (OHLCV + Div + Split) | 1,235 | 118 KB | 2021-05-31 to 2026-05-29 |
+| `fii_dii_history.csv` | 3 (date, FII_Net_Cr, DII_Net_Cr) | 58 | 1.6 KB | 2026-03-02 to 2026-05-29 |
+
+### SPY + EEM in Anchor CSV
+SPY (S&P 500 ETF) and EEM (MSCI Emerging Markets ETF) added to anchor CSV so clone engine forward-return computation uses zero yfinance calls. Previously these required 2× `yf.Ticker().history(period="5y")` per run.
+
+### Bootstrap Safety Net
+`csv_data.py:get_nifty_close_series()` reads from CSV and falls back to yfinance if CSV is empty/corrupt. All callers use this function instead of raw `yf.Ticker().history()`. Bootstrap auto-generates ALL CSVs from yfinance on first `load_history()` if any are missing — runs once per session, cached thereafter.
+
+### Data Quality Gate (`_is_csv_usable()`)
+`csv_data.py:_load_csv()` rejects CSVs that fail quality checks and treats them as empty (triggering fallback):
+- **Minimum rows**: 100 for anchors/nifty, 5 for fii_dii
+- **Column integrity**: core columns (USDINR, Brent, DXY, IndiaVIX, Gold for anchors; Close for nifty) must exceed 30% non-NaN ratio
+- **Sparse data fallback**: `get_anchor_history()` falls back to Supabase if a specific symbol has <25% coverage in the requested window
+- **Freshness**: `csv_freshness()` checks if latest data point is within 14 days; modules can call this to decide whether to bypass CSV
+
+### Workflow Fallback Architecture
+- **3 workflows need CSV data**: `market_intel_morning`, `market_intel_evening`, `market_close`
+- **All 16 workflows** have `timeout-minutes: 10` at job + `timeout-minutes: 8` on run steps
+- **No workflow** triggers on `push` — git push from `sunday_backfill.yml` won't loop
+- **sunday_backfill.yml** uses `[skip ci]` in commit message and `permissions: contents: write` to auto-commit updated CSVs
+- First-run cold-start avoided by committing CSVs to repo; bootstrap only fires if CSVs are deleted
+
 ## Test Commands
 - `.venv/bin/python3 test_all_outputs.py` — 7 sections, 26 patterns, emoji consistency check
 - `.venv/bin/python3 test_supabase_full.py` — 20 Supabase feature checks
 - `.venv/bin/python3 test_full_day.py` — 8-job dry-run simulation (requires `DRY_RUN=1`)
+- `scripts/generate_csvs.py` — One-time CSV generation from Supabase + yfinance
 - All require `SUPABASE_URL` + `SUPABASE_KEY` from `../apikeys.txt` (supports `KEY=value` or `KEY: value` format)

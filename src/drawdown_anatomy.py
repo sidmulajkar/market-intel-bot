@@ -3,8 +3,8 @@ Drawdown Anatomy — Nifty 1Y drawdown analysis.
 Computes current drawdown %, velocity, and historical recovery time.
 Zero AI — purely deterministic Python.
 """
-import yfinance as yf
 import numpy as np
+import pandas as pd
 from typing import Dict, Optional
 
 NIFTY_SYMBOL = "^NSEI"
@@ -59,16 +59,28 @@ def _find_drawdowns(prices):
 
 
 def fetch_nifty_1y() -> Optional[np.ndarray]:
-    """Fetch 1 year of Nifty daily close prices."""
+    """Fetch 1 year of Nifty daily close prices from CSV. Zero yfinance calls."""
     try:
-        ticker = yf.Ticker(NIFTY_SYMBOL)
-        hist = ticker.history(period="1y")
-        if hist.empty or len(hist) < 60:
+        from src.csv_data import load_history
+        df = load_history("nifty")
+        if df.empty:
             return None
-        return hist["Close"].values
+        series = df["Close"].dropna().tail(252)
+        if len(series) < 60:
+            return None
+        return series.values
     except Exception as e:
-        print(f"⚠️ Nifty 1y fetch error: {e}")
-        return None
+        print(f"⚠️ Nifty 1y fetch error (CSV fallback): {e}")
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker(NIFTY_SYMBOL)
+            hist = ticker.history(period="1y")
+            if hist.empty or len(hist) < 60:
+                return None
+            return hist["Close"].values
+        except Exception as e2:
+            print(f"⚠️ Nifty 1y fetch error (yfinance): {e2}")
+            return None
 
 
 def compute_drawdown(prices: np.ndarray, current_price: Optional[float] = None) -> Dict:

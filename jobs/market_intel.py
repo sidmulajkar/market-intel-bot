@@ -503,9 +503,9 @@ def main():
     print("🔄 NIFTY TECHNICAL LEVELS")
     nifty_closes = []
     try:
-        import yfinance as yf
+        from src.csv_data import get_nifty_close_series
         from src.technical_analysis import compute_full_analysis, format_technical_analysis
-        nifty_hist = yf.Ticker("^NSEI").history(period="1y")["Close"].dropna()
+        nifty_hist = get_nifty_close_series(days=252)
         if len(nifty_hist) >= 20:
             nifty_closes = nifty_hist.tolist()
             nifty_ta = compute_full_analysis(nifty_closes, "NIFTY 50")
@@ -961,11 +961,10 @@ def main():
     factor_block = ""
     try:
         from src.factor_engine import run_factor_analysis
-        # Get Nifty price history for momentum factor
+        from src.csv_data import get_nifty_close_series
         nifty_hist_data = None
         try:
-            import yfinance as yf
-            nifty_hist = yf.Ticker("^NSEI").history(period="1y")["Close"].dropna()
+            nifty_hist = get_nifty_close_series(days=252)
             nifty_hist_data = nifty_hist.tolist() if len(nifty_hist) > 0 else None
         except Exception:
             pass

@@ -47,6 +47,56 @@ EEM_TICKER: str = "EEM"
 
 # ── Data Fetching ──────────────────────────────────────────────────────
 
+# CSV column → clone engine key mapping
+_CSV_COL_MAP: Dict[str, str] = {
+    "IndiaVIX": "vix",
+    "USDINR": "usdinr",
+    "Brent": "brent",
+    "DXY": "dxy",
+    "US10Y": "us_10y",
+    "HYG": "hyg",
+    "Gold": "gold",
+    "Copper": "copper",
+    "USDJPY": "usdjpy",
+}
+_REVERSE_MAP: Dict[str, str] = {v: k for k, v in _CSV_COL_MAP.items()}
+
+
+def _fetch_csv_history(ticker_map: Dict[str, str]) -> pd.DataFrame:
+    """Fetch history from anchor_history.csv. Zero yfinance calls. Instant.
+    
+    Returns DataFrame with same key names as _fetch_yfinance would produce.
+    Falls back to yfinance for tickers not in CSV (forward return tickers).
+    """
+    from src.csv_data import load_history
+    df = load_history("anchors")
+    if df.empty:
+        return pd.DataFrame()
+    
+    series_list = []
+    for key, t in ticker_map.items():
+        csv_col = _REVERSE_MAP.get(key)
+        if csv_col and csv_col in df.columns:
+            s = df[csv_col].dropna().rename(key)
+            s.index = pd.to_datetime(s.index.date)  # tz-naive for matching
+            series_list.append(s)
+    
+    if not series_list:
+        return pd.DataFrame()
+    return pd.concat(series_list, axis=1).sort_index()
+
+
+def _fetch_nifty_csv() -> pd.DataFrame:
+    """Fetch Nifty history from nifty_history.csv. Zero yfinance calls."""
+    from src.csv_data import load_history
+    df = load_history("nifty")
+    if df.empty or "Close" not in df.columns:
+        return pd.DataFrame()
+    s = df["Close"].dropna().rename(NIFTY_TICKER)
+    s.index = pd.to_datetime(s.index.date)  # tz-naive for matching
+    return pd.DataFrame({NIFTY_TICKER: s}).sort_index()
+
+
 def _fetch_yfinance(tickers: Dict[str, str]) -> pd.DataFrame:
     """Fetch daily close history for multiple yfinance tickers. Merges on date index."""
     series_list: List[pd.Series] = []
@@ -181,11 +231,15 @@ def find_clones(
     cutoff_dt = pd.Timestamp(trade_date_str) - timedelta(days=exclude_recent)
     cutoff_date = cutoff_dt.strftime("%Y-%m-%d")
 
-    # 1. Fetch all history
-    macro_df = _fetch_yfinance(MACRO_TICKERS)
+    # 1. Fetch all history — CSV-first for macro + nifty, Supabase for FII/PCR
+    macro_df = _fetch_csv_history(MACRO_TICKERS)
+    if macro_df.empty:
+        macro_df = _fetch_yfinance(MACRO_TICKERS)
     fii_df = _fetch_fii_5d_history(days=min_history + 90) if current_fii_5d is not None else pd.DataFrame()
     pcr_df = _fetch_pcr_history(days=min_history + 90) if current_pcr is not None else pd.DataFrame()
-    nifty_df = _fetch_yfinance({NIFTY_TICKER: NIFTY_TICKER})
+    nifty_df = _fetch_nifty_csv()
+    if nifty_df.empty:
+        nifty_df = _fetch_yfinance({NIFTY_TICKER: NIFTY_TICKER})
 
     # 2. Merge into single DataFrame
     merged = macro_df.join(fii_df, how="outer").join(pcr_df, how="outer")
@@ -271,25 +325,46 @@ def find_clones(
 def _fetch_global_history() -> Tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
     """Fetch history for global clone tickers + SPY/EEM/Nifty forward returns.
 
+    CSV-first for macro + nifty. yfinance only for SPY/EEM (not in CSV).
+
     Returns:
         (macro_df, spy_series, eem_series, nifty_series)
     """
-    macro_df = _fetch_yfinance(GLOBAL_TICKERS)
+    # Tier 1: Global macro from CSV
+    macro_df = _fetch_csv_history(GLOBAL_TICKERS)
+    if macro_df.empty:
+        macro_df = _fetch_yfinance(GLOBAL_TICKERS)
     if macro_df.empty:
         return pd.DataFrame(), pd.Series(), pd.Series(), pd.Series()
 
     # Compute Cu/Au ratio
     if "gold" in macro_df.columns and "copper" in macro_df.columns:
-        cu_au = macro_df["copper"] / macro_df["gold"] * 100  # scale to meaningful range
+        cu_au = macro_df["copper"] / macro_df["gold"] * 100
         macro_df["cu_au_ratio"] = cu_au
 
-    # Fetch forward return tickers
-    fwd_df = _fetch_yfinance({SPY_TICKER: SPY_TICKER, EEM_TICKER: EEM_TICKER, GLOBAL_NIFTY_TICKER: GLOBAL_NIFTY_TICKER})
+    # Tier 2: Forward return tickers — SPY + EEM from CSV (or yfinance fallback)
+    nifty_series = _fetch_nifty_csv_global()
+    try:
+        fwd_df = _fetch_csv_history({SPY_TICKER: SPY_TICKER, EEM_TICKER: EEM_TICKER})
+        if fwd_df.empty:
+            fwd_df = _fetch_yfinance({SPY_TICKER: SPY_TICKER, EEM_TICKER: EEM_TICKER})
+    except Exception:
+        fwd_df = pd.DataFrame()
     spy = fwd_df[SPY_TICKER].dropna() if SPY_TICKER in fwd_df.columns else pd.Series()
     eem = fwd_df[EEM_TICKER].dropna() if EEM_TICKER in fwd_df.columns else pd.Series()
-    nifty = fwd_df[GLOBAL_NIFTY_TICKER].dropna() if GLOBAL_NIFTY_TICKER in fwd_df.columns else pd.Series()
 
-    return macro_df, spy, eem, nifty
+    return macro_df, spy, eem, nifty_series
+
+
+def _fetch_nifty_csv_global() -> pd.Series:
+    """Fetch Nifty series for global clone forward returns from CSV."""
+    from src.csv_data import load_history
+    df = load_history("nifty")
+    if df.empty or "Close" not in df.columns:
+        return pd.Series()
+    s = df["Close"].dropna()
+    s.index = pd.to_datetime(s.index.date)  # tz-naive for matching
+    return s.sort_index()
 
 
 def _compute_cu_au_ratio(current_gold: float, current_copper: float) -> Optional[float]:

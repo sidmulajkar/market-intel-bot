@@ -58,14 +58,6 @@ def get_fallback_brief(index_data: dict, validated_news: list, sentiment: str, a
                 sign = "+" if change >= 0 else ""
                 lines.append(f"  {country}: {sign}{change:.2f}%")
 
-    # News summary
-    if validated_news:
-        lines.append("\n*Top Headlines:*")
-        for article in validated_news[:3]:
-            headline = article.get("headline", "")[:60]
-            if headline:
-                lines.append(f"  {headline}...")
-
     # Sentiment — only render if a measurable model produced a directional call
     if sentiment and sentiment.lower() != "neutral":
         lines.append(f"\n*Market Sentiment:* {sentiment.title()}")

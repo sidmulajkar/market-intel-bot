@@ -178,7 +178,7 @@ def main():
                 headline = top.get("headline", "")[:60]
                 trust    = top.get("trust_score", 0)
                 source   = top.get("source", "unknown")
-                lines.append(f"📰 {headline} ({source}, Trust:{trust}/10)")
+                lines.append(f"📰 {headline} ({source}, trust {trust}/10)")
             else:
                 lines.append("📰 Headlines unchanged")
         except Exception:
@@ -186,7 +186,7 @@ def main():
             headline = top.get("headline", "")[:60]
             trust    = top.get("trust_score", 0)
             source   = top.get("source", "unknown")
-            lines.append(f"📰 {headline} ({source}, Trust:{trust}/10)")
+            lines.append(f"📰 {headline} ({source}, trust {trust}/10)")
 
     # ── Stock-level alerts (format pre-scanned extreme moves) ────
     formatted_alerts = []
