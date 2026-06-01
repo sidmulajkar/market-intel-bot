@@ -172,6 +172,20 @@ RETENTION_POLICY = {
         "purge_archived": False,
         "description": "Earnings surprises — 2Y (8 quarters across Nifty 50)",
     },
+    "pillar_metrics": {
+        "retention_days": 365,
+        "date_col": "trade_date",
+        "archive_to_csv": False,
+        "purge_archived": False,
+        "description": "Pillar scores — 1Y for 6-month test + comparison",
+    },
+    "intraday_pulse": {
+        "retention_days": 7,
+        "date_col": "trade_date",
+        "archive_to_csv": False,
+        "purge_archived": False,
+        "description": "Intraday Nifty/VIX — 7d transient, no CSV needed",
+    },
     "mf_watchlist": {
         "retention_days": None,
         "date_col": "added_at",

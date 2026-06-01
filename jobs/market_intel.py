@@ -345,10 +345,8 @@ def _check_evening_delta() -> bool:
         trigger_str = ", ".join(triggers[:3])
         regime_label = (e_regime or morning.get("regime", "NEUTRAL")).lower().title()
         compressed = f"📌 *EVENING INTEL CHECK:* {regime_label}"
-        if trigger_str:
-            compressed += f" | {trigger_str}"
-        if e_regime == "DEFENSIVE" and override:
-            compressed += f" | Override: {override}"
+        if e_regime == "DEFENSIVE" and trigger_str:
+            compressed += f" | Triggers: {trigger_str}"
         try:
             from src.economic_calendar import get_high_impact_soon
             hi = get_high_impact_soon(days=2)
@@ -1857,6 +1855,18 @@ def main():
         print(f"   ⚠️ Clone engine: {e}")
         clone_block = ""
 
+    # ── Pillar Block (inject before clone block) ────────────────
+    pillar_block = ""
+    try:
+        from src.pillar_classifier import get_percentiles_from_csv, classify_pillars, format_pillar_output
+        _pctiles = get_percentiles_from_csv()
+        if _pctiles:
+            _pillars = classify_pillars(_pctiles)
+            if _pillars:
+                pillar_block = format_pillar_output(_pillars, max_pillars=2)
+    except Exception as e:
+        print(f"   ⚠️ Pillar block: {e}")
+
     # ── Send Telegram ───────────────────────────────────────────
     # Validate AI response - never send blank
     if validate_ai_response(analysis, min_words=50):
@@ -1865,6 +1875,8 @@ def main():
         msg = ""
         if stress_banner:
             msg += stress_banner + "\n"
+        if pillar_block:
+            msg += pillar_block + "\n\n"
         if clone_block:
             msg += clone_block + "\n"
         msg += header + "\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1930,8 +1942,6 @@ def main():
                 compressed = stress_banner + "\n" + compressed
             if trigger_str:
                 compressed += f" | {trigger_str}"
-            if current_regime == "DEFENSIVE" and override:
-                compressed += f" | Override: {override}"
             # Check for high-impact calendar events
             try:
                 from src.economic_calendar import get_high_impact_soon
@@ -1963,6 +1973,8 @@ def main():
             }, mode=mode)
             if stress_banner:
                 fallback = stress_banner + "\n" + fallback
+            if pillar_block:
+                fallback = pillar_block + "\n\n" + fallback
             if clone_block:
                 fallback += "\n" + clone_block
             send_text(fallback)

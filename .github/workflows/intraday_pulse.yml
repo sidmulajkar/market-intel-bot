@@ -1,0 +1,44 @@
+name: Intraday Pulse
+run-name: "Pulse — ${{ github.ref_name }}"
+on:
+  schedule:
+    - cron: '0/30 4-9 * * 1-5'  # Every 30min 4:00-9:30 UTC (9:30-15:00 IST) Mon-Fri
+    - cron: '0 10 * * 1-5'       # 10:00 UTC (15:30 IST = market close)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+  TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: '3.11'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-${{ steps.python.outputs.python-version }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run intraday pulse
+        run: python3 jobs/intraday_pulse.py
+        timeout-minutes: 3

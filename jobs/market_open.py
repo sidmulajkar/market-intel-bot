@@ -61,13 +61,13 @@ def _get_arbiter_regime() -> dict:
 
 
 def _posture_for_regime(regime: str) -> str:
-    """Map regime to actionable posture."""
+    """Map regime to description — factual only, no trading advice."""
     posture_map = {
-        "BULLISH": "Add beta; buy dips on support holds.",
-        "NEUTRAL": "No edge — range trade; neutral positioning.",
-        "DEFENSIVE": "Cut beta, hedge, raise cash; reduce OMCs and oil importers.",
+        "BULLISH": "Constructive — broad-based participation.",
+        "NEUTRAL": "Neutral — range-bound with balanced risks.",
+        "DEFENSIVE": "Defensive — elevated macro stress indicators.",
     }
-    return posture_map.get(regime, "No edge — neutral positioning.")
+    return posture_map.get(regime, "Neutral — balanced posture.")
 
 
 def _watch_levels_for_regime(regime: str) -> str:

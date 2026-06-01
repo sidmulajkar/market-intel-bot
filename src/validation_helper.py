@@ -71,6 +71,10 @@ _BLOCKED_PATTERNS = [
     r'→\s*(Nifty|Bank|Market|Sensex|Sector|Index)',    # Conditional arrow advice
     # Clone block speculation protection (T4.2)
     r'(Clone|clone|Historical Clone).*?(could|may|might|will|if|likely|possibly|probably)',
+    # Bare Posture: lines (not emoji-prefixed like 📌 *Posture:*)
+    r'^Posture:.*$',
+    # Sector-specific advice
+    r'\b(OMCs|oil\s+importers)\b',
 ]
 
 

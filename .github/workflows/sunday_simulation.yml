@@ -1,0 +1,59 @@
+name: Sunday Simulation
+run-name: "Simulation — pillar_metrics + clone cache"
+on:
+  schedule:
+    - cron: '15 2 * * 0'  # Sunday 02:15 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: '3.11'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-${{ steps.python.outputs.python-version }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run simulation
+        run: |
+          python3 -c "
+          from src.sunday_simulation import run_sunday_simulation
+          from src.supabase_client import create_supabase_client
+          sb = create_supabase_client()
+          if not sb:
+            print('❌ Supabase connection failed')
+            exit(1)
+          result = run_sunday_simulation(sb)
+          print(f'Result: {result}')
+          if not result.get('ok'):
+            exit(1)
+          "
+        timeout-minutes: 8
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          echo "⚠️ Simulation failed — pillar_metrics not computed"
+          exit 1

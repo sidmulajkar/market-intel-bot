@@ -463,6 +463,11 @@ modules = [
     "src.consequence_engine",
     "src.block_validator",
     "src.compute_budget",
+    "src.pillar_classifier",
+    "src.transmission_mechanics",
+    "src.sunday_simulation",
+    "src.sunday_calibration",
+    "src.intraday_pulse",
 ]
 
 import_ok = 0

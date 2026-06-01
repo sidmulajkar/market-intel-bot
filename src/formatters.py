@@ -23,15 +23,67 @@ def render_scorecard(correct: int, total: int, avg_brier: float) -> str:
 
 
 def format_scenario_block(state) -> str:
-    """Render active scenarios + historical clones using Clone Engine (T4.2 / G3).
+    """Render active structural pillars + historical clones.
 
-    Uses dynamic historical clone engine for 6D macro nearest-neighbor matching
-    with empirical forward returns. Falls back to legacy scenario-only output.
+    Pillars (Phase 2) replace legacy scenario detection with 6-dimensional
+    macro percentile classification. Clone engine (T4.2 / G3) kept as-is.
     """
-    clone_skip = ""
     blocks: list[str] = []
     try:
+        # ── Structural Pillars (Phase 2): 6-dim percentile classification ──
+        from src.pillar_classifier import get_percentiles_from_csv, classify_pillars, format_pillar_output
+        pctiles = get_percentiles_from_csv()
+        if pctiles:
+            pillars = classify_pillars(pctiles)
+            if pillars:
+                pillar_block = format_pillar_output(pillars, max_pillars=2)
+                if pillar_block:
+                    blocks.append(pillar_block)
+
         macro = getattr(state, 'macro', None)
+
+        # ── Transmission Mechanics (Phase 2.3): causal chain per pillar ──
+        if pillars and macro:
+            try:
+                from src.transmission_mechanics import compute_transmission, format_transmission
+                from src.csv_data import load_history
+
+                current_vals = {}
+                for attr, key in [("brent", "brent"), ("usdinr", "usdinr"),
+                                   ("dxy", "dxy"), ("us_10y", "us10y"),
+                                   ("gold", "gold"), ("cboe_vix", "cboe_vix")]:
+                    val = getattr(macro, attr, None)
+                    if val is not None:
+                        current_vals[key] = float(val)
+
+                if pctiles:
+                    current_vals["dxy_pctile"] = pctiles.get("DXY", 50)
+                    current_vals["gold_pctile"] = pctiles.get("Gold", 50)
+                    current_vals["soxx_nq_pctile"] = pctiles.get("SOXX_NQ_Ratio", 50)
+                    current_vals["credit_ratio_pctile"] = pctiles.get("Credit_Ratio", 50)
+
+                baseline_vals = {}
+                df = load_history("anchors")
+                if not df.empty and len(df) >= 20:
+                    lookback = df.tail(252) if len(df) >= 252 else df
+                    col_map = {"brent": "BZ=F", "usdinr": "USDINR=X",
+                               "dxy": "DX-Y.NYB", "us10y": "^TNX",
+                               "gold": "GC=F"}
+                    for key, col in col_map.items():
+                        if col in lookback.columns:
+                            baseline_vals[key] = float(lookback[col].mean())
+
+                tx_lines = []
+                for p in pillars[:2]:
+                    tx = compute_transmission(p["name"], current_vals, baseline_vals)
+                    if tx and not tx.get("error"):
+                        tx_str = format_transmission(p["name"], tx)
+                        if tx_str:
+                            tx_lines.append(tx_str)
+                if tx_lines:
+                    blocks[-1] += "\n" + "\n".join(tx_lines)
+            except Exception:
+                pass
 
         # ── India Clone Engine (T4.2): 6D percentile matching ──
         if all([
@@ -58,7 +110,7 @@ def format_scenario_block(state) -> str:
                 if clone_block:
                     blocks.append(clone_block)
             elif clone_data.get("status") == "insufficient_data":
-                clone_skip = "🔬 Historical Clones: Insufficient data (requires 252+ sessions)"
+                blocks.append("🔬 Historical Clones: Insufficient data (requires 252+ sessions)")
 
         # ── Global Clone Engine (G3): 5D global percentile matching + India transmission ──
         if all([
@@ -85,25 +137,7 @@ def format_scenario_block(state) -> str:
 
         if blocks:
             return "\n\n".join(blocks)
-
-        # ── Fallback: Legacy scenario-only output ──
-        parts = []
-        if state.active_scenarios:
-            parts.append("⚠️ *Active Risk Scenarios*:")
-            for s in state.active_scenarios:
-                if s.severity not in ("ACTIVE", "WATCH"):
-                    continue
-                emoji = "🚨" if s.severity == "ACTIVE" else "⚠️"
-                display_name = s.name.replace("_", " ").title()
-                header = f"{emoji} *{display_name}* ({s.confidence})"
-                parts.append(header)
-                for ind in s.indicators[:3]:
-                    parts.append(f"  • {ind}")
-            if clone_skip:
-                parts.append("")
-                parts.append(clone_skip)
-            return "\n".join(parts)
-        return clone_skip
+        return ""
     except Exception:
         return ""
 

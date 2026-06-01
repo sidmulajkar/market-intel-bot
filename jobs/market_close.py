@@ -60,11 +60,11 @@ def _get_arbiter_regime() -> dict:
 
 def _posture_for_regime(regime: str) -> str:
     posture_map = {
-        "BULLISH": "Add beta; buy dips on support holds.",
-        "NEUTRAL": "No edge — range trade; neutral positioning.",
-        "DEFENSIVE": "Cut beta, hedge, raise cash; reduce OMCs and oil importers.",
+        "BULLISH": "Constructive — broad-based participation.",
+        "NEUTRAL": "Neutral — range-bound with balanced risks.",
+        "DEFENSIVE": "Defensive — elevated macro stress indicators.",
     }
-    return posture_map.get(regime, "No edge — neutral positioning.")
+    return posture_map.get(regime, "Neutral — balanced posture.")
 
 def main():
     print("=" * 50)
@@ -370,9 +370,6 @@ def main():
 
     def make_fallback():
         """Deterministic EOD text-only note — no AI needed. Blocks are rendered by send_eod."""
-        regime_posture = regime_info.get("posture_text", "")
-        if regime_posture:
-            return f"Posture: {regime_posture}"
         return f"Regime: {regime_label}. Session closed."
 
     # ── Regime-gated sign-off ──────────────────────────────────────

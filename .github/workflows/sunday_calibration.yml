@@ -1,0 +1,58 @@
+name: Sunday Calibration
+run-name: "Calibration — pillar threshold backtest"
+on:
+  schedule:
+    - cron: '30 2 * * 0'  # Sunday 02:30 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: '3.11'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-${{ steps.python.outputs.python-version }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run calibration backtest
+        run: |
+          python3 -c "
+          from src.sunday_calibration import run_calibration
+          from src.supabase_client import create_supabase_client
+          sb = create_supabase_client()
+          if not sb:
+            print('❌ Supabase connection failed')
+            exit(1)
+          result = run_calibration(sb)
+          print(f'Summary: {result[\"episodes_passed\"]}/{result[\"episodes_evaluated\"]} passed')
+          print(f'Overall F1: {result[\"overall_f1\"]}')
+          print(f'Gate: {\"PASSED\" if result[\"gate_passed\"] else \"FAILED\"}')
+          for r in result.get('results', []):
+            print(f'  {r[\"episode\"]:25s} F1={r[\"f1\"]:.3f}  pass={r[\"pass_threshold\"]}')
+          if not result.get('gate_passed'):
+            print('⚠️ Calibration gate failed — review thresholds')
+            exit(1)
+          "
+        timeout-minutes: 8

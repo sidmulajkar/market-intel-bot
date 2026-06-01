@@ -632,7 +632,62 @@ CREATE INDEX IF NOT EXISTS idx_clone_history_trade_date
     ON clone_history (trade_date DESC);
 
 -- ============================================================
--- FINAL VERIFICATION: Check all 21 tables exist
+-- 22. PILLAR METRICS (Phase 2) — Daily structural pillar scores
+-- Stores 6 pillar scores + active dimensions per trade date.
+-- Written by: src/sunday_simulation.py (Sunday 02:15 UTC)
+-- Read by: src/pillar_classifier.py (weekday comparison)
+-- Retention: 1 year (365 days)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS pillar_metrics (
+    id              SERIAL PRIMARY KEY,
+    trade_date      DATE NOT NULL,
+    pillar_name     TEXT NOT NULL,
+    pillar_score    DOUBLE PRECISION,
+    pillar_tier     TEXT,
+    active_dims     JSONB,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pillar_metrics_date
+    ON pillar_metrics (trade_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_pillar_metrics_pillar
+    ON pillar_metrics (pillar_name, trade_date DESC);
+
+ALTER TABLE pillar_metrics
+    ADD CONSTRAINT uq_pillar_date UNIQUE (trade_date, pillar_name);
+
+
+-- ============================================================
+-- 23. INTRADAY PULSE (Phase 3) — 30-min scanner data
+-- Stores Nifty + VIX readings every 30 min during market hours.
+-- Written by: jobs/intraday_pulse.py
+-- Read by: midday_scan.py / market_close.py (session open comparison)
+-- Retention: 7 days (transient intraday data)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS intraday_pulse (
+    id              SERIAL PRIMARY KEY,
+    trade_date      DATE NOT NULL,
+    pulse_time      TIME NOT NULL,
+    nifty_price     DOUBLE PRECISION,
+    nifty_change_pct DOUBLE PRECISION,
+    india_vix       DOUBLE PRECISION,
+    vix_change_pct  DOUBLE PRECISION,
+    pulse_label     TEXT DEFAULT 'CALM',
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_intraday_date
+    ON intraday_pulse (trade_date DESC, pulse_time DESC);
+
+-- Auto-purge: delete rows older than 7 days
+-- DELETE FROM intraday_pulse WHERE trade_date < NOW() - INTERVAL '7 days';
+
+
+-- ============================================================
+-- FINAL VERIFICATION: Check all 23 tables exist
 -- ============================================================
 
 SELECT table_name FROM information_schema.tables
@@ -647,5 +702,7 @@ AND table_name IN (
     'sector_rs_history', 'earnings_surprises', 'market_internals_history',
     'market_state', 'forecast_log', 'analysis_cache',
     'analytics_ledger', 'shareholding_snapshots',
-    'clone_history'
+    'clone_history',
+    'pillar_metrics',
+    'intraday_pulse'
 );
