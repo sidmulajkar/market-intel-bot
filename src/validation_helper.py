@@ -75,6 +75,12 @@ _BLOCKED_PATTERNS = [
     r'^Posture:.*$',
     # Sector-specific advice
     r'\b(OMCs|oil\s+importers)\b',
+    # AI speculation patterns (Analyst 1: may/can + speculative verbs)
+    r'may\s+influence',
+    r'may\s+decline',
+    r'can\s+mitigate',
+    r'can\s+lead\s+to',
+    r'\d{1,3}%\s+correlation',
 ]
 
 

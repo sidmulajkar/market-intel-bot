@@ -62,8 +62,6 @@ _EMOJI_MAP = {
     "🌃": "",
     "🌅": "",
     "🌙": "",
-    "↑": "",
-    "↓": "",
 }
 
 def _scrub_emoji(text: str) -> str:

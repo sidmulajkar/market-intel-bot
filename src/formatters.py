@@ -29,6 +29,7 @@ def format_scenario_block(state) -> str:
     macro percentile classification. Clone engine (T4.2 / G3) kept as-is.
     """
     blocks: list[str] = []
+    pillars = []
     try:
         # ── Structural Pillars (Phase 2): 6-dim percentile classification ──
         from src.pillar_classifier import get_percentiles_from_csv, classify_pillars, format_pillar_output
@@ -66,9 +67,9 @@ def format_scenario_block(state) -> str:
                 df = load_history("anchors")
                 if not df.empty and len(df) >= 20:
                     lookback = df.tail(252) if len(df) >= 252 else df
-                    col_map = {"brent": "BZ=F", "usdinr": "USDINR=X",
-                               "dxy": "DX-Y.NYB", "us10y": "^TNX",
-                               "gold": "GC=F"}
+                    col_map = {"brent": "Brent", "usdinr": "USDINR",
+                               "dxy": "DXY", "us10y": "US10Y",
+                               "gold": "Gold"}
                     for key, col in col_map.items():
                         if col in lookback.columns:
                             baseline_vals[key] = float(lookback[col].mean())
