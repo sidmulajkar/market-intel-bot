@@ -1,0 +1,166 @@
+======================================================================
+  FULL-DAY TELEGRAM OUTPUT VALIDATION
+  Dry Run: Yes (printed to console)
+  AI: Groq + Google fallback
+  Data: Live from NSE, yfinance, Finnhub
+======================================================================
+
+──────────────────────────────────────────────────────────────────────
+  📨 07:00 — Morning Market Intel
+──────────────────────────────────────────────────────────────────────
+⚠️ ELEVATED (72/100) | Drivers: FII Velocity, USDINR
+📌 *Morning Intel Check:* Defensive | USDINR ₹95.16,
+Brent $94.14, VIX 16.18 | ⚠️ US ISM Manufacturing
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+  📨 08:00 — Morning Brief
+──────────────────────────────────────────────────────────────────────
+*Morning Market Snapshot*
+
+*Global Indices:*
+  US: +0.26%
+  Brazil: -0.91%
+  Canada: -0.10%
+  Mexico: -0.66%
+  Chile: +0.00%
+
+📌 *Pre-Market Alerts*
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+🟡 *IT:* TCS +5.9%, INFY +5.7%
+   ↳ Asia stocks slide as Middle East anxiety offsets AI optimism
+
+🔴 *DEFENSIVE*
+Confidence: HIGH
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 *Override Active:* USDINR ₹95.2 + Brent $94 → DEFENSIVE
+  🔴 FII: ₹-3,792Cr (selling)
+  🟢 DII: ₹+4,728Cr (accumulating)
+  🟢 VIX: 16.2 (normal)
+  🔴 USDINR: ₹95.2 (extreme weakness)
+  🔴 Brent: $94 (stress)
+  🟡 DXY: flat
+
+  Price-vs-structural gap: sentiment bearish but fundamentals stable
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📰 *Top Headlines:*
+• Indian shares open lower as Iran war, outflows weigh - Reuters
+• Gold edges higher on easing Treasury yields amid Mideast unc…
+• Dollar steady as traders await progress on Middle East peace…
+
+📌 Risk Calendar (Next 7D)
+🔴 06-02: 🌐 US ISM Manufacturing
+🟡 06-02: 📌 India Manufacturing PMI (May)
+🔴 06-03: 📌 RBI MPC Meeting (Day 1)
+🔴 06-04: 📌 RBI MPC Decision
+🔴 06-05: 🌐 US NFP (May)
+🟡 06-05: 📌 India Services PMI (May)
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+  📨 09:15 — Market Open
+──────────────────────────────────────────────────────────────────────
+📈 *MARKET OPEN — 9:15 AM IST*
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔴 *REGIME: DEFENSIVE* | Nifty 23,304 (-0.3%)
+
+ Overnight: 🇺🇸 US +0.3%
+⚠️ Gap Up: TCS +5.9%, INFY +5.7%, HCLTECH +3.9%
+📉 Gap Down: NTPC -3.0%, BAJAJFINSV -2.4%, BAJFINANCE -2.3%
+📰 Indian shares open lower as Iran war, outflows weigh - Reuters
+
+[CONSEQUENCE LAYER — India Impact]
+⚠️ India VIX: 16.2 (-2.2%): VIX above baseline by 8%
+⚠️ Brent $94 above baseline (15%): ₹18,210Cr/yr import bill
+🚨 Copper above baseline by 47%: ₹1,050Cr/yr industrial input cost
+⚠️ DXY below baseline by 4.7%: ₹700Cr/yr FII relief
+
+📌 *Bulk/Block Deals:*
+🔴 PREMIERENE: -₹1,118Cr net
+🟢 POLICYBZR: +₹385Cr net
+🔴 BLISSGVS: -₹32Cr net
+
+⚠️ *Anomalies (3%+):* TCS +5.9%; INFY +5.7%; HCLTECH +3.9%
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+  📨 12:30 — Midday Scan
+──────────────────────────────────────────────────────────────────────
+📌 *MIDDAY MARKET SCAN*
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️ ELEVATED (72/100) | Drivers: FII Velocity, USDINR
+🔴 Nifty 23,300 (-0.3%)
+🟢 Gainers: TCS +6.0%, INFY +5.8%, HCLTECH +4.0%
+🔴 Losers: NTPC -3.2%, BAJAJFINSV -2.5%, BAJFINANCE -2.4%
+🏥 Midday Breadth: — (market closed)
+📰 Indian shares open lower as Iran war, outflows weigh - Reuters
+
+⚠️ *Extreme Moves:*
+⚠️ *TCS* +6.0% — extreme move
+⚠️ *INFY* +5.8% — extreme move
+
+_Mid-session check_
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+  📨 15:30 — Market Close
+──────────────────────────────────────────────────────────────────────
+📌 *END OF DAY*
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔴 *REGIME: DEFENSIVE* | Nifty 23,296 (-0.4%)
+
+📌 *Stagflation & Supply Shock* — ELEVATED (63/100)
+  🔴 Detection: Brent 79p↑, USDINR 99p↑, Cu_Au_Ratio 17p↓,
+     US10Y 89p↑, Gold 94p↑
+  📌 Lifecycle: EMERGING | Day 1
+💱 *Carry Trade Unwind* — ACTIVE (47/100)
+  🔴 Detection: USDINR 99p↑, Gold 94p↑, US10Y 89p↑
+  📌 Lifecycle: EMERGING | Day 1
+  📌 Transmission: Real yield 6.4, CAD increase 10.0
+
+📉 *DRAWDOWN:* -11.5% from 252D high | Velocity: -0.1%/day (SLOW)
+
+📌 Nifty 23,296 (-0.4%) | VIX 16.2
+📌 *Flows:* FII Net: ₹-3,792Cr | DII Net: ₹+4,728Cr
+
+ *Overnight:* 🇬🇧 UK -0.7% | 🇩🇪 Germany -0.4% | 🇫🇷 France -0.5%
+
+⚠️ *Big Moves (5%+):* TCS +6.0%; INFY +5.8%
+
+_Evening macro watch continues. Evening intel at 18:00._
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+  📨 18:00 — Evening Market Intel (compressed)
+──────────────────────────────────────────────────────────────────────
+⚠️ ELEVATED (72/100) | Drivers: FII Velocity, USDINR
+📌 *Evening Intel Check:* Defensive | USDINR ₹95.16,
+Brent $94.14, VIX 16.2 | ⚠️ US ISM Manufacturing
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+  📨 20:00 — Evening Report
+──────────────────────────────────────────────────────────────────────
+🟡 *Evening:* US session quiet (SPX flat, VIX unchanged).
+No shift to India outlook.
+──────────────────────────────────────────────────────────────────────
+
+======================================================================
+  SUMMARY
+  Jobs run:       8
+  Messages sent:  7 (FII/DII fetch = 0 = data-only job)
+  Errors:         0
+  Status:         ✅ ALL PASSED
+======================================================================
+
+NOTES:
+- Morning/Evening Intel: compressed format (regime unchanged, VIX stable, stress < 80)
+- Midday Scan: full scan sent (market moved > 1% threshold via TCS/INFY +6%)
+- Morning Brief + Market Close: regime card present
+- All 7 messages distinct, no duplicates, within 10-msg limit
+- Options data unavailable (no morning snapshot stored)

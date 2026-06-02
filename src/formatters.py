@@ -32,14 +32,35 @@ def format_scenario_block(state) -> str:
     pillars = []
     try:
         # ── Structural Pillars (Phase 2): 6-dim percentile classification ──
-        from src.pillar_classifier import get_percentiles_from_csv, classify_pillars, format_pillar_output
+        from src.pillar_classifier import get_percentiles_from_csv, classify_pillars
         pctiles = get_percentiles_from_csv()
         if pctiles:
             pillars = classify_pillars(pctiles)
             if pillars:
-                pillar_block = format_pillar_output(pillars, max_pillars=2)
-                if pillar_block:
-                    blocks.append(pillar_block)
+                # Build pillar block with lifecycle interleaved (P4.2)
+                pillar_lines = []
+                for p in pillars[:2]:
+                    tier_emoji = {"STRESS": "🔴", "ELEVATED": "🟠", "ACTIVE": "🟡", "MONITORED": "🟢"}
+                    emoji = tier_emoji.get(p["tier"], "⚪")
+                    pillar_lines.append(f"{p['emoji']} *{p['label']}* — {p['tier']} ({p['score']:.0f}/100)")
+                    meaningful = [d for d in p.get("active_dims", []) if d.get("contribution", 0) >= 0.01]
+                    if meaningful:
+                        dims_str = ", ".join(
+                            f"{d['name']} {d['value_pctile']:.0f}p{'↑' if d['direction'] == 'stress' else '↓'}"
+                            for d in meaningful[:5]
+                        )
+                        pillar_lines.append(f"  🔴 Detection: {dims_str}")
+                    # Append lifecycle line (P4.2)
+                    try:
+                        from src.pillar_lifecycle import compute_pillar_lifecycle, get_pillar_history_from_db
+                        history = get_pillar_history_from_db(p["name"])
+                        lc = compute_pillar_lifecycle(p["name"], p["score"], history)
+                        if lc.get("ok") and lc.get("formatted"):
+                            pillar_lines.append(f"  📊 Lifecycle: {lc['formatted']}")
+                    except Exception:
+                        pass
+                if pillar_lines:
+                    blocks.append("\n".join(pillar_lines))
 
         macro = getattr(state, 'macro', None)
 
@@ -135,6 +156,38 @@ def format_scenario_block(state) -> str:
                 global_block = format_global_clone_block(global_clone_data)
                 if global_block:
                     blocks.append(global_block)
+
+        # ── Fragility Index summary (P4.1) — show when elevated ──
+        fragility_score = getattr(state, "fragility_score", None)
+        if fragility_score is not None and fragility_score > 50:
+            # Build drivers dynamically from available state data
+            _frag_drivers = []
+            _macro = getattr(state, "macro", None)
+            _flows = getattr(state, "flows", None)
+            _active_scenarios = getattr(state, "active_scenarios", None)
+            if _active_scenarios:
+                for _s in _active_scenarios:
+                    _frag_drivers.append(getattr(_s, "name", str(_s))[:20])
+            if _macro:
+                if getattr(_macro, "vix", None) is not None and getattr(_macro, "vix", 0) >= 18:
+                    _frag_drivers.append(f"VIX {getattr(_macro, 'vix', 0):.0f}")
+                if getattr(_macro, "usdinr", None) is not None and getattr(_macro, "usdinr", 0) >= 92:
+                    _frag_drivers.append(f"USDINR ₹{getattr(_macro, 'usdinr', 0):.1f}")
+                if getattr(_macro, "brent", None) is not None and getattr(_macro, "brent", 0) >= 85:
+                    _frag_drivers.append(f"Brent ${getattr(_macro, 'brent', 0):.0f}")
+            if _flows:
+                _fii = getattr(_flows, "fii_net", None)
+                if _fii is not None and _fii < -500:
+                    _frag_drivers.append("FII Velocity")
+            from src.fragility_index import format_fragility_banner
+            frag_banner = format_fragility_banner({
+                "ok": True,
+                "fragility_score": fragility_score,
+                "severity": "CRITICAL" if fragility_score >= 85 else "ELEVATED" if fragility_score >= 65 else "MODERATE",
+                "drivers": _frag_drivers[:3],
+            })
+            if frag_banner:
+                blocks.insert(0, frag_banner)
 
         if blocks:
             return "\n\n".join(blocks)
@@ -1977,12 +2030,49 @@ def format_options_block(symbol: str = "NIFTY", run_label: str = "morning") -> s
     Evening: compares to morning snapshot for OI shifts.
     """
     try:
-        from src.options_engine import run_options_analysis, fetch_nse_options_chain, compute_oi_shifts, format_derivatives_intel
+        from src.options_engine import run_options_analysis, fetch_nse_options_chain, compute_oi_shifts, format_derivatives_intel, get_latest_snapshot
 
         # Run options analysis for this execution
         analysis = run_options_analysis(symbol=symbol, store=True, run_label=run_label)
 
+        # Fallback: if live analysis failed, try stale Supabase snapshot
         if not analysis.get("ok"):
+            stale = get_latest_snapshot(symbol, run=run_label)
+            if not stale:
+                # Try any run label (including yesterday's close/evening)
+                for fallback_run in ("morning", "midday", "evening", "close"):
+                    stale = get_latest_snapshot(symbol, run=fallback_run)
+                    if stale:
+                        break
+            if not stale:
+                # Broad fallback: any recent snapshot regardless of run label
+                try:
+                    from supabase import create_client
+                    from src.options_engine import SUPABASE_URL, SUPABASE_KEY
+                    if SUPABASE_URL and SUPABASE_KEY:
+                        client = create_client(SUPABASE_URL, SUPABASE_KEY)
+                        result = client.table("options_snapshots").select("*").eq("symbol", symbol).order("created_at", desc=True).limit(1).execute()
+                        if result.data:
+                            stale = result.data[0]
+                except Exception:
+                    pass
+            if stale:
+                from datetime import datetime, timezone
+                snap_date = stale.get("date", "unknown")
+                lines = []
+                lines.append("📊 *OPTIONS & DERIVATIVES (stale snapshot)*\n")
+                lines.append(f"┌─ Stale Data ──────────────────")
+                lines.append(f"│ Date: {snap_date} (live fetch failed)")
+                if stale.get("pcr") is not None:
+                    lines.append(f"│ PCR: {stale['pcr']}")
+                if stale.get("skew_25d") is not None:
+                    lines.append(f"│ 25D Skew: {stale['skew_25d']:+.1f}")
+                if stale.get("gex") is not None:
+                    lines.append(f"│ GEX: ₹{stale['gex']:+.0f} Cr")
+                if stale.get("max_pain") is not None:
+                    lines.append(f"│ Max Pain: {stale['max_pain']}")
+                lines.append("└" + "─" * 30)
+                return "\n".join(lines)
             return "_Note: Options data unavailable._"
 
         # Format output

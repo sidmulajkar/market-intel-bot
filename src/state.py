@@ -210,6 +210,12 @@ class MarketState(BaseModel):
     # Global regime — from global_arbiter.py (overlay on India regime)
     global_regime: Optional[str] = None      # GLOBAL_RISK_ON/_RISK_OFF/_STAGFLATION/_LIQUIDITY_DRAWDOWN/_NEUTRAL
 
+    # Fragility Index (P4) — composite of stress + pillar breadth + pillar intensity
+    fragility_score: Optional[float] = None  # 0-100, computed at 08:00 alongside final_regime
+
+    # Pillar lifecycle states (P4) — per-pillar age/trend state
+    pillar_lifecycles: Dict[str, str] = Field(default_factory=dict)  # {pillar_name: "ESCALATING (Day 4, Peak: 68)"}
+
     # Historical clones — 3 closest dates matching current macro (computed at freeze)
     historical_clones: List[Dict] = Field(default_factory=list)
 

@@ -213,8 +213,8 @@ def _apply_magnitude_gate(lines: list, details: list) -> tuple[list, list]:
                     suppressed = True
                     break
                 # Flag material impacts
-                if val > _MAGNITUDE_MATERIAL_CR and "[MATERIAL]" not in line:
-                    line = line + " [MATERIAL]"
+                if val > _MAGNITUDE_MATERIAL_CR and " [MATERIAL]" not in line:
+                    line = line + " ⚠️"
 
         # Check for $B impacts
         elif "B" in line and "$" in line:

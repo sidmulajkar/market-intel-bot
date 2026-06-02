@@ -640,7 +640,7 @@ def store_options_snapshot(symbol: str, run: str, analysis: Dict) -> bool:
             "pcr": analysis.get("pcr", {}).get("pcr"),
             "pcr_signal": analysis.get("pcr", {}).get("signal"),
             "gex": analysis.get("gex", {}).get("net_gex_cr"),
-            "skew_25d": analysis.get("skew", {}).get("skew_25d"),
+            "skew_25d": analysis.get("skew", {}).get("risk_reversal_25d"),
             "support_zone": analysis.get("zones", {}).get("support_zone", []),
             "resistance_zone": analysis.get("zones", {}).get("resistance_zone", []),
         }
@@ -689,6 +689,150 @@ def get_latest_snapshot(symbol: str, run: str = "morning") -> Optional[Dict]:
 # ═══════════════════════════════════════════════════════════════════════════════
 # EVENING ONLY: Compute OI shifts vs morning snapshot
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def get_snapshot_history(symbol: str, days: int = 5) -> List[Dict]:
+    """
+    Get recent options snapshots for rolling average computation.
+    Returns list of dicts sorted by date ascending, oldest first.
+    """
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return []
+
+    try:
+        from supabase import create_client
+        client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days + 2)).strftime("%Y-%m-%d")
+
+        result = (
+            client.table("options_snapshots")
+            .select("date, pcr, skew_25d, run")
+            .eq("symbol", symbol)
+            .gte("date", cutoff)
+            .order("date", desc=False)
+            .execute()
+        )
+        return result.data if result.data else []
+    except Exception as e:
+        print(f"⚠️  Get snapshot history error: {e}")
+        return []
+
+
+def detect_pre_event_positioning(
+    symbol: str = "NIFTY",
+    event_label: str = "",
+    lookback_days: int = 5,
+    run: str = "morning",
+    existing_snapshot: Optional[Dict] = None,
+) -> Dict:
+    """
+    Detect aggressive hedging before high-impact events.
+
+    Compares current options readings (PCR, Skew) to their
+    rolling average to identify pre-event positioning.
+
+    Signals (Analyst 1 correction):
+    - PCR spikes > +0.15 in 3 days → Aggressive Put Hedging (put OI ↑)
+    - PCR drops > -0.15 in 3 days → Call Speculation / Put Unwinding
+    - Skew spikes > +15 points from 5D average → Tail Risk Pricing
+
+    Args:
+        existing_snapshot: Optional pre-fetched snapshot (e.g., stale Supabase row)
+                          used when live NSE API is unavailable at 08:00.
+    """
+    from statistics import mean
+
+    history = get_snapshot_history(symbol, days=lookback_days)
+    if not history:
+        return {"ok": False, "message": "No historical snapshot data"}
+
+    # Get current snapshot: use caller-provided stale data first, then live DB, then history fallback
+    current = existing_snapshot or get_latest_snapshot(symbol, run)
+    if not current:
+        current = history[-1] if history else None
+    if not current:
+        return {"ok": False, "message": "No current snapshot"}
+
+    current_pcr = current.get("pcr")
+    current_skew = current.get("skew_25d")
+
+    # Compute rolling averages from history (exclude current)
+    hist_values = history[:-1] if history and history[-1].get("date") == current.get("date") else history
+
+    pcr_values = [h["pcr"] for h in hist_values if h.get("pcr") is not None]
+    skew_values = [h["skew_25d"] for h in hist_values if h.get("skew_25d") is not None]
+
+    # PCR change in last 3 days (positive = spike = put OI increasing)
+    pcr_3d_ago = pcr_values[-3] if len(pcr_values) >= 3 else None
+    pcr_change = (current_pcr - pcr_3d_ago) if (pcr_3d_ago is not None and current_pcr is not None) else None
+
+    # Skew vs 5D average
+    skew_5d_avg = mean(skew_values) if len(skew_values) >= 3 else None
+    skew_spike = (current_skew - skew_5d_avg) if (current_skew is not None and skew_5d_avg is not None) else None
+
+    signals = []
+
+    # CORRECTED: PCR spikes > +0.15 → Aggressive Put Hedging (Put OI↑)
+    # PCR drops > -0.15 → Call Speculation / Put Unwinding
+    put_hedging = False
+    call_speculation = False
+    if pcr_change is not None:
+        if pcr_change > 0.15:
+            put_hedging = True
+            signals.append(
+                f"Aggressive put hedging: PCR {pcr_3d_ago:.2f} → {current_pcr:.2f} (Δ+{pcr_change:.2f})"
+            )
+        elif pcr_change < -0.15:
+            call_speculation = True
+            signals.append(
+                f"Call speculation / put unwinding: PCR {pcr_3d_ago:.2f} → {current_pcr:.2f} (Δ{pcr_change:.2f})"
+            )
+
+    # Tail Risk Pricing: Skew spike > +15 from 5D avg
+    tail_risk = False
+    if skew_spike is not None and skew_spike > 15:
+        tail_risk = True
+        signals.append(
+            f"Tail risk pricing: Skew {skew_5d_avg:.1f} → {current_skew:.1f} (Δ+{skew_spike:.1f} from 5D avg)"
+        )
+
+    # Detailed breakdown
+    details = []
+    if current_pcr is not None:
+        details.append(f"Current PCR: {current_pcr:.2f}")
+    if pcr_3d_ago is not None and current_pcr is not None:
+        details.append(f"3D PCR change: {pcr_change:+.2f}")
+    if current_skew is not None:
+        details.append(f"Current 25D Skew: {current_skew:+.1f}")
+    if skew_5d_avg is not None and current_skew is not None:
+        details.append(f"Skew vs 5D avg: {skew_spike:+.1f}")
+
+    # Overall assessment
+    active_signals = len(signals)
+    if active_signals >= 2:
+        assessment = f"Elevated pre-{event_label or 'event'} hedging detected"
+    elif active_signals >= 1:
+        assessment = f"Moderate pre-{event_label or 'event'} positioning detected"
+    else:
+        assessment = f"No significant pre-{event_label or 'event'} positioning"
+
+    return {
+        "ok": True,
+        "event_label": event_label,
+        "assessment": assessment,
+        "signals": signals,
+        "put_hedging": put_hedging,
+        "call_speculation": call_speculation,
+        "tail_risk": tail_risk,
+        "current_pcr": round(current_pcr, 2) if current_pcr is not None else None,
+        "current_skew": round(current_skew, 1) if current_skew is not None else None,
+        "pcr_3d_change": round(pcr_change, 2) if pcr_change is not None else None,
+        "skew_vs_5d_avg": round(skew_spike, 1) if skew_spike is not None else None,
+        "sample_size": min(len(pcr_values), len(skew_values)),
+        "details": " | ".join(details),
+    }
+
 
 def compute_oi_shifts(evening_data: List[Dict], symbol: str = "NIFTY") -> Dict:
     """

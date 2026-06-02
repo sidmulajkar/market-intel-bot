@@ -545,6 +545,57 @@ def main():
         except Exception as e:
             print(f"   ⚠️ Calendar: {e}")
 
+        # ── P6.1: Event Volatility Profiles ────────────────────
+        try:
+            from src.event_volatility import scan_upcoming_events, format_event_volatility
+            ev_profiles = scan_upcoming_events(days_ahead=7)
+            if ev_profiles:
+                vol_text = format_event_volatility(ev_profiles)
+                if vol_text:
+                    regime_card += "\n\n" + vol_text
+        except Exception as e:
+            print(f"   ⚠️ Event volatility: {e}")
+
+        # ── P6.2: Pre-Event Positioning ────────────────────────
+        try:
+            from src.event_volatility import scan_upcoming_events
+            ev_all = scan_upcoming_events(days_ahead=7)
+            nearest_high_impact = None
+            for evt in ev_all:
+                # scan_upcoming_events returns impact as "H"/"M" (single letter from CSV)
+                if evt.get("impact") in ("H", "M"):
+                    nearest_high_impact = evt
+                    break
+            if nearest_high_impact:
+                from datetime import datetime
+                evt_date = datetime.strptime(nearest_high_impact["event_date"], "%Y-%m-%d")
+                days_away = (evt_date - datetime.now()).days
+                if 0 <= days_away <= 2:
+                    # Fetch stale snapshot from Supabase as fallback (NSE down at 08:00)
+                    from src.options_engine import get_latest_snapshot, detect_pre_event_positioning
+                    stale_snap = get_latest_snapshot("NIFTY", run="morning")
+                    if not stale_snap:
+                        for fb_run in ("midday", "evening", "close"):
+                            stale_snap = get_latest_snapshot("NIFTY", run=fb_run)
+                            if stale_snap:
+                                break
+                    pos = detect_pre_event_positioning(
+                        symbol="NIFTY",
+                        event_label=nearest_high_impact.get("event_label", ""),
+                        lookback_days=5,
+                        run="morning",
+                        existing_snapshot=stale_snap,
+                    )
+                    if pos.get("ok") and pos.get("signals"):
+                        pos_lines = ["📡 *Pre-Event Positioning*"]
+                        for sig in pos["signals"]:
+                            pos_lines.append(f"• {sig}")
+                        if pos.get("details"):
+                            pos_lines.append(f"  ({pos['details']})")
+                        regime_card += "\n\n" + "\n".join(pos_lines)
+        except Exception as e:
+            print(f"   ⚠️ Pre-event positioning: {e}")
+
         if regime_card:
             merged = ""
             if brief_text:

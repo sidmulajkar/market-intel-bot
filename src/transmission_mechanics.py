@@ -227,7 +227,7 @@ def format_transmission(pillar_name: str, tx: Dict) -> str:
         if key in tx and count < 4:
             val = tx[key]
             if isinstance(val, bool):
-                val = "✅" if val else "❌"
+                val = "Yes" if val else "No"
             elif isinstance(val, float):
                 val = f"{val:.1f}"
             lines.append(f"    • {label}: {val}")

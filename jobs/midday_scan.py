@@ -100,10 +100,11 @@ def main():
 
     if nifty_moved:
         print(f"   ⚡ Skip gate: Nifty moved {nifty_change_abs:.1f}%")
+    elif has_extreme:
+        alts = ", ".join(f"{m.get('symbol','')} {m.get('change_pct',0):+.1f}%" for m in alerts[:3])
+        print(f"   ⚡ Skip gate: Extreme stock moves ({alts})")
     if vix_spike:
         print(f"   ⚡ Skip gate: VIX spiked >20%")
-    if has_extreme:
-        print(f"   ⚡ Skip gate: {len(alerts)} extreme moves detected")
 
     # ── Composite Stress Index (top banner) ──────────────────────
     stress_banner = ""
@@ -149,7 +150,12 @@ def main():
             adv = breadth["advances"]
             dec = breadth["declines"]
             if adv == 0 and dec == 0:
-                lines.append("🏥 Midday Breadth: — (market closed)")
+                from datetime import datetime
+                if datetime.now().weekday() >= 5:
+                    lines.append("🏥 Midday Breadth: — (weekend)")
+                    print("   ⚠️ Weekend scan — skip gate was triggered by pre-market data")
+                else:
+                    lines.append("🏥 Midday Breadth: — (unavailable)")
             else:
                 strength = breadth.get("strength", "")
                 lines.append(f"🏥 Midday Breadth: A/D {adv}/{dec} | {strength}")
@@ -165,20 +171,38 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Sector RS: {e}")
 
-    # News headline (only if fresh — check fingerprint)
+    # News headline (only if fresh — check cross-job + intra-day fingerprint)
     if validated_news:
         try:
-            from src.db import get_bot_state, set_bot_state
+            from src.db import get_bot_state, set_bot_state, get_seen_headlines, save_seen_headlines
+            from src.formatters import set_seen_headlines as _set_form_hashes, is_headline_seen, add_seen_headline, get_all_seen_headlines
             from src.delta import news_fingerprint_hash
+
+            # Load cross-job headline dedup from Supabase
+            from datetime import datetime as _dt
+            _today_str = _dt.now().strftime("%Y-%m-%d")
+            _prev_hashes = get_seen_headlines(_today_str)
+            if _prev_hashes:
+                _set_form_hashes(_prev_hashes)
+
+            # Intra-day fingerprint check
             current_fp = news_fingerprint_hash([a.get("headline", "") for a in validated_news[:3]])
             prev_fp = get_bot_state("news_fingerprint_midday")
-            if not prev_fp or current_fp != prev_fp:
+
+            # Check first headline against cross-job hashes
+            first_hash = hashlib.md5(validated_news[0].get("headline", "").encode()).hexdigest()
+            already_seen_cross = is_headline_seen(first_hash)
+
+            if (not prev_fp or current_fp != prev_fp) and not already_seen_cross:
                 set_bot_state("news_fingerprint_midday", current_fp)
                 top = validated_news[0]
                 headline = top.get("headline", "")[:60]
                 trust    = top.get("trust_score", 0)
                 source   = top.get("source", "unknown")
                 lines.append(f"📰 {headline} ({source}, trust {trust}/10)")
+                # Mark seen for cross-job dedup
+                add_seen_headline(first_hash)
+                save_seen_headlines(_today_str, get_all_seen_headlines())
             else:
                 lines.append("📰 Headlines unchanged")
         except Exception:
@@ -273,6 +297,25 @@ def main():
 
     if opt_delta_str:
         lines.append(opt_delta_str)
+
+    # ── P6.3: Intraday Pillar Confirmation ──────────────────────────
+    try:
+        from src.pillar_classifier import get_current_pillar_scores
+        pillars_result = get_current_pillar_scores()
+        if pillars_result.get("ok") and pillars_result["pillars"]:
+            from src.intraday_pulse import check_intraday_pillar_confirmation, format_intraday_pillar_check
+            check = check_intraday_pillar_confirmation(pillars_result["pillars"])
+            if check.get("ok"):
+                pillar_check_text = format_intraday_pillar_check(check)
+                if pillar_check_text:
+                    lines.append("\n" + pillar_check_text)
+                    print(f"   → Intraday pillar check: {len(pillar_check_text)} chars")
+            else:
+                print(f"   ⚠️ Intraday pillar check skipped: {check.get('reason', 'unknown')}")
+        else:
+            print(f"   ⚠️ No active pillars for intraday check")
+    except Exception as e:
+        print(f"   ⚠️ Intraday pillar check error: {e}")
 
     # ── AI midday brief (with universal validation) ────────────────
     print("🤖 Running AI midday analysis...")

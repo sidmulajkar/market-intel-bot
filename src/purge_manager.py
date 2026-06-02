@@ -179,6 +179,13 @@ RETENTION_POLICY = {
         "purge_archived": False,
         "description": "Pillar scores — 1Y for 6-month test + comparison",
     },
+    "pillar_lifecycle": {
+        "retention_days": 365,
+        "date_col": "trade_date",
+        "archive_to_csv": False,
+        "purge_archived": False,
+        "description": "Pillar lifecycle states — 1Y for trend analysis",
+    },
     "intraday_pulse": {
         "retention_days": 7,
         "date_col": "trade_date",

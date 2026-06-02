@@ -16,6 +16,7 @@ _LEAKAGE_PATTERNS = [
     "ai brief failed",
     "fallback sent",
     "fallback",
+    "[MATERIAL]",             # Debug tag — consequence engine uses ⚠️ instead
     "quota exhaustion",
     "ai output fell to",
     "ai output discarded",

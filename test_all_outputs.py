@@ -468,6 +468,12 @@ modules = [
     "src.sunday_simulation",
     "src.sunday_calibration",
     "src.intraday_pulse",
+    "src.fragility_index",
+    "src.pillar_lifecycle",
+    "src.fii_decomposition",
+    "src.dii_capacity",
+    "src.sectoral_drag",
+    "src.event_volatility",
 ]
 
 import_ok = 0

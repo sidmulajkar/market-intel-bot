@@ -124,7 +124,7 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Context engine: {e}")
 
-    # ── Flows block (FII/DII) ──────────────────────────────────────
+    # ── Flows block (FII/DII) + P5 Institutional Microscopy ────────
     flows_block = ""
     try:
         if ctx.get("flow_metrics", {}).get("ok"):
@@ -139,6 +139,45 @@ def main():
                 flows_block = f"📊 *Flows:* {fii_str} | {dii_str}"
                 if abs_str:
                     flows_block += f" | {abs_str}"
+
+        # P5.1: FII Decomposition
+        try:
+            from src.fii_decomposition import compute_fii_entity_concentration, format_fii_decomposition
+            decomp = compute_fii_entity_concentration(days=7)
+            if decomp.get("ok"):
+                decomp_str = format_fii_decomposition(decomp)
+                if decomp_str:
+                    flows_block += "\n\n" + decomp_str
+            elif "Entity data pending" not in flows_block:
+                flows_block += " | Entity data pending"
+        except Exception as e:
+            print(f"   ⚠️ FII decomposition: {e}")
+
+        # P5.2: DII Capacity Gauge
+        try:
+            from src.dii_capacity import compute_dii_capacity, format_dii_capacity
+            cap = compute_dii_capacity(days=5)
+            if cap.get("ok") and cap.get("status") not in ("INSUFFICIENT_DATA",):
+                cap_str = format_dii_capacity(cap)
+                if cap_str:
+                    flows_block += "\n\n" + cap_str
+        except Exception as e:
+            print(f"   ⚠️ DII capacity: {e}")
+
+        # P5.3: Sector Flow Match (pillar-flow confirmation)
+        try:
+            from src.pillar_classifier import get_current_pillar_scores
+            pr = get_current_pillar_scores()
+            if pr.get("ok") and pr["pillars"]:
+                from src.sectoral_drag import compute_pillar_flow_match, format_pillar_flow_match
+                match = compute_pillar_flow_match(pr["pillars"], lookback_days=2)
+                if match.get("ok"):
+                    match_str = format_pillar_flow_match(match)
+                    if match_str:
+                        flows_block += "\n\n" + match_str
+        except Exception as e:
+            print(f"   ⚠️ Pillar-flow match: {e}")
+
     except Exception:
         pass
 

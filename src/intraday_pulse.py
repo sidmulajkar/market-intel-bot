@@ -12,7 +12,7 @@ Data sources:
 """
 
 from datetime import datetime, time as dtime
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 # Market hours in UTC (09:15-15:30 IST = 03:45-10:00 UTC)
@@ -192,3 +192,183 @@ def get_session_open(supabase, trade_date: str) -> Optional[Dict]:
             "vix_open": row.get("india_vix"),
         }
     return None
+
+
+# ── Intraday Pillar Confirmation (Phase 6.3) ────────────────────────────────
+
+# Pillar → primary intraday price driver for correlation check
+PILLAR_INTRADAY_DRIVERS = {
+    "STAGFLATION_SUPPLY": {"ticker": "BZ=F", "label": "Brent", "expected": "negative"},
+    "CARRY_UNWIND":       {"ticker": "USDINR=X", "label": "USDINR", "expected": "negative"},
+    "WEST_ASIA":          {"ticker": "^VIX", "label": "CBOE_VIX", "expected": "negative"},
+    "EM_CONTAGION":       {"ticker": "DX-Y.NYB", "label": "DXY", "expected": "negative"},
+    "DE_DOLLARIZATION":   {"ticker": "GC=F", "label": "Gold", "expected": "positive"},
+    "TECH_CYCLE_BURST":   {"ticker": "SOXX", "label": "SOXX", "expected": "positive"},
+}
+
+
+def _fetch_intraday_30m(ticker: str) -> List[Dict]:
+    """Fetch 30-min sampled intraday data for a ticker using yfinance.
+    Returns list of {time, price, change_pct} sorted ascending."""
+    import yfinance as yf
+    try:
+        t = yf.Ticker(ticker)
+        hist = t.history(period="1d", interval="5m")
+        if hist.empty:
+            return []
+
+        # Sample at 30-min intervals (every 6th 5-min bar)
+        sampled = []
+        for i in range(0, len(hist), 6):
+            row = hist.iloc[i]
+            price = float(row["Close"])
+            open_price = float(hist.iloc[0]["Open"])
+            change_pct = round((price - open_price) / open_price * 100, 2) if open_price > 0 else 0
+            sampled.append({
+                "time": str(row.name),
+                "price": price,
+                "change_pct": change_pct,
+            })
+        return sampled
+    except Exception:
+        return []
+
+
+def check_intraday_pillar_confirmation(
+    active_pillars: List[Dict],
+    supabase=None,
+    trade_date: str = None,
+) -> Dict:
+    """
+    Validate active pillars against intraday price action.
+
+    Uses directional-match counting (Analyst 1: simpler, robust over few bars):
+      - Confirming tick: driver and Nifty move in the OPPOSITE expected direction
+        (e.g., Brent↑ & Nifty↓ for Stagflation)
+      - Diverging tick: driver and Nifty move in the SAME direction
+        (e.g., Brent↑ & Nifty↑ — Nifty is resilient)
+      - If confirming > diverging by 2+ → CONFIRMED
+      - Else → DIVERGENCE
+
+    Returns:
+        Dict with per-pillar confirmation results.
+    """
+    from datetime import datetime
+
+    if not active_pillars:
+        return {"ok": False, "message": "No active pillars"}
+
+    if trade_date is None:
+        trade_date = datetime.utcnow().strftime("%Y-%m-%d")
+
+    # Fetch Nifty 30-min bars
+    nifty_data = _fetch_intraday_30m("^NSEI")
+
+    results = []
+    for pillar in active_pillars:
+        pillar_name = pillar.get("name", "")
+        driver = PILLAR_INTRADAY_DRIVERS.get(pillar_name)
+        if not driver:
+            continue
+
+        if pillar.get("score", 0) < 40:
+            continue
+
+        driver_data = _fetch_intraday_30m(driver["ticker"])
+        if not driver_data or len(driver_data) < 2 or not nifty_data or len(nifty_data) < 2:
+            results.append({
+                "pillar_name": pillar_name,
+                "driver": driver["label"],
+                "result": "NO_DATA",
+                "detail": f"Insufficient intraday data for {driver['label']}",
+            })
+            continue
+
+        # Align to shorter series
+        n_bars = min(len(nifty_data), len(driver_data))
+
+        # Directional tick counting
+        confirming = 0
+        diverging = 0
+        flat = 0
+        for i in range(1, n_bars):
+            nifty_dir = nifty_data[i]["change_pct"] - nifty_data[i-1]["change_pct"]
+            driver_dir = driver_data[i]["change_pct"] - driver_data[i-1]["change_pct"]
+
+            # Skip flat ticks (both directions < 0.02%)
+            if abs(nifty_dir) < 0.02 and abs(driver_dir) < 0.02:
+                flat += 1
+                continue
+            if abs(driver_dir) < 0.02:
+                flat += 1
+                continue
+
+            if driver["expected"] == "negative":
+                # Expected: drive up → nifty down
+                if (driver_dir > 0 and nifty_dir < 0) or (driver_dir < 0 and nifty_dir > 0):
+                    confirming += 1
+                else:
+                    diverging += 1
+            else:
+                # Expected: move together
+                if (driver_dir > 0 and nifty_dir > 0) or (driver_dir < 0 and nifty_dir < 0):
+                    confirming += 1
+                else:
+                    diverging += 1
+
+        total_ticks = confirming + diverging
+        if total_ticks < 2:
+            results.append({
+                "pillar_name": pillar_name,
+                "driver": driver["label"],
+                "result": "NO_DATA",
+                "detail": f"Insufficient active ticks for {driver['label']} ({total_ticks})",
+            })
+            continue
+
+        # CONFIRMED if confirming > diverging by 2+
+        if confirming >= diverging + 2:
+            result_label = "CONFIRMED"
+            detail = f"Price action aligns — {confirming} confirming vs {diverging} diverging ticks"
+        else:
+            result_label = "DIVERGENCE"
+            detail = f"Nifty resilient — {confirming} confirming vs {diverging} diverging ticks (DII ring-fencing)"
+
+        results.append({
+            "pillar_name": pillar_name,
+            "driver": driver["label"],
+            "expected_correlation": driver["expected"],
+            "result": result_label,
+            "confirming_ticks": confirming,
+            "diverging_ticks": diverging,
+            "flat_ticks": flat,
+            "data_points": total_ticks,
+            "detail": detail,
+        })
+
+    return {
+        "ok": bool(results),
+        "trade_date": trade_date,
+        "nifty_bars": len(nifty_data) if nifty_data else 0,
+        "pillar_confirmations": results,
+    }
+
+
+def format_intraday_pillar_check(check: Dict) -> str:
+    """Format intraday pillar confirmation for midday scan."""
+    if not check.get("ok") or not check.get("pillar_confirmations"):
+        return ""
+
+    lines = [f"[Intraday Pillar Check — {check.get('trade_date', 'today')}]"]
+    for pc in check["pillar_confirmations"]:
+        if pc["result"] == "CONFIRMED":
+            icon = "✅"
+        elif pc["result"] == "DIVERGENCE":
+            icon = "❌"
+        else:
+            icon = "⚪"
+        c = pc.get("confirming_ticks", 0)
+        d = pc.get("diverging_ticks", 0)
+        lines.append(f"  {icon} {pc['pillar_name']}: {pc['result']} ({c}c/{d}d) — {pc['detail']}")
+
+    return "\n".join(lines)
