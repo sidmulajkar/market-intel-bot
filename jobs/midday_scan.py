@@ -106,21 +106,38 @@ def main():
     if vix_spike:
         print(f"   ⚡ Skip gate: VIX spiked >20%")
 
-    # ── Composite Stress Index (top banner) ──────────────────────
-    stress_banner = ""
+    # ── Fragility Index banner (composite, with Base Stress subtext) ──────
+    fragility_banner = ""
     try:
-        from src.stress_index import compute_stress_index, format_stress_banner
-        stress = compute_stress_index()
-        if stress.get("ok"):
-            stress_banner = format_stress_banner(stress)
+        from src.pillar_classifier import get_percentiles_from_csv, classify_pillars
+        from src.stress_index import compute_stress_index
+        from src.fragility_index import compute_fragility_index
+        _pcts = get_percentiles_from_csv()
+        if _pcts:
+            _plls = classify_pillars(_pcts)
+            _stress = compute_stress_index()
+            if _stress.get("ok"):
+                _frag = compute_fragility_index(_stress["stress_score"], _plls)
+                if _frag.get("ok"):
+                    score = _frag["fragility_score"]
+                    severity = _frag["severity"]
+                    base = _frag.get("components", {}).get("base", 0)
+                    drivers = _stress.get("top_drivers", [])
+                    driver_labels = {
+                        "vix": "VIX", "fii": "FII Velocity", "usdinr": "USDINR",
+                        "brent": "Brent", "skew": "Put-Call Skew", "breadth": "A/D Breadth",
+                    }
+                    driver_str = ", ".join(driver_labels.get(d, d) for d in drivers) if drivers else "none"
+                    emoji = "🚨" if score >= 85 else "⚠️" if score >= 65 else "📌"
+                    fragility_banner = f"{emoji} Fragility: {severity} ({score:.0f}/100) | Base Stress: {base:.0f} | Drivers: {driver_str}"
     except Exception as e:
-        print(f"   ⚠️ Stress index: {e}")
+        print(f"   ⚠️ Fragility banner: {e}")
 
     # ── Remove global indices from midday snapshot (Phase 26: stale at 12:30)
     # Build local snapshot only — no global indices at midday
     lines = []
-    if stress_banner:
-        lines.append(stress_banner)
+    if fragility_banner:
+        lines.append(fragility_banner)
 
     # Nifty + VIX line
     if nifty:
@@ -298,6 +315,25 @@ def main():
     if opt_delta_str:
         lines.append(opt_delta_str)
 
+    # ── Regime / Fragility context (Fix 6) ───────────────────────────
+    try:
+        from datetime import datetime
+        from src.db import get_latest_market_state
+        _prev = get_latest_market_state(before_date=datetime.now().strftime("%Y-%m-%d"))
+        if _prev and _prev.get("final_regime"):
+            _reg = _prev["final_regime"]
+            _frag = _prev.get("fragility_score")
+            if _frag is not None:
+                comps = _prev.get("fragility_components", {})
+                _base = comps.get("base", 0)
+                _breadth = comps.get("breadth", 0)
+                _intensity = comps.get("intensity", 0)
+                lines.append(f"🏛 Regime: {_reg} | Fragility: {_frag:.0f}/100 (B:{_base:.0f} Br:{_breadth:.0f} P:{_intensity:.0f})")
+            else:
+                lines.append(f"🏛 Regime: {_reg}")
+    except Exception as e:
+        print(f"   ⚠️ Regime context: {e}")
+
     # ── P6.3: Intraday Pillar Confirmation ──────────────────────────
     try:
         from src.pillar_classifier import get_current_pillar_scores
@@ -352,43 +388,46 @@ def main():
 
     regime_info = _get_arbiter_regime()
 
-    if prompt and ground_truth.get("nifty_close"):
-        # Snapshot already in `lines` above — send_midday uses it directly
-        def send_midday(text):
-            bluf = ""
-            try:
-                from src.telegram_sender import build_bluf
-                bluf = build_bluf(
-                    regime_verdict=regime_info,
-                )
-            except Exception:
-                pass
-            msg = "📊 *MIDDAY MARKET SCAN*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            if bluf:
-                msg += bluf + "\n\n"
-            msg += "\n".join(lines)
-            if text:
-                msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{text}"
-            if derivs_block:
-                msg += f"\n\n{derivs_block}"
-            if deals_block:
-                msg += f"\n\n{deals_block}"
-            if alerts:
-                msg += f"\n\n⚠️ *Extreme Moves:*\n" + "\n".join(alerts)
-            msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_Mid-session check_"
-            send_text(msg)
+    # Build computed pillar status summary (replaces generic AI paragraph)
+    def _build_pillar_status_summary() -> str:
+        """Compute a summary string from the intraday pillar check instead of AI fluff."""
+        parts = []
+        try:
+            from src.pillar_classifier import get_current_pillar_scores
+            pr = get_current_pillar_scores()
+            if pr.get("ok") and pr["pillars"]:
+                from src.intraday_pulse import check_intraday_pillar_confirmation
+                check = check_intraday_pillar_confirmation(pr["pillars"])
+                if check.get("ok") and check.get("pillar_confirmations"):
+                    for pc in check["pillar_confirmations"]:
+                        pname = pc["pillar_name"].replace("_", " ").title()
+                        status = pc["result"]
+                        parts.append(f"{pname}: {status.lower()}")
+            regime_label = regime_info.get("label", "NEUTRAL") if regime_info else "NEUTRAL"
+            status_str = " | ".join(parts) if parts else "No active pillars"
+            return f"Pillar Status: {status_str}. Regime unchanged ({regime_label})."
+        except Exception:
+            return ""
 
-        ai_generate_and_validate(
-            ai, "fast", prompt, ground_truth,
-            output_type="midday_scan",
-            fallback_fn=lambda: "",
-            send_fn=send_midday,
-            max_retries=1,
-        )
-    else:
-        # No ground truth or no prompt — send unvalidated (degraded)
+    pillar_summary = _build_pillar_status_summary()
+
+    def send_midday(text):
+        bluf = ""
+        try:
+            from src.telegram_sender import build_bluf
+            bluf = build_bluf(
+                regime_verdict=regime_info,
+            )
+        except Exception:
+            pass
         msg = "📊 *MIDDAY MARKET SCAN*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        if bluf:
+            msg += bluf + "\n\n"
         msg += "\n".join(lines)
+        # Use computed pillar summary instead of AI fluff
+        computed = pillar_summary or text
+        if computed:
+            msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{computed}"
         if derivs_block:
             msg += f"\n\n{derivs_block}"
         if deals_block:
@@ -397,6 +436,17 @@ def main():
             msg += f"\n\n⚠️ *Extreme Moves:*\n" + "\n".join(alerts)
         msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_Mid-session check_"
         send_text(msg)
+
+    if prompt and ground_truth.get("nifty_close"):
+        ai_generate_and_validate(
+            ai, "fast", prompt, ground_truth,
+            output_type="midday_scan",
+            fallback_fn=lambda: "",
+            send_fn=send_midday,
+            max_retries=1,
+        )
+    else:
+        send_midday("")
     print("✅ MIDDAY SCAN COMPLETE")
 
 if __name__ == "__main__":

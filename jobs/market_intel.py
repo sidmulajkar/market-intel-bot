@@ -446,6 +446,21 @@ def main():
     print("🔄 BLOCK 2: Macro Anchors")
     try:
         anchor_data = fetch_macro_anchors()
+
+        # ── P10 Sentinel: Preflight data integrity check ────────────────
+        try:
+            from src.sentinel import preflight_check
+            from src.db import get_prev_macro_anchors, anchors_list_to_dict
+            current = anchors_list_to_dict(anchor_data)
+            if current:
+                prev = get_prev_macro_anchors()
+                is_safe, reason = preflight_check(current, prev)
+                if not is_safe:
+                    send_text(f"🚨 DATA INTEGRITY FAILURE: {reason} Regime locked to previous state.")
+                    sys.exit(1)
+        except Exception as e:
+            print(f"   ⚠️ Sentinel preflight: {e}")
+
         blocks["block_2"] = format_macro_anchors(anchor_data)
         print(f"   → {len(blocks['block_2'])} chars")
         # Save macro snapshots for historical percentile + cross-asset tracking
@@ -456,6 +471,15 @@ def main():
             print(f"   ⚠️ Macro snapshot save: {e}")
     except Exception as e:
         print(f"   ⚠️ {e}")
+
+    # ── P8.1: India vs EM Basket (30D RS) ──────────────────────────
+    try:
+        from src.value_metrics import compute_india_vs_em_rs
+        rs = compute_india_vs_em_rs()
+        if rs.get("ok"):
+            print(f"   📊 India vs EM spread: {rs['spread']:+.1f}% (30D)")
+    except Exception as e:
+        print(f"   ⚠️ India vs EM: {e}")
 
     # ── MECHANISM TRIGGERS (macro → sector impact) ─────────────
     mechanism_block = ""
@@ -1665,6 +1689,30 @@ def main():
     if budget_warning:
         print(f"  ⚠️ {budget_warning}")
 
+    # ── Strong-conviction check: bypass AI if quota exhausted AND ≥2 macro extremes ──
+    try:
+        raw_for_extreme = {
+            "anchor_data": anchor_data or [],
+            "fii_data": {
+                "fii_net": snapshot_data.get("fii_net"),
+                "fii_streak": snapshot_data.get("fii_streak_days", 0),
+            },
+        }
+        extreme_count, extreme_msgs = _check_extreme_conditions(raw_for_extreme)
+        if extreme_count >= 2:
+            ai_temp = AIEngine()
+            if not ai_temp.has_quota("volume"):
+                send_text(
+                    "🚨 *STRONG CONVICTION OVERRIDE*\n\n"
+                    "DEFENSIVE regime triggered by: "
+                    f"{'; '.join(extreme_msgs)}. "
+                    "No analysis available."
+                )
+                print(f"   → Strong-conviction override — AI bypassed ({extreme_count} extremes)")
+                return
+    except Exception as e:
+        print(f"   ⚠️ Strong-conviction check: {e}")
+
     # ── AI Analysis ───────────────────────────────────────────────
     print(f"   ⏱️ Data + Quant: {_time.time()-_t0:.1f}s")
     _t0 = _time.time()
@@ -1782,17 +1830,6 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Prediction tracking: {e}")
 
-    # ── Composite Stress Index (top banner) ──────────────────────
-    stress_banner = ""
-    try:
-        from src.stress_index import compute_stress_index, format_stress_banner, save_stress_index
-        stress = compute_stress_index()
-        if stress.get("ok"):
-            stress_banner = format_stress_banner(stress)
-            save_stress_index(stress)
-    except Exception as e:
-        print(f"   ⚠️ Stress index: {e}")
-
     # ── Historical Clone Engine (T4.2 / G3) ──────────────────────────
     clone_blocks: list[str] = []
     try:
@@ -1867,14 +1904,39 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Pillar block: {e}")
 
+    # ── Fragility Index banner (replaces old Stress Index) ──────
+    fragility_banner = ""
+    try:
+        from src.fragility_index import compute_fragility_index, format_fragility_banner
+        from src.stress_index import compute_stress_index
+        stress = compute_stress_index()
+        _pctiles = _pctiles if '_pctiles' in dir() else None
+        _pillars = _pillars if '_pillars' in dir() else None
+        if stress.get("ok"):
+            from src.pillar_classifier import get_percentiles_from_csv, classify_pillars
+            if not _pctiles:
+                _pctiles = get_percentiles_from_csv()
+            if _pctiles and not _pillars:
+                _pillars = classify_pillars(_pctiles)
+            if _pillars:
+                fragility = compute_fragility_index(stress["stress_score"], _pillars)
+            else:
+                fragility = compute_fragility_index(stress["stress_score"], [])
+            if fragility.get("ok"):
+                fragility_banner = format_fragility_banner(fragility)
+                state.fragility_score = fragility["fragility_score"]
+                state.fragility_components = fragility.get("components", {})
+    except Exception as e:
+        print(f"   ⚠️ Fragility banner: {e}")
+
     # ── Send Telegram ───────────────────────────────────────────
     # Validate AI response - never send blank
     if validate_ai_response(analysis, min_words=50):
         bluf = _build_market_intel_bluf(snapshot_data)
         header = "*MARKET INTEL ({mode})*".format(mode=mode.upper())
         msg = ""
-        if stress_banner:
-            msg += stress_banner + "\n"
+        if fragility_banner:
+            msg += fragility_banner + "\n"
         if pillar_block:
             msg += pillar_block + "\n\n"
         if clone_block:
@@ -1909,17 +1971,10 @@ def main():
                         vix_moved = True
                     break
 
-        # Parse stress score from banner (e.g., "95" from "EXTREME (95/100)")
-        stress_score = None
-        if stress_banner:
-            import re
-            m = re.search(r'\((\d+)/100\)', stress_banner)
-            if m:
-                stress_score = int(m.group(1))
-
-        # Compress to one-liner only if: regime unchanged, VIX stable, AND stress not extreme
-        stress_extreme = stress_score is not None and stress_score >= 80
-        if current_regime and not vix_moved and not stress_extreme:
+        # Use fragility score for compression gate
+        fragility_score_for_gate = getattr(state, "fragility_score", None) or 50
+        fragility_extreme = fragility_score_for_gate >= 80
+        if current_regime and not vix_moved and not fragility_extreme:
             # Regime unchanged, VIX stable → compress to one-liner with key context
             override = persisted.get("final_override_reason", "") if persisted else ""
             macro_data = persisted.get("macro", {}) if persisted else {}
@@ -1938,8 +1993,8 @@ def main():
                 f"📌 *{mode_label} INTEL CHECK:* "
                 f"{current_regime}".lower().title()
             )
-            if stress_banner:
-                compressed = stress_banner + "\n" + compressed
+            if fragility_banner:
+                compressed = fragility_banner + "\n" + compressed
             if trigger_str:
                 compressed += f" | {trigger_str}"
             # Check for high-impact calendar events
@@ -1971,8 +2026,8 @@ def main():
                 "movers": movers,
                 "snapshot_data": snapshot_data,
             }, mode=mode)
-            if stress_banner:
-                fallback = stress_banner + "\n" + fallback
+            if fragility_banner:
+                fallback = fragility_banner + "\n" + fallback
             if pillar_block:
                 fallback = pillar_block + "\n\n" + fallback
             if clone_block:

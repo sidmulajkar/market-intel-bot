@@ -21,30 +21,46 @@ def main():
     mf_text = format_mf_message(summary)
 
     if summary["top_gainers"] or summary["top_losers"]:
-        gainers_text = "\n".join([f"🟢 {s.get('display_name','')[:35]}: {s.get('change_pct',0):+.2f}%"
-                                   for s in summary["top_gainers"][:3]])
-        losers_text  = "\n".join([f"🔴 {s.get('display_name','')[:35]}: {s.get('change_pct',0):+.2f}%"
-                                   for s in summary["top_losers"][:3]])
-        ai     = AIEngine()
-        prompt = f"""
-MF Performance Today:
-Top Gainers: {gainers_text if gainers_text else 'None'}
-Top Losers: {losers_text if losers_text else 'None'}
-
-Analyse:
-1. Which sectors/themes are MFs favouring?
-2. Any category rotation?
-3. Market direction signal?
-4. Should retail follow or fade?
-
-Under 150 words.
-"""
-        try:
-            analysis = ai.analyze("volume", prompt)
-            if analysis and len(analysis.split()) >= 30:
-                mf_text += f"\n\n🤖 *AI — MF Flow Analysis:*\n{analysis}"
-        except Exception as e:
-            print(f"⚠️ AI failed: {e}")
+        # Compute sector tilt from scheme name patterns
+        SECTOR_GROUPS = {
+            "LARGE CAP": ["large cap", "largecap", "nifty 50", "nifty50", "sensex"],
+            "MID CAP": ["mid cap", "midcap", "mid-cap"],
+            "SMALL CAP": ["small cap", "smallcap", "small-cap"],
+            "BANKING": ["bank", "financial", "psu bank", "private bank"],
+            "IT": ["it ", "tech", "digital", "infotech", "tmt"],
+            "PHARMA": ["pharma", "healthcare", "health"],
+            "ENERGY": ["energy", "oil", "power", "natural resource"],
+            "FMCG": ["fmcg", "consumer"],
+            "INFRA": ["infra", "construction"],
+            "DEBT": ["debt", "bond", "income", "gilt", "corporate bond", "liquid", "money market"],
+            "ELSS": ["elss", "tax saver", "taxsaving"],
+            "THEMATIC": ["consumption", "manufacturing", "psu", "dividend", "value", "etf"],
+        }
+        gainer_sectors = {}
+        all_schemes = (summary["top_gainers"] or []) + (summary["top_losers"] or [])
+        for s in all_schemes:
+            name = (s.get("display_name") or s.get("scheme_name", "")).lower()
+            change = s.get("change_pct", 0)
+            assigned = False
+            for sector, keywords in SECTOR_GROUPS.items():
+                if any(kw in name for kw in keywords):
+                    if sector not in gainer_sectors:
+                        gainer_sectors[sector] = {"count": 0, "total_change": 0.0, "gainers": 0, "losers": 0}
+                    gainer_sectors[sector]["count"] += 1
+                    gainer_sectors[sector]["total_change"] += change
+                    if change > 0:
+                        gainer_sectors[sector]["gainers"] += 1
+                    else:
+                        gainer_sectors[sector]["losers"] += 1
+                    assigned = True
+                    break
+        sector_lines = []
+        for sec, data in sorted(gainer_sectors.items(), key=lambda x: x[1]["count"], reverse=True):
+            avg = data["total_change"] / data["count"]
+            tilt = "🟢" if avg > 0.15 else "🔴" if avg < -0.15 else "🟡"
+            sector_lines.append(f"{tilt} {sec}: {data['gainers']}/{data['losers']} schemes (avg {avg:+.2f}%)")
+        if sector_lines:
+            mf_text += "\n📊 *Sector Tilt:*\n" + "\n".join(sector_lines[:6])
 
     send_text(mf_text)
 

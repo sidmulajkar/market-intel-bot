@@ -197,7 +197,11 @@ def validate_results(results: list):
     regime_jobs = ["Morning Brief", "Morning Market Intel", "Evening Market Intel"]
     for r in results:
         if r["label"] in regime_jobs:
-            has_regime = any("REGIME" in msg or "regime" in msg.lower() for msg in r["telegram_messages"])
+            has_regime = any(
+                "REGIME" in msg or "regime" in msg.lower()
+                or any(label in msg for label in ["*BULLISH*", "*NEUTRAL*", "*DEFENSIVE*"])
+                for msg in r["telegram_messages"]
+            )
             print(f"   {r['label']}: {'✅ regime card present' if has_regime else '⚠️ no regime card'}")
 
 

@@ -47,6 +47,9 @@ def rbi_dilemma(current: Dict, baseline: Dict) -> Dict:
     import_bill = round((brent_c * usdinr_c - brent_b * usdinr_b) * 0.15, 0)
     cad_increase_cr = round(import_bill * 0.03, 0)
 
+    heatflation_active = cpi_est_bps > 30 and brent_c > 85
+    narrative = "Heatflation" if heatflation_active else None
+
     return {
         "cpi_impact_bps": cpi_est_bps,
         "real_yield": real_yield,
@@ -54,6 +57,7 @@ def rbi_dilemma(current: Dict, baseline: Dict) -> Dict:
         "rbi_constraint": "CANT_EASE_INFLATION" if real_yield < 1.0 else "LIMITED_ROOM" if real_yield < 2.0 else "ROOM_TO_EASE",
         "cad_increase_cr": cad_increase_cr,
         "fiscal_pressure": "ELEVATED" if cad_increase_cr > 5000 else "MODERATE" if cad_increase_cr > 2000 else "NORMAL",
+        "narrative": narrative,
     }
 
 
@@ -157,6 +161,11 @@ def denominator_effect(current: Dict, baseline: Dict) -> Dict:
     credit_pct = _safe(current.get("credit_ratio_pctile", 50), 50)
     credit_lock = max(0, (credit_pct - 65) / 35)
 
+    smh_c = _safe(current.get("smh", 200), 200)
+    smh_b = _safe(baseline.get("smh", 200), 200)
+    ai_displacement = smh_c < smh_b * 0.9 and credit_lock > 0.5
+    narrative = "AI Displacement" if ai_displacement else None
+
     private_markdown = round(tech_stress * 0.15 + credit_lock * 10, 1)
     forced_liquidation = round(private_markdown * 0.08, 2)
 
@@ -165,6 +174,7 @@ def denominator_effect(current: Dict, baseline: Dict) -> Dict:
         "credit_lock": "LOCKED" if credit_lock > 0.7 else "STRESS" if credit_lock > 0.5 else "NORMAL",
         "private_markdown_est_pct": private_markdown,
         "forced_public_liquidation_pct": forced_liquidation,
+        "narrative": narrative,
     }
 
 
@@ -199,7 +209,11 @@ def format_transmission(pillar_name: str, tx: Dict) -> str:
     if not tx or tx.get("error"):
         return ""
 
-    lines = ["  📊 Transmission:"]
+    narrative = tx.get("narrative", None)
+    if narrative:
+        lines = [f"  📊 Transmission — {narrative}:"]
+    else:
+        lines = ["  📊 Transmission:"]
     show_keys = {
         "cpi_impact_bps": "CPI impact",
         "real_yield": "Real yield",

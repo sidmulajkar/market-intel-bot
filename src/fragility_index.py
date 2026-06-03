@@ -70,15 +70,31 @@ def compute_fragility_index(stress_score: float, pillars: List[Dict]) -> Dict:
     breadth_normalized = (active_count / MAX_PILLARS) * 100.0
     breadth = min(100.0, max(0.0, breadth_normalized))
 
-    # ── Intensity (0.30) — max pillar score × lifecycle multiplier ──
+    # ── P11.1: External Debt Stress multiplier on Carry Unwind ──
+    debt_mult = _get_external_debt_stress_multiplier()
+
+    # ── Intensity (0.30) — max pillar score × lifecycle × dynamic weight × debt stress ──
+    try:
+        from src.adaptive_weights import get_dynamic_weights
+        dynamic_weights = get_dynamic_weights()
+    except Exception:
+        dynamic_weights = {}
     scores = []
+    raw_scores = []
     for p in pillars:
         raw = p.get("score", 0)
+        raw_scores.append(raw)
         mult = _get_lifecycle_multiplier(p)
-        adjusted = raw * mult
+        dyn = dynamic_weights.get(p.get("id", p.get("name", "")), 1.0)
+        adjusted = raw * mult * dyn
+        # Apply debt stress multiplier to Carry_Unwind pillar
+        p_id = p.get("id", p.get("name", ""))
+        if debt_mult > 1.0 and "carry" in p_id.lower().replace(" ", "_"):
+            adjusted *= debt_mult
         scores.append(adjusted)
     intensity = max(scores) if scores else 0.0
     intensity = min(100.0, max(0.0, intensity))
+    raw_peak = max(raw_scores) if raw_scores else 0.0
 
     # ── Composite ──
     fragility = (base * BASE_WEIGHT) + (breadth * BREADTH_WEIGHT) + (intensity * INTENSITY_WEIGHT)
@@ -102,6 +118,7 @@ def compute_fragility_index(stress_score: float, pillars: List[Dict]) -> Dict:
             "base": round(base, 1),
             "breadth": round(breadth, 1),
             "intensity": round(intensity, 1),
+            "raw_peak": round(raw_peak, 1),
         },
         "active_pillar_count": active_count,
         "drivers": drivers[:3],
@@ -126,13 +143,72 @@ def _build_message(fragility: float, severity: str, drivers: List[str]) -> str:
     return f"Low: {severity} ({fragility:.0f}/100) — no structural constraint"
 
 
+def _get_external_debt_stress_multiplier() -> float:
+    """P11.1: Check external debt stress conditions.
+
+    IF US10Y > 4.5% AND USDINR > 84.0 AND FII_5D_Net < -10000 Cr
+    THEN return 1.5 (multiply Carry_Unwind fragility contribution)
+    ELSE return 1.0 (no multiplier)
+    """
+    try:
+        from datetime import datetime, timedelta
+        from src.db import get_market_state, get_fii_dii_flows
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        state = get_market_state(today) if today else None
+        if not state:
+            return 1.0
+
+        macro = state.get("macro", {})
+        us10y = None
+        usdinr = None
+
+        # Extract from macro dict (handles both nested and flat formats)
+        us10y_entry = macro.get("^TNX") or macro.get("us_10y") or {}
+        if isinstance(us10y_entry, dict):
+            us10y = us10y_entry.get("price")
+        else:
+            us10y = us10y_entry
+
+        usdinr_entry = macro.get("USDINR=X") or macro.get("usdinr") or {}
+        if isinstance(usdinr_entry, dict):
+            usdinr = usdinr_entry.get("price")
+        else:
+            usdinr = usdinr_entry
+
+        if us10y is None or usdinr is None:
+            return 1.0
+
+        us10y = float(us10y)
+        usdinr = float(usdinr)
+
+        # FII 5D net
+        flows = get_fii_dii_flows(days=7)
+        if not flows:
+            return 1.0
+
+        recent = flows[-5:]
+        fii_5d = sum(r.get("fiinet_cr", 0) or 0 for r in recent)
+
+        if us10y > 4.5 and usdinr > 84.0 and fii_5d < -10000:
+            print(f"   ⚠️ External debt stress: US10Y={us10y}%, USDINR={usdinr}, FII_5D=₹{fii_5d:+,.0f}Cr")
+            return 1.5
+
+        return 1.0
+    except Exception as e:
+        print(f"   ⚠️ _get_external_debt_stress_multiplier: {e}")
+        return 1.0
+
+
 def format_fragility_banner(fragility: Dict) -> str:
-    """Compact one-line banner for Telegram output."""
+    """Decomposed fragility banner with Base/Breadth/Raw Peak components."""
     if not fragility.get("ok"):
         return ""
     score = fragility["fragility_score"]
     severity = fragility["severity"]
-    drivers = fragility.get("drivers", [])
-    driver_str = ", ".join(drivers) if drivers else "none"
+    comps = fragility.get("components", {})
+    base = comps.get("base", 0)
+    breadth = comps.get("breadth", 0)
+    raw_peak = comps.get("raw_peak", comps.get("intensity", 0))
     emoji = "🚨" if score >= 85 else "⚠️" if score >= 65 else "📌"
-    return f"{emoji} Fragility: {severity} ({score:.0f}/100) | Drivers: {driver_str}"
+    return f"{emoji} Fragility: {severity} ({score:.0f}/100) Base:{base:.0f} Breadth:{breadth:.0f} Peak:{raw_peak:.0f}"

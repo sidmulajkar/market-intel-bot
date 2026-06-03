@@ -8,7 +8,8 @@ from src.ai_engine       import AIEngine
 from src.telegram_sender import send_text
 from src.db              import was_alert_sent, log_alert_sent
 from src.validator       import validate_articles, assess_sentiment_consensus
-from src.validation_helper import ai_generate_and_validate, build_ground_truth_from_index
+from src.validation_helper import build_ground_truth_from_index
+from typing import Dict
 
 
 # ── Arbiter regime helpers (single source of truth) ────────────────
@@ -66,6 +67,31 @@ def _posture_for_regime(regime: str) -> str:
     }
     return posture_map.get(regime, "Neutral — balanced posture.")
 
+def _format_minimal_eod_fallback(
+    regime_label: str,
+    nifty: Dict,
+    stress_banner: str = "",
+    pillar_block: str = "",
+) -> str:
+    """Fail-safe EOD when full block assembly produces nothing."""
+    lines = []
+    reg_emoji = {"BULLISH": "🟢", "NEUTRAL": "🟡", "DEFENSIVE": "🔴"}.get(regime_label, "🟡")
+    lines.append(f"🔔 *END OF DAY*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n{reg_emoji} *REGIME: {regime_label}*")
+    if nifty.get("price"):
+        nifty_str = f" | Nifty {nifty['price']:,.0f}"
+        if nifty.get("change_pct") is not None:
+            sign = "+" if nifty["change_pct"] >= 0 else ""
+            nifty_str += f" ({sign}{nifty['change_pct']:.1f}%)"
+        lines[-1] += nifty_str
+    if stress_banner:
+        lines.append(f"\n{stress_banner}")
+    if pillar_block:
+        lines.append(f"\n{pillar_block}")
+    lines.append("\n_Some data blocks unavailable (fallback mode)_")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines)
+
+
 def main():
     print("=" * 50)
     print("🔔 MARKET CLOSE STARTING")
@@ -101,6 +127,21 @@ def main():
     try:
         from src.context_engine import run_contextualization
         anchor_data = fetch_macro_anchors()
+
+        # ── P10 Sentinel: Preflight data integrity check ────────────────
+        try:
+            from src.sentinel import preflight_check
+            from src.db import get_prev_macro_anchors, anchors_list_to_dict
+            current = anchors_list_to_dict(anchor_data)
+            if current:
+                prev = get_prev_macro_anchors()
+                is_safe, reason = preflight_check(current, prev)
+                if not is_safe:
+                    send_text(f"🚨 DATA INTEGRITY FAILURE: {reason} Regime locked to previous state.")
+                    sys.exit(1)
+        except Exception as e:
+            print(f"   ⚠️ Sentinel preflight: {e}")
+
         if anchor_data:
             ctx = run_contextualization(anchor_data)
             bull_bear = ctx.get("bull_bear", {})
@@ -148,7 +189,7 @@ def main():
                 decomp_str = format_fii_decomposition(decomp)
                 if decomp_str:
                     flows_block += "\n\n" + decomp_str
-            elif "Entity data pending" not in flows_block:
+            elif "Entity data pending" not in flows_block and flows_block.strip():
                 flows_block += " | Entity data pending"
         except Exception as e:
             print(f"   ⚠️ FII decomposition: {e}")
@@ -177,6 +218,18 @@ def main():
                         flows_block += "\n\n" + match_str
         except Exception as e:
             print(f"   ⚠️ Pillar-flow match: {e}")
+
+        # P11.2: Liquidity Freeze Override (appended to DII section)
+        try:
+            from src.liquidity_freeze import compute_liquidity_velocity
+            lf = compute_liquidity_velocity()
+            if lf.get("ok") and lf.get("freeze_active"):
+                flows_block += (
+                    "\n\n⚠️ Override: Global liquidity freeze active; "
+                    "domestic absorption may be overridden by dollar repatriation."
+                )
+        except Exception as e:
+            print(f"   ⚠️ Liquidity freeze: {e}")
 
     except Exception:
         pass
@@ -272,6 +325,9 @@ def main():
         if parts:
             derivs_block = f"📉 *Derivatives:* {' | '.join(parts)}"
             print(f"   ✅ Derivatives block built: {' | '.join(parts)}")
+        else:
+            derivs_block = "📉 *Derivatives:* PCR unavailable (NSE v3 lag) | GEX: N/A | Max Pain: N/A"
+            print("   ⚠️ Derivatives block: no data — using stub")
         # GEX magnetic levels (from live fetch if available)
         try:
             from src.options_engine import format_gex_levels
@@ -356,17 +412,6 @@ def main():
     except Exception:
         pass
 
-    # ── AI market summary (with universal validation) ──────────────
-    print("🤖 Generating market summary...")
-    summary = ""
-    try:
-        prompt = AIEngine.eod_market_prompt(
-            movers, valid_index, validated_news, consensus, bull_bear
-        )
-    except Exception as e:
-        print(f"   ⚠️ Prompt build failed: {e}")
-        prompt = ""
-
     nifty = valid_index.get("India", {})
     vix_price = gt_extra.get("india_vix") if gt_extra else None
     header_parts = []
@@ -429,8 +474,9 @@ def main():
     def send_eod(text):
         from src.formatters import reorder_market_blocks, format_scenario_block
 
-        # Build scenario block from state
+        # Build scenario block from state (with CSV fallback for pillars)
         scenario_block = ""
+        compact_pillar_block = ""
         try:
             from datetime import datetime
             from src.db import get_market_state
@@ -439,6 +485,65 @@ def main():
                 from src.state import MarketState
                 state = MarketState.model_validate(ms)
                 scenario_block = format_scenario_block(state)
+        except Exception:
+            pass
+
+        # If scenario_block is empty (no Supabase state), build compact pillar line from CSV
+        if not scenario_block:
+            try:
+                from src.pillar_classifier import get_percentiles_from_csv, classify_pillars
+                pctiles = get_percentiles_from_csv()
+                if pctiles:
+                    pillars = classify_pillars(pctiles)
+                    if pillars:
+                        from src.pillar_lifecycle import compute_pillar_lifecycle, get_pillar_history_from_db
+                        parts = []
+                        for p in pillars[:2]:
+                            lc = {}
+                            try:
+                                history = get_pillar_history_from_db(p["name"])
+                                lc = compute_pillar_lifecycle(p["name"], p["score"], history)
+                            except Exception:
+                                pass
+                            lc_suffix = f" | {lc.get('formatted', '')}" if lc.get("ok") and lc.get("formatted") else ""
+                            parts.append(f"{p['label']} ({p['score']:.0f}/100){lc_suffix}")
+                        if parts:
+                            scenario_block = f"Active Pillars: {'; '.join(parts)}"
+            except Exception:
+                pass
+
+        # P11.4: Archetype Collision Banner (prepended to scenario block)
+        try:
+            from src.liquidity_freeze import check_liquidity_freeze
+            from src.scenario_collision import detect_collision, format_collision, \
+                has_dxy_spike, has_gold_spike, has_usdinr_spike
+
+            macro = ms.get("macro", {}) if ms else {}
+            pillar_scores = {}
+            try:
+                from src.pillar_classifier import load_pillar_scores
+                if ms and ms.get("pillar_scores"):
+                    pillar_scores = ms["pillar_scores"]
+                else:
+                    pillar_scores = load_pillar_scores() or {}
+            except Exception:
+                if ms:
+                    pillar_scores = ms.get("pillar_scores", {})
+
+            lf = check_liquidity_freeze(macro)
+            extra = {
+                "dxy_spike": has_dxy_spike(macro),
+                "gold_spike": has_gold_spike(macro),
+                "cny_strength": False,
+                "usdinr_spike": has_usdinr_spike(macro),
+                "liquidity_freeze": lf,
+            }
+            archetype = detect_collision(pillar_scores, extra)
+            collision_banner = format_collision(archetype)
+            if collision_banner:
+                scenario_block = collision_banner + "\n\n" + scenario_block
+            elif pillar_scores:
+                scenario_block = "📋 Archetype: None detected\n\n" + scenario_block
         except Exception:
             pass
 
@@ -455,6 +560,119 @@ def main():
         if big_moves:
             big_moves_block = "⚠️ *Big Moves (5%+):*\n" + "\n".join(big_moves)
 
+        # P7.2: Sector Rotation Map (Fragility > 50)
+        rotation_block = ""
+        try:
+            from src.sector_rotation_map import format_rotation_map
+            if ms:
+                fragility = ms.get("fragility_score")
+                p_scores = ms.get("pillar_scores", {}) or {}
+                active_pillars = [k for k, v in p_scores.items() if isinstance(v, (int, float)) and v >= 40]
+                rotation_block = format_rotation_map(active_pillars, fragility)
+        except Exception:
+            pass
+
+        # P7–P12 Supplementary block (ERP, India vs EM, flags)
+        supplementary_block = ""
+        try:
+            sup_parts = []
+
+            # P11.1: External Debt Stress flag
+            try:
+                from src.db import get_fii_dii_flows
+                macro = ms.get("macro", {}) if ms else {}
+                us10y_entry = macro.get("^TNX") or macro.get("us_10y") or {}
+                us10y = float(us10y_entry.get("price", 0) if isinstance(us10y_entry, dict) else (us10y_entry or 0))
+                usdinr_entry = macro.get("USDINR=X") or macro.get("usdinr") or {}
+                usdinr = float(usdinr_entry.get("price", 0) if isinstance(usdinr_entry, dict) else (usdinr_entry or 0))
+                flows = get_fii_dii_flows(days=7)
+                fii_5d = sum(r.get("fiinet_cr", 0) or 0 for r in (flows or [])[-5:])
+                if us10y > 4.5 and usdinr > 84.0 and fii_5d < -10000:
+                    sup_parts.append("⚠️ External Debt Stress: US10Y + USDINR + FII_5D threshold met")
+            except Exception:
+                pass
+
+            # P11: Liquidity Freeze sentinel
+            try:
+                from src.liquidity_freeze import check_liquidity_freeze
+                lf = check_liquidity_freeze(macro if ms else {})
+                sup_parts.append("🚫 Liquidity Freeze: Detected" if lf else "💧 Liquidity Freeze: Not detected")
+            except Exception:
+                pass
+
+            # IN10Y: India 10Y G-Sec yield (dual-source, fallback explicit)
+            try:
+                from src.data_fetcher import get_india_10y_yield
+                in10y_result = get_india_10y_yield()
+                in10y_val = in10y_result.get("IN10Y", 7.0)
+                in10y_source = in10y_result.get("source", "fallback")
+                note = in10y_result.get("note", "")
+                label = f"📊 IN10Y: {in10y_val:.2f}% ({in10y_source})"
+                if note:
+                    label += f" — {note}"
+                sup_parts.append(label)
+                # Also show Nifty GS 10YR index level when available
+                gs10_entry = (macro or {}).get("NIFTYGS10YR.NS") or {}
+                gs10_val = float(gs10_entry.get("price", 0)) if isinstance(gs10_entry, dict) else float(gs10_entry or 0)
+                if gs10_val:
+                    sup_parts.append(f"📊 Nifty GS 10YR: {gs10_val:.2f} (index level)")
+            except Exception:
+                sup_parts.append("📊 IN10Y: 7.00% (RBI API unavailable)")
+
+            # P12: SMH/COPX macro movers (>2%)
+            for sym, label in [("SMH", "Semiconductor"), ("COPX", "Copper Miners")]:
+                try:
+                    entry = (macro or {}).get(sym) or {}
+                    price = float(entry.get("price", 0)) if isinstance(entry, dict) else 0
+                    chg = float(entry.get("change_pct", 0)) if isinstance(entry, dict) else 0
+                    if price and abs(chg) >= 2:
+                        direction = "📈" if chg > 0 else "📉"
+                        sup_parts.append(f"{label} ({sym}): ${price:.0f} ({direction} {chg:+.1f}%)")
+                except Exception:
+                    pass
+
+            # P8: ERP Decile (India 10Y from macro state or baseline)
+            try:
+                from src.value_metrics import compute_erp, get_current_erp_decile, format_erp_decile
+                india_10y = in10y_val
+                nifty_pe = None
+                if ms and (ms.get("bull_bear_score") or ms.get("pe")) is not None:
+                    nifty_pe = ms.get("bull_bear_score") or ms.get("pe")
+                if nifty_pe and nifty_pe > 0:
+                    erp = compute_erp(nifty_pe, india_10y)
+                    d = get_current_erp_decile(erp)
+                    sup_parts.append(format_erp_decile(erp) if d.get("ok") else f"ERP: {erp:.2f}%")
+            except Exception:
+                pass
+
+            # P8: India vs EM spread
+            try:
+                from src.value_metrics import compute_india_vs_em_rs
+                rs = compute_india_vs_em_rs()
+                if rs.get("ok"):
+                    spread = rs.get("spread_30d", 0)
+                    direction = "underperforming" if spread < 0 else "outperforming"
+                    sup_parts.append(f"India vs EM (30D): {spread:+.1f}% ({direction})")
+            except Exception:
+                pass
+
+            # P7: Dynamic weight evidence
+            try:
+                from src.adaptive_weights import get_dynamic_weights
+                dw = get_dynamic_weights()
+                weighted = [f"{k.replace('_',' ').title()} ×{v:.1f}" for k, v in dw.items() if v != 1.0]
+                if weighted:
+                    sup_parts.append(f"Adaptive Weights: {' | '.join(weighted[:3])}")
+                else:
+                    sup_parts.append("Adaptive Weights: all at 1.0 (default)")
+            except Exception:
+                pass
+
+            if sup_parts:
+                supplementary_block = "📋 *Supplementary:*\n" + "\n".join(sup_parts)
+        except Exception:
+            pass
+
         msg = reorder_market_blocks(
             regime=regime_label,
             regime_block=regime_block,
@@ -470,19 +688,16 @@ def main():
             sign_off_block=f"━━━━━━━━━━━━━━━━━━━━━━━━\n{sign_off}",
             scenario_block=scenario_block,
             drawdown_block=drawdown_block,
+            rotation_block=rotation_block,
+            supplementary_block=supplementary_block,
         )
+        if not msg or not msg.strip():
+            msg = _format_minimal_eod_fallback(regime_label, nifty, "", scenario_block or "")
         send_text(msg)
 
-    if prompt and ground_truth.get("nifty_close"):
-        ai_generate_and_validate(
-            ai, "volume", prompt, ground_truth,
-            output_type="market_close",
-            fallback_fn=make_fallback,
-            send_fn=send_eod,
-            max_retries=1,
-        )
-    else:
-        send_eod(make_fallback())
+    # No AI — all blocks are deterministic. send_eod() assembles them
+    # into a single message via reorder_market_blocks().
+    send_eod("")
     print("✅ MARKET CLOSE COMPLETE")
 
 if __name__ == "__main__":

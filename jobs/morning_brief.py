@@ -161,6 +161,20 @@ def main():
     except Exception as e:
         print(f"   ⚠️ World heatmap failed: {e}")
 
+    # ── Store Nifty prior-close anchor (Fix 5: consistent baseline for 9:15AM) ─
+    nifty_data = valid_index.get("India", {})
+    if nifty_data.get("price"):
+        try:
+            from src.db import get_market_state, save_market_state
+            from datetime import datetime
+            _d = datetime.now().strftime("%Y-%m-%d")
+            prev_state = get_market_state(_d) or {}
+            prev_state["nifty_prior_close"] = nifty_data["price"]
+            save_market_state(_d, prev_state)
+            print(f"   → Nifty prior-close anchor: {nifty_data['price']} (from yfinance)")
+        except Exception as e:
+            print(f"   ⚠️ Nifty anchor save: {e}")
+
     # ── Fetch & Validate News ─────────────────────────────────────
     print("📰 Fetching and validating news...")
     raw_news = fetch_general_news()
@@ -178,35 +192,8 @@ def main():
     consensus_sentiment = assess_sentiment_consensus(sentiments) if sentiments else None
     print(f"   Validated: {len(validated_news)} articles, consensus: {consensus_sentiment}")
 
-    # ── AI Brief (captured, not sent — merged with alerts + regime card) ──
-    print("🤖 Running AI analysis...")
+    # ── Deterministic brief (no AI — regime card + alerts carry all context) ──
     brief_text = ""
-    try:
-        prompt = AIEngine.morning_brief_prompt(valid_index, validated_news, consensus_sentiment)
-        brief = ai.analyze("fast", prompt)
-
-        def make_fallback():
-            return get_fallback_brief(valid_index, validated_news, consensus_sentiment)
-
-        captured = []
-        def capture(t):
-            captured.append(t)
-            return True
-
-        validate_and_send(
-            brief, valid_index,
-            fallback_fn=make_fallback,
-            send_fn=capture,
-            fmt_fn=fmt_morning_report,
-        )
-        brief_text = captured[0] if captured else make_fallback()
-        if captured:
-            print("   ✅ AI brief ready")
-        else:
-            print("   ⚠️ AI brief failed validation — using fallback")
-    except Exception as e:
-        print(f"   ⚠️ AI brief failed: {e}")
-        brief_text = get_fallback_brief(valid_index, validated_news, consensus_sentiment)
 
     # ── Watchlist Alerts (Sector Grouped) ──────────────────────────
     alerts_text = ""

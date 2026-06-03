@@ -69,6 +69,9 @@ HELP_TEXT = """
 `/gex` — Options GEX levels + max pain + PCR
 `/sectors` — Sector RS leaders + laggards
 `/whatif brent 100` — Consequence simulation for any variable
+`/simulate brent 120` — Full pipeline simulation (pillars + fragility + regime)
+`/compare 2013-08-15` — Side-by-side macro comparison with any date
+`/query what is FII doing?` — Natural language query against deterministic data
 
 ℹ️ *INFO:*
 `/status` — Bot health check
@@ -659,6 +662,82 @@ def handle_sectors(chat_id: str) -> None:
         _send(chat_id, f"⚠️ Error fetching sector data: {e}")
 
 
+def handle_simulate(chat_id: str, args: str) -> None:
+    """Simulate a scenario with overridden macro variable."""
+    if not args:
+        vars_list = ", ".join(["brent", "wti", "usdinr", "dxy", "gold", "india_vix", "us_10y", "copper", "hyg"])
+        _send(
+            chat_id,
+            f"❌ Usage: `/simulate <variable> <value>`\n\n"
+            f"Available: {vars_list}\n\n"
+            f"Examples:\n"
+            f"  `/simulate brent 120` — Oil at $120\n"
+            f"  `/simulate usdinr 90` — Rupee at ₹90\n"
+            f"  `/simulate india_vix 25` — VIX at 25"
+        )
+        return
+    parts = args.strip().split(None, 1)
+    if len(parts) < 2:
+        _send(chat_id, "❌ Provide both variable and value\nExample: `/simulate brent 120`")
+        return
+    variable = parts[0].lower().strip()
+    try:
+        value = float(parts[1])
+    except ValueError:
+        _send(chat_id, "❌ Value must be a number")
+        return
+    try:
+        from src.scenario_simulator import run_simulation, format_simulation
+        result = run_simulation(variable, value)
+        msg = format_simulation(result)
+        _send(chat_id, msg)
+    except Exception as e:
+        _send(chat_id, f"⚠️ Simulation error: {e}")
+
+
+def handle_compare(chat_id: str, args: str) -> None:
+    """Compare current macro state with a historical date."""
+    if not args:
+        _send(
+            chat_id,
+            "❌ Usage: `/compare YYYY-MM-DD`\n\n"
+            "Examples:\n"
+            "  `/compare 2020-03-23` — COVID crash bottom\n"
+            "  `/compare 2013-08-15` — Taper Tantrum\n"
+            "  `/compare 2008-10-27` — GFC low"
+        )
+        return
+    target_date = args.strip()
+    try:
+        from src.historical_comparator import format_comparison
+        msg = format_comparison(target_date)
+        _send(chat_id, msg)
+    except Exception as e:
+        _send(chat_id, f"⚠️ Comparison error: {e}")
+
+
+def handle_query(chat_id: str, args: str) -> None:
+    """Natural language query against deterministic data store."""
+    if not args or len(args.strip()) < 3:
+        _send(
+            chat_id,
+            "❌ Ask me something specific.\n\n"
+            "Examples:\n"
+            "  `what is FII doing?`\n"
+            "  `show me sector RS`\n"
+            "  `active pillars?`\n"
+            "  `current regime?`\n"
+            "  `how stressed is the market?`"
+        )
+        return
+    try:
+        from src.agent_query import format_query_response
+        msg = format_query_response(args.strip())
+        _send(chat_id, msg)
+    except Exception as e:
+        _send(chat_id, f"⚠️ Query error: {e}")
+
+
 def handle_whatif(chat_id: str, args: str) -> None:
     """Simulate consequence of a macro variable change."""
     if not args:
@@ -804,6 +883,9 @@ def process_update(update: Dict) -> None:
         "/gex":       lambda: handle_gex(chat_id),
         "/sectors":   lambda: handle_sectors(chat_id),
         "/whatif":    lambda: handle_whatif(chat_id, args),
+        "/simulate":  lambda: handle_simulate(chat_id, args),
+        "/compare":   lambda: handle_compare(chat_id, args),
+        "/query":     lambda: handle_query(chat_id, args),
     }
 
     handler = dispatch.get(command)

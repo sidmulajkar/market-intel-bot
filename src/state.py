@@ -207,11 +207,21 @@ class MarketState(BaseModel):
     active_scenarios: List[Scenario] = Field(default_factory=list)
     scenario_history: List[ScenarioSnapshot] = Field(default_factory=list)
 
+    # P11.4: Archetype Collision — active archetype banner
+    active_archetype: Optional[Dict] = None  # {"name": "...", "banner": "...", "pillars": "..."}
+
+    # P11.2: Liquidity Freeze Flag
+    liquidity_freeze_active: bool = False
+
+    # Nifty prior-close anchor (set at 7AM, read by 9:15AM for consistent baseline)
+    nifty_prior_close: Optional[float] = None
+
     # Global regime — from global_arbiter.py (overlay on India regime)
     global_regime: Optional[str] = None      # GLOBAL_RISK_ON/_RISK_OFF/_STAGFLATION/_LIQUIDITY_DRAWDOWN/_NEUTRAL
 
     # Fragility Index (P4) — composite of stress + pillar breadth + pillar intensity
     fragility_score: Optional[float] = None  # 0-100, computed at 08:00 alongside final_regime
+    fragility_components: Dict[str, float] = Field(default_factory=dict)  # {base, breadth, intensity}
 
     # Pillar lifecycle states (P4) — per-pillar age/trend state
     pillar_lifecycles: Dict[str, str] = Field(default_factory=dict)  # {pillar_name: "ESCALATING (Day 4, Peak: 68)"}

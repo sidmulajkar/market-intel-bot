@@ -37,12 +37,20 @@ def format_scenario_block(state) -> str:
         if pctiles:
             pillars = classify_pillars(pctiles)
             if pillars:
-                # Build pillar block with lifecycle interleaved (P4.2)
+                # Build pillar block with inline lifecycle suffix (P4.2)
                 pillar_lines = []
                 for p in pillars[:2]:
-                    tier_emoji = {"STRESS": "🔴", "ELEVATED": "🟠", "ACTIVE": "🟡", "MONITORED": "🟢"}
-                    emoji = tier_emoji.get(p["tier"], "⚪")
-                    pillar_lines.append(f"{p['emoji']} *{p['label']}* — {p['tier']} ({p['score']:.0f}/100)")
+                    # Compute lifecycle suffix inline
+                    lc_suffix = ""
+                    try:
+                        from src.pillar_lifecycle import compute_pillar_lifecycle, get_pillar_history_from_db
+                        history = get_pillar_history_from_db(p["name"])
+                        lc = compute_pillar_lifecycle(p["name"], p["score"], history)
+                        if lc.get("ok") and lc.get("formatted"):
+                            lc_suffix = f" | {lc['formatted']}"
+                    except Exception:
+                        pass
+                    pillar_lines.append(f"{p['emoji']} *{p['label']}* — {p['tier']} ({p['score']:.0f}/100){lc_suffix}")
                     meaningful = [d for d in p.get("active_dims", []) if d.get("contribution", 0) >= 0.01]
                     if meaningful:
                         dims_str = ", ".join(
@@ -50,15 +58,6 @@ def format_scenario_block(state) -> str:
                             for d in meaningful[:5]
                         )
                         pillar_lines.append(f"  🔴 Detection: {dims_str}")
-                    # Append lifecycle line (P4.2)
-                    try:
-                        from src.pillar_lifecycle import compute_pillar_lifecycle, get_pillar_history_from_db
-                        history = get_pillar_history_from_db(p["name"])
-                        lc = compute_pillar_lifecycle(p["name"], p["score"], history)
-                        if lc.get("ok") and lc.get("formatted"):
-                            pillar_lines.append(f"  📊 Lifecycle: {lc['formatted']}")
-                    except Exception:
-                        pass
                 if pillar_lines:
                     blocks.append("\n".join(pillar_lines))
 
@@ -159,32 +158,16 @@ def format_scenario_block(state) -> str:
 
         # ── Fragility Index summary (P4.1) — show when elevated ──
         fragility_score = getattr(state, "fragility_score", None)
+        fragility_components = getattr(state, "fragility_components", {})
         if fragility_score is not None and fragility_score > 50:
-            # Build drivers dynamically from available state data
-            _frag_drivers = []
-            _macro = getattr(state, "macro", None)
-            _flows = getattr(state, "flows", None)
-            _active_scenarios = getattr(state, "active_scenarios", None)
-            if _active_scenarios:
-                for _s in _active_scenarios:
-                    _frag_drivers.append(getattr(_s, "name", str(_s))[:20])
-            if _macro:
-                if getattr(_macro, "vix", None) is not None and getattr(_macro, "vix", 0) >= 18:
-                    _frag_drivers.append(f"VIX {getattr(_macro, 'vix', 0):.0f}")
-                if getattr(_macro, "usdinr", None) is not None and getattr(_macro, "usdinr", 0) >= 92:
-                    _frag_drivers.append(f"USDINR ₹{getattr(_macro, 'usdinr', 0):.1f}")
-                if getattr(_macro, "brent", None) is not None and getattr(_macro, "brent", 0) >= 85:
-                    _frag_drivers.append(f"Brent ${getattr(_macro, 'brent', 0):.0f}")
-            if _flows:
-                _fii = getattr(_flows, "fii_net", None)
-                if _fii is not None and _fii < -500:
-                    _frag_drivers.append("FII Velocity")
+            comps = fragility_components or {}
             from src.fragility_index import format_fragility_banner
             frag_banner = format_fragility_banner({
                 "ok": True,
                 "fragility_score": fragility_score,
                 "severity": "CRITICAL" if fragility_score >= 85 else "ELEVATED" if fragility_score >= 65 else "MODERATE",
-                "drivers": _frag_drivers[:3],
+                "components": comps,
+                "drivers": [],
             })
             if frag_banner:
                 blocks.insert(0, frag_banner)
@@ -211,6 +194,8 @@ def reorder_market_blocks(
     sign_off_block: str,
     scenario_block: str = "",
     drawdown_block: str = "",
+    rotation_block: str = "",
+    supplementary_block: str = "",
 ) -> str:
     """Reorder output blocks based on regime for dynamic India/Global split.
 
@@ -228,6 +213,8 @@ def reorder_market_blocks(
         sections.append(scenario_block)
     if drawdown_block:
         sections.append(drawdown_block)
+    if supplementary_block:
+        sections.append(supplementary_block)
 
     if regime in ("DEFENSIVE", "BEARISH"):
         # 50/50 split: interleave India + Global
@@ -235,6 +222,8 @@ def reorder_market_blocks(
             sections.append(header_block)
         if flows_block:
             sections.append(flows_block)
+        if rotation_block:
+            sections.append(rotation_block)
         if overnight_block:
             sections.append(overnight_block)
         if derivs_block:
@@ -251,6 +240,8 @@ def reorder_market_blocks(
             sections.append(header_block)
         if flows_block:
             sections.append(flows_block)
+        if rotation_block:
+            sections.append(rotation_block)
         if derivs_block:
             sections.append(derivs_block)
         if india_drivers_block:

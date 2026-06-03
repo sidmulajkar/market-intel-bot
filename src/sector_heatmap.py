@@ -30,6 +30,7 @@ _SECTOR_EMOJIS = {
     "Nifty Financial Services": "💰",
     "Nifty PSU Bank":       "🏛️",
     "Nifty Media":          "📺",
+    "Nifty Infra":          "🏗️",
 }
 
 # Build NIFTY_SECTORS from symbol_map + local emoji

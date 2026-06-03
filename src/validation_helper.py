@@ -72,10 +72,12 @@ _BLOCKED_PATTERNS = [
     r'→\s*(Nifty|Bank|Market|Sensex|Sector|Index)',    # Conditional arrow advice
     # Clone block speculation protection (T4.2)
     r'(Clone|clone|Historical Clone).*?(could|may|might|will|if|likely|possibly|probably)',
-    # Bare Posture: lines (not emoji-prefixed like 📌 *Posture:*)
-    r'^Posture:.*$',
+    # Posture: lines (emoji-prefixed or bare)
+    r'Posture:',
     # Sector-specific advice
-    r'\b(OMCs|oil\s+importers)\b',
+    r'\b(OMC|OMCs|oil\s+importers)\b',
+    # Direct stock recommendations
+    r'\brecommends?\b',
     # AI speculation patterns (Analyst 1: may/can + speculative verbs)
     r'may\s+influence',
     r'may\s+decline',
@@ -85,10 +87,24 @@ _BLOCKED_PATTERNS = [
 ]
 
 
+def _log_scrubber_event(event: str, details: dict) -> None:
+    """Log scrubber event to analytics_ledger for audit. Best-effort, no raise."""
+    try:
+        from src.db import save_analytics_ledger
+        from datetime import datetime
+        save_analytics_ledger(datetime.now().strftime("%Y-%m-%d"), "scrubber", {
+            "event": event,
+            **details,
+        })
+    except Exception:
+        pass
+
+
 def _strip_trading_signals(text: str) -> str:
     """Remove trading advice and speculative language from AI output — keep only factual statements."""
     lines = text.split('\n')
     filtered = []
+    stripped_count = 0
     for line in lines:
         stripped = line.strip()
         if not stripped:
@@ -99,8 +115,12 @@ def _strip_trading_signals(text: str) -> str:
             if re.search(pattern, stripped):
                 is_signal = True
                 break
-        if not is_signal:
+        if is_signal:
+            stripped_count += 1
+        else:
             filtered.append(line)
+    if stripped_count:
+        _log_scrubber_event("trading_signals_stripped", {"lines_removed": stripped_count})
     return '\n'.join(filtered)
 
 
@@ -131,6 +151,7 @@ def output_scrubber(text: str) -> str:
     """
     cleaned = _scrub_leakage(text)
     if cleaned is None:
+        _log_scrubber_event("leakage_detected", {"pattern": "infrastructure_leakage"})
         return _deterministic_fallback({})
     cleaned = _strip_ghost_regime(cleaned)
     return _strip_trading_signals(cleaned)
@@ -141,20 +162,26 @@ def _strip_ghost_regime(text: str) -> str:
     lines = text.split('\n')
     filtered = []
     skip_next = False
+    stripped_count = 0
     for line in lines:
         stripped = line.strip()
         # Match: REGIME:, emoji + REGIME:, *REGIME:, **REGIME:, etc.
         if re.match(r'^[*\s]*[\U0001F300-\U0001FAFF]*\s*REGIME[:\s]', stripped, re.IGNORECASE):
             skip_next = True
+            stripped_count += 1
             continue
         if skip_next and re.match(r'^(Confidence|Dominant)', stripped, re.IGNORECASE):
+            stripped_count += 1
             continue
         # Ghost phase labels appended below regime card — not in canonical set
         if re.match(r'^[*\s]*[🟡🔴]?\s*[*\s]*(Transition|Cautious|Recovery|Consolidation|Breakdown)\s+Phase\b', stripped, re.IGNORECASE):
             skip_next = True
+            stripped_count += 1
             continue
         skip_next = False
         filtered.append(line)
+    if stripped_count:
+        _log_scrubber_event("ghost_regime_stripped", {"lines_removed": stripped_count})
     return '\n'.join(filtered)
 
 

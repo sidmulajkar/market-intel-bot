@@ -268,3 +268,31 @@ if __name__ == "__main__":
     print(f"\nSummary: {result['episodes_passed']}/{result['episodes_evaluated']} passed")
     print(f"Overall F1: {result['overall_f1']}")
     print(f"Gate {'PASSED' if result['gate_passed'] else 'FAILED'}")
+
+    # ── P7.1: Dynamic Pillar Weights ──────────────────────────────────
+    print("\n📊 Computing dynamic pillar weights...")
+    try:
+        from src.adaptive_weights import compute_pillar_weights
+        weights = compute_pillar_weights(sb)
+        print(f"   Weights: { {k: f'{v:.2f}' for k, v in weights.items()} }")
+    except Exception as e:
+        print(f"   ⚠️ Pillar weights: {e}")
+
+    # ── P7.2: Sector Rotation Map ────────────────────────────────────
+    print("\n📈 Computing sector rotation map...")
+    try:
+        from src.sector_rotation_map import compute_sector_tilt_map
+        tilt_map = compute_sector_tilt_map(sb)
+        print(f"   Tilt map: {len(tilt_map)} pillars mapped")
+    except Exception as e:
+        print(f"   ⚠️ Sector tilt map: {e}")
+
+    # ── P8.2: ERP Decile Boundaries ──────────────────────────────────
+    print("\n📊 Computing ERP decile boundaries...")
+    try:
+        from src.value_metrics import compute_erp_deciles
+        erp = compute_erp_deciles(sb)
+        if erp.get("ok"):
+            print(f"   Deciles: {len(erp.get('decile_boundaries', []))} boundaries, {erp.get('samples', 0)} samples")
+    except Exception as e:
+        print(f"   ⚠️ ERP deciles: {e}")

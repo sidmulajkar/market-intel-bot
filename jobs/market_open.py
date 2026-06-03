@@ -337,10 +337,20 @@ def main():
     # ── Build and send deterministic opening brief ─────────────────
     nifty = valid_index.get("India", {})
     reg_emoji = {"BULLISH": "🟢", "NEUTRAL": "🟡", "DEFENSIVE": "🔴"}.get(regime_label, "")
-    nifty_str = f" | Nifty {nifty.get('price'):,.0f}" if nifty.get("price") else ""
-    if nifty.get("price") and nifty.get("change_pct") is not None:
-        sign = "+" if nifty["change_pct"] >= 0 else ""
-        nifty_str += f" ({sign}{nifty['change_pct']:.1f}%)"
+    # Use stored prior-close anchor for consistent baseline (Fix 5)
+    from datetime import datetime
+    from src.db import get_market_state
+    ms = get_market_state(datetime.now().strftime("%Y-%m-%d"))
+    prior_close = ms.get("nifty_prior_close") if ms else None
+    if nifty.get("price"):
+        if prior_close and prior_close > 0:
+            nifty_change = round(((nifty["price"] / prior_close) - 1) * 100, 2)
+        else:
+            nifty_change = nifty.get("change_pct")
+        sign = "+" if nifty_change and nifty_change >= 0 else ""
+        nifty_str = f" | Nifty {nifty['price']:,.0f} ({sign}{nifty_change:.1f}%)" if nifty_change is not None else f" | Nifty {nifty['price']:,.0f}"
+    else:
+        nifty_str = ""
 
     msg = "📈 *MARKET OPEN — 9:15 AM IST*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     msg += f"{reg_emoji} *REGIME: {regime_label}*{nifty_str}\n\n"

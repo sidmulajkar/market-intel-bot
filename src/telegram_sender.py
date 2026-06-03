@@ -85,6 +85,9 @@ def _post(endpoint: str, **kwargs) -> dict:
 
 def send_text(text: str, parse_mode: str = "Markdown") -> bool:
     """Send text message — auto-splits if over 4000 chars. Scrubs emoji to allowed set. Final-pass leakage scrubber. Dry-run prints both original and scrubbed."""
+    if not text or not text.strip():
+        print("⚠️ send_text: empty string — skipping")
+        return False
     scrubbed = _scrub_emoji(text)
 
     # Final-pass leakage scrubber (import here to avoid circular dependency)
@@ -96,6 +99,16 @@ def send_text(text: str, parse_mode: str = "Markdown") -> bool:
     from src.validation_helper import _LEAKAGE_PATTERNS
     for pattern in _LEAKAGE_PATTERNS:
         if pattern in lower:
+            # Log to analytics_ledger before raising
+            try:
+                from src.db import save_analytics_ledger
+                from datetime import datetime
+                save_analytics_ledger(datetime.now().strftime("%Y-%m-%d"), "scrubber", {
+                    "event": "final_pass_failure",
+                    "pattern": pattern,
+                })
+            except Exception:
+                pass
             raise InfrastructureLeakageError(scrubbed, pattern)
 
     if DRY_RUN:

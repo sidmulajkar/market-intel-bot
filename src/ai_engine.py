@@ -358,12 +358,13 @@ class AIEngine:
             if news_lines:
                 news_block = f"\nTop headlines (filtered by trust score):\n{chr(10).join(news_lines)}\n"
 
+        _cs = (consensus_sentiment or "neutral").upper()
         return f"""
 Today's global equity snapshot:
 {chr(10).join(lines)}
 {news_block}
 
-Market sentiment consensus: {consensus_sentiment.upper()}
+Market sentiment consensus: {_cs}
 
 Write a morning market brief. Rules:
 - Every claim must cite a specific number (%, ₹Cr, price level)
@@ -382,6 +383,60 @@ Structure:
 """
 
     @staticmethod
+    def midday_market_prompt(global_indices: dict, top_movers: dict,
+                             news_items: list = None, bull_bear: dict = None) -> str:
+        """Midday scan AI prompt — structured factual recap from data."""
+        idx_lines = []
+        if global_indices:
+            for country, d in list(global_indices.items())[:6]:
+                if d.get("ok"):
+                    sign = "+" if d.get("change_pct", 0) >= 0 else ""
+                    idx_lines.append(f"{d.get('flag','')} {country}: {sign}{d.get('change_pct',0):.2f}%")
+
+        gap_ups, gap_downs = [], []
+        if top_movers:
+            for m in top_movers.get("india", {}).get("gainers", [])[:3]:
+                gap_ups.append(f"{m['symbol']} +{m['change_pct']:.1f}%")
+            for m in top_movers.get("india", {}).get("losers", [])[:3]:
+                gap_downs.append(f"{m['symbol']} {m['change_pct']:.1f}%")
+
+        news_block = ""
+        if news_items:
+            news_lines = []
+            for n in news_items[:3]:
+                headline = n.get("headline", "")[:70]
+                trust = n.get("trust_score", 0)
+                source = n.get("source", "unknown")
+                news_lines.append(f"• {headline} ({source}, Trust:{trust}/10)")
+            if news_lines:
+                news_block = "\n".join(news_lines)
+
+        bb_line = ""
+        if bull_bear and bull_bear.get("ok"):
+            bb_line = f"\nBull/Bear Score: {bull_bear.get('score', 'N/A')}/100 ({bull_bear.get('label', 'N/A')})"
+
+        return f"""
+MIDDAY MARKET SCAN:
+
+Global indices:
+{chr(10).join(idx_lines) if idx_lines else 'No data'}
+
+India movers: Gainers {' | '.join(gap_ups) if gap_ups else 'None'} | Losers {' | '.join(gap_downs) if gap_downs else 'None'}
+
+Active news:
+{news_block if news_block else 'No new headlines'}
+{bb_line}
+
+Write a sharp midday factual recap:
+1. Opening mood vs current — what changed
+2. Sector rotation observation (gainers/losers)
+3. Key macro driver and active pillar
+4. Risk calendar events today
+
+Under 120 words. Use exact numbers only. No disclaimers.
+CRITICAL CONSTRAINT: You are a data formatter, not an analyst. Do not forecast, predict, or advise. Write strictly in the present tense.
+"""
+
     @staticmethod
     def eod_summary_prompt(watchlist_data: dict, news_items: list = None, consensus_sentiment: str = "neutral") -> str:
         lines = []
@@ -404,12 +459,13 @@ Structure:
             if news_lines:
                 news_block = f"\nToday's validated news:\n{chr(10).join(news_lines)}\n"
 
+        _cs = (consensus_sentiment or "neutral").upper()
         return f"""
 End-of-day watchlist:
 {chr(10).join(lines) if lines else 'No data'}
 {news_block}
 
-Market sentiment: {consensus_sentiment.upper()}
+Market sentiment: {_cs}
 
 Provide factual summary based on data only:
 1. Top winner and loser today
@@ -463,6 +519,7 @@ CRITICAL CONSTRAINT: You are a data formatter, not an analyst. Do not forecast, 
         if bull_bear and bull_bear.get("ok"):
             bb_line = f"\nBull/Bear Score: {bull_bear.get('score', 'N/A')}/100 ({bull_bear.get('label', 'N/A')})"
 
+        _cs = (consensus_sentiment or "neutral").upper()
         return f"""
 End-of-day market summary:
 
@@ -474,7 +531,7 @@ India top losers: {' | '.join(india_l) if india_l else 'No data'}
 US top gainers: {' | '.join(us_g) if us_g else 'No data'}
 US top losers: {' | '.join(us_l) if us_l else 'No data'}
 
-Sentiment: {consensus_sentiment.upper()}
+Sentiment: {_cs}
 {news_block}
 {bb_line}
 

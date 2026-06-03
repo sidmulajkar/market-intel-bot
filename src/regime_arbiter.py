@@ -171,6 +171,7 @@ def arbitrate_regime(state, flow_metrics: Optional[Dict] = None) -> RegimeVerdic
                     if frag.get("ok"):
                         fragility_score = frag["fragility_score"]
                         state.fragility_score = fragility_score
+                        state.fragility_components = frag.get("components", {})
             except Exception:
                 pass
         if fragility_score is not None and isinstance(fragility_score, (int, float)):
@@ -192,7 +193,8 @@ def arbitrate_regime(state, flow_metrics: Optional[Dict] = None) -> RegimeVerdic
         data_count = _count_signals(state)
         confidence = "HIGH" if data_count >= 5 else "MEDIUM" if data_count >= 3 else "LOW"
         dominant_driver = _dominant_driver_from_bb(state)
-        narrative = _narrative_from_bb(bb_norm, market_phase, data_count)
+        narrative = _narrative_from_bb(bb_norm, market_phase, data_count,
+                                     fragility_score=getattr(state, "fragility_score", None))
 
         # Global RISK_OFF cap: ban BULL, cap at NEUTRAL
         if global_regime and global_regime.get("regime") == "GLOBAL_RISK_OFF":
@@ -249,6 +251,28 @@ def arbitrate_regime(state, flow_metrics: Optional[Dict] = None) -> RegimeVerdic
         bull_bear_normalized=bb_norm,
         forced_regime=regime,  # align posture with arbitrated regime
     )
+
+    # ── Layer 5: Sentinel Regime Membrane (P10.2) ──────────────────
+    # Prevents 2-step regime jumps without corresponding Fragility shift.
+    try:
+        from src.sentinel import regime_membrane
+        from src.db import get_prev_market_state
+        prev = get_prev_market_state()
+        if prev and isinstance(prev, dict):
+            prev_regime = prev.get("final_regime", "")
+            prev_fragility = prev.get("fragility_score", None)
+            current_fragility = getattr(state, "fragility_score", None) or 50
+            if prev_regime and prev_fragility is not None:
+                membrane_regime = regime_membrane(
+                    regime, prev_regime,
+                    current_fragility, prev_fragility
+                )
+                if membrane_regime != regime:
+                    print(f"🔒 SENTINEL MEMBRANE: {prev_regime}→{regime} capped to {membrane_regime}")
+                    regime = membrane_regime
+                    narrative += f" (sentinel: capped {prev_regime}→{membrane_regime})"
+    except Exception as e:
+        print(f"   ⚠️ Sentinel membrane: {e}")
 
     # Align posture confidence with verdict confidence (single source of truth)
     if posture and posture.confidence != confidence:
@@ -332,7 +356,8 @@ def _dominant_driver_from_bb(state) -> str:
     return " + ".join(drivers[:3]) if drivers else "Mixed signals"
 
 
-def _narrative_from_bb(bb_norm: Optional[float], market_phase: Optional[str], data_count: int) -> str:
+def _narrative_from_bb(bb_norm: Optional[float], market_phase: Optional[str], data_count: int,
+                        fragility_score: Optional[float] = None) -> str:
     """Build narrative from statistical composite."""
     if market_phase:
         return f"Market phase: {market_phase}."
@@ -342,4 +367,8 @@ def _narrative_from_bb(bb_norm: Optional[float], market_phase: Optional[str], da
         if bb_norm <= 35:
             return f"Composite bearish ({bb_norm:.0f}/100)."
         return f"Mixed flows; VIX signals unknown. No strong directional signal."
+    # If Fragility Index is present, use it instead of legacy "insufficient data"
+    if fragility_score is not None:
+        active_str = f"Fragility {fragility_score:.0f}/100, {data_count} signals"
+        return f"Fragility-based assessment: {active_str}."
     return f"Insufficient data ({data_count} signals)."

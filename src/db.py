@@ -1678,3 +1678,64 @@ def set_bot_state(key: str, value: str) -> bool:
     except Exception as e:
         print(f"⚠️ set_bot_state error: {e}")
         return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# P10: SENTINEL — Pipeline protection helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_prev_market_state() -> dict:
+    """Fetch most recent market_state before today for sentinel membrane."""
+    db = get_client()
+    if not db:
+        return {}
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        result = (
+            db.table("market_state")
+            .select("trade_date, state")
+            .lt("trade_date", today)
+            .order("trade_date", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            state = result.data[0].get("state", {})
+            if isinstance(state, dict):
+                return state
+        return {}
+    except Exception as e:
+        print(f"⚠️ get_prev_market_state error: {e}")
+        return {}
+
+
+def get_prev_macro_anchors() -> dict:
+    """Fetch most recent macro anchor snapshots as {symbol: price} for sentinel."""
+    db = get_client()
+    if not db:
+        return {}
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        result = (
+            db.table("macro_anchor_snapshots")
+            .select("symbol, price")
+            .lt("date", today)
+            .order("date", desc=True)
+            .limit(25)
+            .execute()
+        )
+        if result.data:
+            return {row["symbol"]: row.get("price") for row in result.data if row.get("price") is not None}
+        return {}
+    except Exception as e:
+        print(f"⚠️ get_prev_macro_anchors error: {e}")
+        return {}
+
+
+def anchors_list_to_dict(anchor_list: list) -> dict:
+    """Convert fetch_macro_anchors() list format to {symbol: price} dict for sentinel."""
+    result = {}
+    for a in anchor_list:
+        if a.get("ok") and a.get("price") is not None:
+            result[a["symbol"]] = a["price"]
+    return result

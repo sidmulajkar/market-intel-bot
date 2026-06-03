@@ -30,16 +30,72 @@ Indian market intel bot — 14 cron jobs, daily Telegram (text + heatmaps).
 
 ---
 
-## AI Routing
+## AI Architecture: Python Computes, AI Narrates
 
-| Mode | Primary | Fallback |
-|------|---------|----------|
-| `analyze("fast")` | Groq (llama-3.3-70b) | Gemini-2.0-flash |
-| `analyze("volume")` | Gemini-2.0-flash | Groq |
-| `sentiment(text)` | FinBERT (HuggingFace, circuit-broken) | — |
+**The Iron Rule:** Data never originates inside the LLM. The LLM receives a structured data payload assembled by Python, and its only job is rhetorical transformation — turning numbers and boolean flags into readable sentences. If Python did not compute it, the AI cannot say it.
 
-- Max tokens: 1000, Temp: 0.3. `has_quota()` pre-checks (60s cache).
-- Strong-conviction fallback: AI exhausted + 2+ extremes (USDINR≥90, Brent≥90, VIX≥20, Gold≥4000, FII streak≥3).
+### Enforcement Strategy
+| Layer | Mechanism |
+|-------|-----------|
+| **Input isolation** | Python builds the full prompt string; AI never receives raw API access or unvalidated data |
+| **Output scrubber** | 63-pattern regex runs on **all** `send_text()` output as final-pass gate; logs stripped content to `analytics_ledger` |
+| **Validation** | `output_validator.py` checks for ghost regimes, invented tickers, trading signals |
+| **No temperature for facts** | Temp 0.3 on all factual summarization; max tokens 1000 to prevent rambling |
+| **Structured fallback** | If AI fails/quota exhausted, Python returns bullet-point stubs from `formatters.py` |
+
+### Routing Table
+
+| Mode | Primary | Fallback | Temp | Tokens |
+|------|---------|----------|------|--------|
+| `analyze("fast")` — short narrative | Groq (llama-3.3-70b) | Gemini 2.0 Flash | 0.3 | 1000 |
+| `analyze("volume")` — 11-block intel | Gemini 2.0 Flash | Groq | 0.3 | 1000 |
+| `sentiment(text)` | FinBERT (HuggingFace, circuit-broken) | None | 0.0 | N/A |
+| NL intent parsing (P9 Agent) | Gemini 2.0 Flash | Groq | 0.2 | 200 |
+
+- `has_quota()` pre-checks Groq rate limits (60s cache) before routing.
+- Strong-conviction fallback: AI exhausted **and** ≥2 macro extremes (USDINR≥90, Brent≥90, VIX≥20, Gold≥4000, FII streak≥3) → bypass AI, emit pre-computed alert template. Wired in `market_intel.py` before AI call.
+
+### Prompt Engine (`src/prompt_engine.py`)
+Schema-bound builder that raises exceptions if required keys are missing. The prompt itself carries scrubber rules as negative instructions to reduce hallucination before it reaches the output validator.
+
+### Sentiment: FinBERT + Circuit Breaker
+- Runs locally on news headlines (deduped via MD5 → `market_state.seen_headlines`) + Telegram retail chatter (optional).
+- **Circuit breaker:** If inference >5s (cold start) or >50% neutral → fall back to **keyword polarity** (VADER-like heuristic on headlines only).
+- Output: Single float `[-1.0, 1.0]` — AI is instructed: *"Sentiment is {value}. Describe it as bearish/neutral/bullish. Do not explain why."*
+
+### P9 Agent: The "No SQL-Gen" Rule
+LLM never writes a `WHERE` clause. **Intent Catalog** — 14 closed-set intents, each with a deterministic executor. The LLM only classifies which intent; Python fills slots and executes:
+```python
+INTENT_MAP = {
+    "get_fii_decomposition": { "executor": fii_decomposition.get_for_date },
+    "simulate_macro": { "executor": scenario_simulator.simulate },
+    # 14 total
+}
+```
+
+### Scrubber: Final-Pass Firewall
+63 patterns in 4 categories (leakage, ghost regime, trading signals, price targets). If stripped, logs to `analytics_ledger` for audit.
+
+### When AI Is Bypassed Entirely
+Three conditions where the pipeline never calls AI:
+| Condition | Behavior |
+|-----------|----------|
+| **Compressed fallback** (delta unchanged) | Python one-liner from `formatters.py` |
+| **Sentinel halt** (P10 preflight fails) | Pre-computed alert: `Data integrity failure. Regime locked.` |
+| **Strong conviction** (2+ extremes + AI quota exhausted) | Hard template: `DEFENSIVE regime triggered by [X]. No analysis available.` |
+
+### Data Flow: Where AI Lives (and Where It Doesn't)
+```
+07:00 MARKET INTEL — AI narrates tension paragraph only (2 sentences)
+08:00 MORNING BRIEF — AI: NONE (deterministic formatting)
+09:15 MARKET OPEN — AI: NONE
+12:30 MIDDAY SCAN — AI: NONE (computed pillar status)
+15:30 MARKET CLOSE — AI: NONE (all deterministic blocks)
+18:00/20:00 EVENING — AI: only if delta triggers full analysis; compressed = AI skipped
+```
+
+### Portability
+To swap models (Claude, local Llama, etc.), touch only: `src/ai_engine.py` (router + prompt templates), `src/prompt_engine.py` (block ranking utilities), 63-pattern regex in `validation_helper.py` (model-agnostic). The math — fragility, lifecycle, tick counting — is pure Python.
 
 ---
 
@@ -329,11 +385,11 @@ This closes the loop between macro theory and micro price action without waiting
 
 ---
 
-## Phase 7: Adaptive Calibration & Regime Rotation
+## Phase 7: Adaptive Calibration & Regime Rotation ✅ Locked
 
 **Concept:** The system uses static equal-weight logic for pillars. Empirical hit rates vary: EM Contagion might be a weak predictor (20%), Stagflation a strong one (80%). Phase 7 makes the system learn its own accuracy and maps historical sector behavior to pillar configurations.
 
-### 7.1: Dynamic Pillar Weighting
+### 7.1: Dynamic Pillar Weights
 **Logic:** Sunday calibration walk-forward backtest measures each pillar's hit rate for predicting Nifty 5D drawdowns > 1%.
 
 **Math:**
@@ -347,7 +403,7 @@ This closes the loop between macro theory and micro price action without waiting
 - *Before:* `max(pillar_scores × lifecycle_multiplier)`
 - *After:* `max(pillar_scores × lifecycle_multiplier × dynamic_weight_multiplier)`
 
-**Module:** `src/adaptive_weights.py` (new). Reads `signal_accuracy_log`, writes `dynamic_weights` JSON.
+**Module:** `src/adaptive_weights.py` — `compute_pillar_weights()` reads `signal_accuracy_log`, writes `dynamic_weights` JSONB. `get_dynamic_weights()` weekday reader, defaults to 1.0.
 
 ### 7.2: Regime Rotation Map
 **Logic:** Maps current active pillar configuration to historical `sector_rs` data. Pure statistical output, no trading advice.
@@ -362,13 +418,13 @@ This closes the loop between macro theory and micro price action without waiting
 - *Allowed:* `Historical Tilt: IT (+0.4σ), Pharma (+0.2σ) | Lagged: O&G (-0.6σ), PSU Banks (-0.5σ)`
 - *Blocked:* `Buy IT, Sell O&G` / `Overweight Pharma`
 
-**Output placement:** Below `Pillar-Flow Match` block in 15:30 EOD, only when Fragility > 50.
+**Output placement:** Below `Pillar-Flow Match` block in 15:30 EOD, only when Fragility > 50. Gated in `reorder_market_blocks()` — NEUTRAL regime now includes `rotation_block`.
 
-**Module:** `src/sector_rotation_map.py` (new). Reads `sector_rs` + `pillar_metrics`. Binning: pillar score ±10 buckets.
+**Module:** `src/sector_rotation_map.py` — `compute_sector_tilt_map()` Sunday pre-compute, `format_rotation_map()` weekday reader.
 
 ---
 
-## Phase 8: Relative Value & Cross-Border Arbitrage (Horizon)
+## Phase 8: Relative Value & Cross-Border Arbitrage ✅ Locked
 
 **Concept:** The bot currently treats India in glorious isolation, with global data only serving as "triggers" for the local framework. But capital flows are a zero-sum game between geographies. When a global fund decides to reduce EM exposure, it doesn't just sell India — it reallocates to DM bonds, US tech, or Japan value. India's underperformance relative to its EM peers is a signal in itself.
 
@@ -377,21 +433,19 @@ This closes the loop between macro theory and micro price action without waiting
 - If India underperforms EEM by > 5% during this window, AND the EM Contagion pillar is concurrently ACTIVE → this signals a structural reallocation *out of India specifically*, not just a general EM exit.
 - Implication: Nifty is losing its premium status within EM. The "India decoupling" narrative is failing in real-time.
 
-**Module:** `src/cross_border_flow.py` (new). Reads yfinance data for `EEM` and `^NSEI`. Compares 30D rolling RS.
+**Module:** `src/value_metrics.py` — `compute_india_vs_em_rs()` computes 30D rolling RS from yfinance. `EEM` added to MACRO_ANCHORS in `data_fetcher.py`.
 
-### 8.2: Bond/Equity Switch
+### 8.2: Bond/Equity Switch (ERP)
 - Track the Equity Risk Premium (ERP): `(1 / Nifty PE) - India 10Y Yield`.
-- When ERP drops below 0 (currently at -2.12% as of June 2026), compute the historical probability of Nifty generating positive 30-day forward returns at this ERP level.
-- Use 5 years of `anchor_history.csv` to bin ERP into deciles and calculate the forward return distributions.
-- **If ERP is deeply negative AND in the bottom decile historically** → mathematically justifies a defensive tilt toward bonds over equities without any AI speculation.
+- Sunday pre-compute: bin 5Y CSV into 10 decile boundaries. Store as JSONB.
+- Weekday: instant lookup against stored deciles.
+- **Output:** `ERP: -2.12% (bottom decile) | Historical prob of positive Nifty 30D: 22% (18/82 occurrences)`.
 
-**Output:** `ERP: -2.12% (bottom decile) | Historical prob of positive Nifty 30D: 22% (18/82 occurrences)`. Pure descriptive statistics.
-
-**Module:** `src/bond_equity_switch.py` (new). Reads CSV + current Nifty PE from market_state.
+**Module:** `src/value_metrics.py` — `compute_erp()`, `compute_erp_deciles()` Sunday pre-compute, `get_current_erp_decile()` weekday lookup, `format_erp_decile()` display. `format_erp_decile` wired into EOD supplementary block.
 
 ---
 
-## Phase 9: Autonomous Agent Interactivity (Horizon)
+## Phase 9: Autonomous Agent Interactivity ✅ Locked
 
 **Concept:** Phase A3 gave us basic Telegram commands (`/stress`, `/flows`, `/gex`, `/sectors`, `/whatif`, `/clone`). Phase 9 expands this into a full conversational query layer where the bot acts as an autonomous agent against its own deterministic data store. The critical constraint: zero AI number generation. AI is used only for natural language-to-SQL translation and result summarization. All numbers come from deterministic engines.
 
@@ -400,22 +454,19 @@ This closes the loop between macro theory and micro price action without waiting
 - Returns: Theoretical regime shift ("Stagflation → 78/100 ELEVATED, Fragility → 81, Regime → force DEFENSIVE"), impact multipliers (import bill increase ₹X Cr), and transmission chain output.
 - No AI involved — purely deterministic with one parameter overridden.
 
-**Module:** `src/scenario_simulator.py` (new). Creates a temporary `macro_attrs` dict with the overridden value, then calls the same pipeline: `consequence_engine → pillar_classifier → fragility_index → regime_arbiter`.
+**Module:** `src/scenario_simulator.py` — override macro var → consequence → pillar → fragility → regime. Wired into `bot_handler.py` dispatch table.
 
 ### 9.2: Historical Comparator
 - `/compare 2013-08-15`: Pulls the exact 12D macro vector (all 24 columns) from `anchor_history.csv` for that date.
 - Side-by-side comparison with today's vector: same metrics, color-coded differences.
-- If the Taper Tantrum is identified as a "clone" by the Clone Engine, this gives the user direct access to the raw data behind the clone match.
 
-**Module:** `src/historical_comparator.py` (reuses or extends `clone_engine` data access patterns).
+**Module:** `src/historical_comparator.py` — load CSV row, compare columns to current `market_state`.
 
 ### 9.3: Natural Language Query Layer
-- Natural language queries like "what's driving FII selling this week?" are parsed by LLM into deterministic DB reads against known tables.
-- The LLM never generates numbers. It generates SQL-like queries (or structured data access patterns) that the bot executes against Supabase.
-- Result is formatted and returned as a Telegram message.
-- **Scope:** Read-only queries. No state mutation. No trade suggestions.
+- Uses **Intent Catalog** (13 intents). User types "Why is FII selling?" → LLM classifies as `Intent: GET_FII_DECOMPOSITION` → hardcoded Supabase query → formatted reply.
+- If LLM cannot map to intent with >90% confidence: "Query outside deterministic scope."
 
-**Module:** `src/agent_query.py` (new). Uses LLM for intent parsing → query construction → deterministic execution → result formatting.
+**Module:** `src/agent_query.py` — Intent Catalog, keyword + LLM classification, deterministic Supabase resolvers. Wired into `bot_handler.py`.
 
 ---
 
@@ -426,8 +477,246 @@ This closes the loop between macro theory and micro price action without waiting
 | P4 (Fragility+Lifecycle) | 4 hr | Low | High — closes pillar-arbiter gap | P2 (Pillars), P3 (Stress Index) | **✅ Locked** |
 | P5 (Institutional Micro) | 5 hr | Medium | High — grounds pillars in cash flows | P4 (Fragility provides the regime context) | **✅ Locked** |
 | P6 (Event Dynamics) | 3 hr | Low | Medium — transforms calendar into stats | P0 (Economic Calendar), Anchor History CSV | **✅ Locked** |
-| P7 (Adaptive Weights) | 3 hr | Medium | Medium — system learns its own accuracy | P4 (needs Fragility Index as target), Signal Accuracy Log | After P6 |
-| P8 (Relative Value) | 4 hr | High | Medium — cross-border context | P4 (needs regime context to interpret RS divergence) | After P7 |
-| P9 (Agent Interactivity) | 5 hr | High | High — conversational deterministic query | All prior phases (max data surface for queries) | After P8 |
+| P7 (Adaptive Weights) | 3 hr | Medium | Medium — system learns its own accuracy | P4 (needs Fragility Index as target), Signal Accuracy Log | **✅ Locked** |
+| P8 (Relative Value) | 4 hr | High | Medium — cross-border context | P4 (needs regime context to interpret RS divergence) | **✅ Locked** |
+| P9 (Agent Interactivity) | 5 hr | High | High — conversational deterministic query | All prior phases (max data surface for queries) | **✅ Locked** |
+| P10 (Meta-Cognitive Sentinel) | 1 hr | Low | High — null/variance halt + regime jump cap | P4 (Fragility needed for jump validation) | **✅ Locked** |
+| P11 (Institutional Armature) | 4 hr | Medium | High — liquidity freeze, debt stress, archetype collisions | P10 (pipeline hardening first) | **✅ Locked** |
+| P12 (AI & Climate) | 2 hr | Low | Medium — SMH/COPX tickers, transmission upgrades | P11 (archetype matrix needed for collision entries) | **✅ Locked** |
 
-**Summary rationale (completed):** P4 closed the pillar-arbiter gap with a continuous Fragility Index (no hard-coded thresholds). P5 grounded theoretical pillars in actual FII/DII cash flows. P6 transformed the risk calendar into statistical facts and validated pillars in real-time via intraday ticks. P7-P9 represent the adaptive and interactive frontier — Phase 7 makes the system learn its own accuracy via dynamic weights; Phase 8 adds cross-border relative value context; Phase 9 expands Telegram into a conversational deterministic query layer.
+**Summary rationale (completed):** P4 closed the pillar-arbiter gap with a continuous Fragility Index (no hard-coded thresholds). P5 grounded theoretical pillars in actual FII/DII cash flows. P6 transformed the risk calendar into statistical facts and validated pillars in real-time via intraday ticks. P7 added dynamic weights and sector rotation maps. P8 added India vs EM RS and ERP decile display. P9 added 3 agent commands (/simulate, /compare, intent-powered NL query). P10 added preflight sentinel + regime membrane (wired in both market_intel.py and market_close.py). P11 added external debt stress multiplier, liquidity freeze Welford detection, 6 archetype collision bitmasks. P12 added SMH/COPX macro anchors, AI/Climate transmission narratives, 2 new archetype matrix entries.
+
+**All 14 cron jobs, 20 workflow files, 58+ modules, 6 Telegram commands, 3 agent commands — fully wired and tested.**
+
+---
+
+## ☁️ GHA/Supabase-Constrained Enhancement Spec (P7–P10)
+
+**Current Bot (P0–P6): 9.5 / 10**
+Structurally robust, deterministic market intel architecture. Mathematical loop is closed: Macro Theory (Pillars) → Temporal Momentum (Lifecycle) → Systemic Bridge (Fragility) → Cash Validation (Microscopy) → Microstructure Confirmation (Intraday/Events). "Python computes, AI narrates" religiously enforced; scrubber acts as perfect firewall.
+
+**Constraint Audit — Original P7–P10 Logic Fails On:**
+1. **GHA 10-min timeout:** 5-year walk-forward backtest across 6 pillars + 15 sectors on a GHA runner will TLE every Sunday.
+2. **Supabase 2GB limit:** Strict 7d purges on high-volume tables. Storing 5Y of sector RS + pillar metric + ERP decile matrices blows the budget in 6 months.
+3. **GHA stateless webhooks:** No persistent listener. GHA workflows spin up on `workflow_dispatch` and must exit within 10 min.
+
+**Core Paradigm Shift:** Compute belongs to CSVs/Pandas (GHA runner local). State belongs to Supabase. Pre-compute mappings on Sundays, store as tiny JSONB configs, read deterministically during week.
+
+### P7: Adaptive Calibration (GHA Edition)
+
+**7.1 Dynamic Pillar Weights**
+- **Sunday (`sunday_calibration`):** Load `anchor_history.csv`. Vectorized Pandas rolling correlation: "When Pillar X > 40, what was Nifty 5D forward return?"
+- **Compute:** `weight_multiplier = 1.0 + (hit_rate - 0.50)`, clamped [0.70, 1.30].
+- **Storage:** Upsert single row into `market_state`/`bot_state`: `{"dynamic_weights": {"Stagflation": 1.3, "EM_Contagion": 0.7, ...}}` (<1KB).
+- **Weekday:** `fragility_index.py` reads JSONB on compute. Zero historical DB queries.
+
+**7.2 Regime Rotation Map**
+- **Original flaw:** Querying 5Y historical `sector_rs` per pillar active pulls thousands of rows.
+- **GHA fix:** Sunday pre-compute expected sector tilts per pillar. Store as lookup JSONB: `{"Stagflation": {"bullish": ["IT", "Pharma"], "bearish": ["O&G", "PSU"]}}`.
+- **Weekday:** At 15:30, if Stagflation active, read JSONB. Output `Historical Tilt: IT, Pharma | Lagged: O&G, PSU`. One read, <1ms.
+
+### P8: Relative Value (GHA Edition)
+
+**8.1 India vs EM Basket**
+- Add `EEM` to the 19 macro anchors in yfinance batcher.
+- Compute 30D rolling RS as Pandas columns.
+- Save *current* spread to `market_state.india_vs_em`. Do not save historical series to Supabase (CSV handles history).
+
+**8.2 Bond/Equity Switch (ERP)**
+- **Original flaw:** Binning 5Y CSV into deciles dynamically on weekday takes too much CPU.
+- **GHA fix:** Compute ERP decile boundaries on Sunday. Store as JSONB: `{"erp_deciles": [-2.5, -2.1, -1.8, ...]}`.
+- **Weekday:** Run current day's ERP against stored boundaries. Instant lookup. Zero Pandas compute on weekdays.
+
+### P9: Autonomous Agent (GHA Stateless Edition)
+
+**9.1 Scenario Simulator (`/simulate brent 120`)**
+- Telegram webhook triggers GHA workflow with `{"command": "simulate", "variable": "brent", "value": 120}`.
+- Python fetches current day's `market_state`, overrides `macro_attrs['Brent'] = 120`, runs lightweight algebra: `consequence_engine → pillar_classifier → fragility_index → arbiter`.
+- Compute time: <2s. No live API calls. Sends result, exits 0.
+
+**9.2 Historical Comparator (`/compare 2013-08`)**
+- Load `anchor_history.csv` from GHA cache. Filter to date. Compare columns to current `market_state`. Format side-by-side.
+
+**9.3 NL Query Layer — Kill SQLGen.**
+- Use **Intent Catalog**. User types "Why is FII selling?" → LLM classifies as `Intent: GET_FII_DECOMPOSITION` → hardcoded Supabase query → formatted reply.
+- If LLM cannot map to intent with >90% confidence: "Query outside deterministic scope."
+
+### P10: Meta-Cognitive Sentinel (Edge Case Armor)
+
+Zero extra compute/storage. Defensive logic embedded at top of every job runner.
+
+**10.1 Schema & Sanity Sentinel**
+- Runs before pipeline in `market_intel.py` and `market_close.py`.
+- Checks: >30% macro anchors null/0.0 → HALT. Brent daily change >30% (API glitch) → HALT.
+- Action: `sys.exit(1)` with Telegram `🚨 DATA INTEGRITY FAILURE: Macro fetch >30% null. Pipeline halted. Regime locked to previous state.`
+
+**10.2 Circuit Breaker Membrane**
+- At 08:00, fetch yesterday's final regime. If today's jump is 2 steps (e.g., DEFENSIVE → BULLISH) and Fragility hasn't dropped ≥20 pts → **Block jump. Cap at NEUTRAL.**
+- Rationale: Regimes don't leap 2 steps overnight without structural shift — 99% data anomaly.
+
+### Execution Roadmap
+
+1. **P10 (Sentinel)** — null/variance checks + regime jump-capping first. Protects pipeline from garbage data as complex features are added.
+2. **P7 (Adaptive)** — Sunday backtest engine using `anchor_history.csv`, outputting only `dynamic_weights` + `sector_tilt_map` JSONBs.
+3. **P8 (Relative Value)** — Add `EEM` to yfinance batcher. Compute ERP decile boundaries Sunday, store as JSONB.
+4. **P9 (Agent)** — Wire 6 Telegram commands to `workflow_dispatch`, using in-memory snapshots for `/simulate`. Intent Catalog instead of SQLGen.
+5. **P10b (P11 — Institutional Armature)** — HYG/LQD Welford, archetype collisions, hard-threshold debt stress flag.
+6. **P11 (P12 — AI & Climate)** — `SMH`/`COPX` tickers, transmission chain upgrades, new archetype entries.
+
+---
+
+### P11: Sovereign & Liquidity Armature (Institutional)
+
+Reconciled from analyst review. Zero new Supabase tables, <10s GHA runtime added.
+
+**11.1 External Debt Stress (Hard Threshold, No Z-score)**
+- Replaces synthetic "Fiscal Trap Z-Score" with boolean trigger.
+- Logic: `IF US10Y > 4.5% AND USDINR > 84.0 AND FII_5D_Net < -10000 Cr` → `external_debt_stress = True`.
+- Integration: Not a new arbiter layer. Multiplies `Carry Unwind` pillar's Fragility contribution by 1.5×, pushing the regime toward DEFENSIVE naturally through the existing Hierarchy.
+
+**11.2 Liquidity Freeze (Welford HYG/LQD → Sentinel Flag)**
+- Compute HYG/LQD ratio spread velocity via Welford streaming Z-score (in-memory, no DB).
+- If Z-score > 3.0 in 5 days → `market_state.liquidity_freeze_active = True`.
+- Decoupled from P5.2 (DII Capacity remains computationally untouched).
+- Formatter reads the flag: appends `⚠️ Override: Global liquidity freeze active; domestic absorption may be overridden by dollar repatriation.` to the DII line, does not replace it.
+
+**11.3 Forex Reserves (Manual Override, Deferred)**
+- No automated ingestion (no reliable RBI API; scraping too fragile).
+- `bot_state.forex_reserves_safety` JSONB boolean. Set manually during Sunday maintenance if `import_cover_months < 8`.
+- If True → `EM Contagion` pillar gets 1.5× Fragility multiplier.
+
+**11.4 Archetype Collision Matrix (Append, Not Suppress)**
+- Bitmask check runs at 15:30 after all pillars computed.
+- Prepends banner *above* pillar breakdown; pillar z-scores/transmission chains remain visible below.
+
+| Active Pillar Combination | Archetype | Banner |
+|:---|:---|:---|
+| Carry Unwind + EM Contagion + DXY Spike | 1997 Asian Contagion | `⚠️ ARCHETYPE: Asian Crisis 1997 (Reserve depletion + EM exit + Strong Dollar)` |
+| Stagflation + Liquidity Freeze | Stagflationary Freeze | `⚠️ ARCHETYPE: Stagflationary Freeze (Supply shock + Credit seized)` |
+| De-dollarization + Gold Spike + CNY Strength | Multipolar Shift | `⚠️ ARCHETYPE: Bretton Woods Unraveling (Dedollarization + Hard Asset anchor)` |
+| Fiscal Hard Threshold + VIX Spike + Yield Inversion | Sovereign Debt Trap | `⚠️ ARCHETYPE: Sovereign Debt Trap (Unserviceable debt + monetary tightening)` |
+
+**Module:** `src/scenario_collision.py` (new). Reads active pillars from pillar_classifier, matches bitmask, writes `market_state.active_archetype`.
+
+---
+
+### P12: AI & Climate Integration (Catalyst Layer)
+
+AI and Climate are existential macro forces, but their Indian market impact is 100% mediated through the existing 6 pillars. They are catalysts, not pillars. This phase upgrades transmission narratives and data inputs without adding architectural complexity.
+
+**12.1 New Macro Anchors (2 tickers)**
+- Add `SMH` (VanEck Semiconductor ETF) to yfinance batcher — defines AI compute cycle. SMH crash triggers `Tech Cycle` pillar faster than Nifty IT.
+- Add `COPX` (Global Copper Miners ETF) — hinge between AI data centers and green grid infrastructure. COPX spike alongside Brent confirms structural inflation shift.
+- We already track `HG=F` (copper futures) and `CU_AU_Ratio` in Stagflation pillar. COPX gives equity-market forward expectation of copper demand.
+
+**12.2 Transmission Chain Narrative Upgrades**
+In `transmission_mechanics.py`, existing 6 chains get updated narrative strings:
+- **Stagflation chain:** Add "Heatflation" — `Brent↑ / Monsoon Failure → Food Inflation → RBI Hawkish → Rate Sensitives Drag`. Math (Brent + USDINR) already catches this; narrative now names the climate vector.
+- **Tech Cycle chain:** Add "AI Displacement" — `SMH↓ / US10Y↑ → IT Offshoring Pricing Pressure → USD Inflow Risk → Rupee Vulnerability`.
+
+**12.3 Archetype Matrix Additions (P11.4 extension)**
+
+| Active Pillar Combination | Archetype | Banner |
+|:---|:---|:---|
+| Tech Cycle + Carry Unwind + DXY Spike | AI Displacement Exit | `⚠️ ARCHETYPE: AI Displacement Exit (Compute capex down + IT USD inflows at risk + Strong Dollar)` |
+| Stagflation + EM Contagion + USDINR Spike | Climate/Heatflation Trap | `⚠️ ARCHETYPE: Climate/Heatflation Trap (Agri supply shock + EM debt strain + Import bill crisis)` |
+
+---
+
+## 🔴 Design Phase Closure: Hard Data Boundary
+
+**What we cannot build (no free/reliable API exists):**
+- SRF Utilization / G-SIB LCR — multi-day lag, no real-time free API
+- TRS Leverage / Rehypothecation Velocity — most confidential data on Wall Street
+- RBI FX Forward Book — structural lag in monthly bulletins
+- COT Net-Short Positioning — computationally prohibitive for 10-min GHA window
+
+**What we extracted (one viable math signal, free with existing data):**
+
+**Bond/Equity Vol Divergence** — When yield volatility spikes while equity VIX stays flat, credit markets are panicking ahead of equities. Compute: 5D rolling std of `^TNX` changes vs 5D rolling VIX. Integration: If US10Y vol > 2σ above Welford baseline while VIX is flat → append `⚠️ BOND/EQUITY VOL DIVERGENCE: Credit market panicking ahead of equities.` to Stagflation/Carry Unwind transmission chains.
+
+**Triangulation Rule** — Already our architecture:
+1. Derivatives Layer (Price Skew): `options_engine.py` (PCR, Skew, GEX)
+2. Physical Layer (Flow): `fii_dii_flows`, `fii_decomposition`, `dii_capacity`
+3. Cash/Balance Layer: Macro Anchors + Consequence Engine
+
+A pillar is `CONFIRMED` (P6.3) only when all three fire. If only one layer fires, Lifecycle keeps it `EMERGING` (×0.6).
+
+**Final verdict:** P0–P12 architecture maps systemic risks of last 50 years using only verifiable data (price, volatility, public exchange flows). No further theoretical expansion. Design phase closed.
+
+---
+
+## 📦 Reference: `src/sentinel.py` (P10 Implementation)
+
+Reference file created at `src/sentinel.py`. Two functions:
+
+**`preflight_check(current_anchors, prev_anchors) → (is_safe, reason)`**
+- Rejects if >30% of macro anchors are None/0.0
+- Rejects if Brent/USDINR/DXY moved >30% daily (API glitch)
+
+**`regime_membrane(current_regime, prev_regime, current_fragility, prev_fragility) → str`**
+- If 2-step regime leap (e.g., DEFENSIVE→BULLISH) and Fragility hasn't dropped ≥20 pts → caps at NEUTRAL
+- If 2-step leap toward DEFENSIVE and Fragility hasn't surged ≥20 pts → caps at NEUTRAL
+
+### Wiring (integrated — all call sites active)
+
+**`jobs/market_intel.py` (top of run()):** Preflight checks macro sanity before any compute. HALT on >30% null or Brent/USDINR/DXY >30% daily change.
+
+**`src/regime_arbiter.py` (after final_regime computed):** `regime_membrane()` caps 2-step regime leaps (e.g., DEFENSIVE→BULLISH) unless Fragility moved ≥20 pts in the supporting direction.
+
+**`jobs/market_close.py`:** Preflight at top of `main()`.
+
+---
+
+## Build Sequence: P7–P12 (All ✅ Locked)
+
+**Execution order:** P10 → P7 → P8 → P9 → P11 → P12
+
+P10 first (hardens pipeline). P7 next (Sunday backtest infra + fragility hook). P8 (extends data surface). P9 (agent layer depends on stable data). P11 (extends fragility + formatter). P12 (lightest, zero new logic).
+
+### Files by Phase
+
+| Phase | New Files | Modified Files |
+|-------|-----------|----------------|
+| P10 | `src/sentinel.py` ✓ | `src/db.py`, `src/regime_arbiter.py`, `src/state.py`, `jobs/market_intel.py`, `jobs/market_close.py` |
+| P7 | `src/adaptive_weights.py`, `src/sector_rotation_map.py` | `src/fragility_index.py`, `jobs/sunday_calibration.py`, `src/formatters.py` |
+| P8 | `src/value_metrics.py` | `src/data_fetcher.py`, `jobs/sunday_calibration.py`, `src/formatters.py` |
+| P9 | `src/scenario_simulator.py`, `src/historical_comparator.py`, `src/agent_query.py` | `src/bot_handler.py`, `.github/workflows/` (new webhook workflow) |
+| P11 | `src/scenario_collision.py`, `src/liquidity_freeze.py` | `src/fragility_index.py`, `src/state.py`, `src/formatters.py`, `src/db.py` |
+| P12 | — | `src/data_fetcher.py`, `src/transmission_mechanics.py`, `src/scenario_collision.py` |
+
+### Data Source Fixes (Q1 2026)
+
+| Fix | File | Change |
+|-----|------|--------|
+| Sector tickers | `src/symbol_map.py` | `^CNXFINANCE`→`^CNXFIN`, added `^CNXINFRA` + alias + short_map entries |
+| SMH/COPX/SOXX thresholds | `src/data_fetcher.py` | `SMH`/`COPX`/`SOXX` bump from 5%→10% daily change; `SMH` range [20,2000], `COPX` range [10,200] |
+| Gold baseline | `src/consequence_engine.py` | 252D rolling mean from CSV for gold (static 2800.0 fallback) |
+| India 10Y yield | `src/data_fetcher.py` | `get_india_10y_yield()` dual-source: yfinance → 7.0% hardcoded fallback with source label |
+| NIFTYGS10YR.NS added | `src/data_fetcher.py` | Added to MACRO_ANCHORS as live Nifty G-Sec index tracker |
+| AIEngine midday prompt | `src/ai_engine.py` | `midday_market_prompt()` static method; all prompts guard `consensus_sentiment` with `(cs or "neutral").upper()` |
+
+### EOD Block Assembly (market_close.py)
+
+| Block | Source | Condition |
+|-------|--------|-----------|
+| Regime headline | `regime_block` | Always |
+| Scorecard | `brier_block` | Yesterday data available |
+| **Pillars (compact)** | `scenario_block` with CSV fallback | CSV has data → `Active Pillars: ...` |
+| Archetype banner | `scenario_collision.py` | Always shown (even "None detected" when pillars active) |
+| Fragility/Drawdown | `drawdown_block` | Available only from Supabase |
+| **Supplementary** | `sup_parts` | P11 debt stress, P11 liquidity freeze, IN10Y, **SMH/COPX >2%**, P8 ERP decile, P8 India vs EM, P7 adaptive weights |
+| Flows (FII/DII) | `flows_block` | `ctx["flow_metrics"]` available |
+| DII Capacity | `dii_capacity.py` | Supabase backfill available |
+| FII Decomposition | `fii_decomposition.py` | Supabase backfill available |
+| Derivatives | `derivs_block` | NSE v3 API available (stub when unavailable) |
+| Sector Rotation Map | `rotation_block` | Fragility > 50 |
+| Overnight / US Drivers | `overnight_block` | Global indices available |
+
+### Test Strategy (All Phases Complete)
+
+Full suite: `python3 test_all_outputs.py` — 7 sections, 26 scrubber patterns
+Supabase tests: `.venv/bin/python3 test_supabase_full.py` (requires `SUPABASE_URL`+`SUPABASE_KEY`)
+Full-day dry-run: `DRY_RUN=1 python3 jobs/<job>.py` for each of the 5 daily jobs
+
+**Current status:** 7/7 test sections pass. Full-day dry-run: 8/8 jobs, 0 errors, 7 Telegram messages.

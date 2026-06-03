@@ -248,6 +248,48 @@ _BASELINE = {
 }
 
 
+def _get_dynamic_baseline(variable: str, csv_path: str = None) -> float:
+    """Compute 252D rolling mean baseline from anchor_history.csv.
+
+    Falls back to hardcoded _BASELINE if CSV unavailable.
+    """
+    try:
+        import os
+        import pandas as pd
+        if csv_path is None:
+            _base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            csv_path = os.path.join(_base, "data", "anchor_history.csv")
+        if not os.path.exists(csv_path):
+            return _BASELINE.get(variable, 0.0)
+
+        sym_map = {
+            "usdinr": "USDINR=X",
+            "brent": "BZ=F",
+            "gold": "GC=F",
+            "dxy": "DX-Y.NYB",
+            "us_10y": "^TNX",
+            "wti": "CL=F",
+            "copper": "HG=F",
+            "india_10y": "INDIA10Y=X",
+        }
+        column = sym_map.get(variable)
+        if not column:
+            return _BASELINE.get(variable, 0.0)
+
+        df = pd.read_csv(csv_path)
+        if column not in df.columns or df[column].dropna().empty:
+            return _BASELINE.get(variable, 0.0)
+
+        series = df[column].dropna()
+        if len(series) < 252:
+            baseline = series.tail(len(series)).mean()
+        else:
+            baseline = series.tail(252).mean()
+        return round(float(baseline), 1)
+    except Exception:
+        return _BASELINE.get(variable, 0.0)
+
+
 def _compute_regime_impact(variable: str, current_value: float) -> list:
     """
     Compute impact vs baseline when price is at extreme level.
@@ -257,7 +299,11 @@ def _compute_regime_impact(variable: str, current_value: float) -> list:
 
     Returns list of formatted impact lines (may be empty if not extreme).
     """
-    baseline = _BASELINE.get(variable)
+    # Use dynamic 252D rolling baseline for gold, fallback to hardcoded for others
+    if variable in ("gold",):
+        baseline = _get_dynamic_baseline(variable)
+    else:
+        baseline = _BASELINE.get(variable)
     if baseline is None or baseline == 0:
         return []
 

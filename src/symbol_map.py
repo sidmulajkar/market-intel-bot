@@ -48,13 +48,13 @@ INDICES: Dict[str, str] = {
     "Nifty FMCG":    "^CNXFMCG",
     "Nifty Realty":  "^CNXREALTY",
     "Nifty PSU Bank":"^CNXPSUBANK",
-    "Nifty Financial Services": "^CNXFINANCE",
+    "Nifty Financial Services": "^CNXFIN",
     "Nifty Media":   "^CNXMEDIA",
+    "Nifty Infra":   "^CNXINFRA",
     "Nifty 500":     "^CRSLDX",
     "Nifty Midcap 50":"^CNXMIDCAP",
     "Nifty Smallcap 250": "^CNXSCAP",
     "India VIX":     "^INDIAVIX",
-    "Nifty GS 10Y":  "^NSEIGS",
     "Sensex":        "^BSESN",
     "Bankex":        "^BSEBK",
 }
@@ -72,6 +72,7 @@ INDEX_ALIASES: Dict[str, str] = {
     "CNXFINANCE":   "Nifty Financial Services",
     "CNXFIN":       "Nifty Financial Services",
     "CNXMEDIA":     "Nifty Media",
+    "CNXINFRA":     "Nifty Infra",
     "NSEBANK":      "Nifty Bank",
     "NIFTY":        "Nifty 50",
     "NIFTY50":      "Nifty 50",
@@ -92,8 +93,9 @@ SECTOR_INDICES: Dict[str, str] = {
     "Nifty FMCG":         "^CNXFMCG",
     "Nifty Realty":       "^CNXREALTY",
     "Nifty PSU Bank":     "^CNXPSUBANK",
-    "Nifty Financial Services": "^CNXFINANCE",
+    "Nifty Financial Services": "^CNXFIN",
     "Nifty Media":        "^CNXMEDIA",
+    "Nifty Infra":        "^CNXINFRA",
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -227,6 +229,7 @@ def get_sector_index(sector_name: str) -> Optional[str]:
         "FINANCIAL": "Nifty Financial Services",
         "FIN": "Nifty Financial Services",
         "MEDIA": "Nifty Media",
+        "INFRA": "Nifty Infra",
     }
     key = sector_name.strip().upper()
     if key in short_map:

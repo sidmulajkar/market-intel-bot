@@ -187,7 +187,7 @@ def format_stress_banner(stress: Dict) -> str:
         "brent": "Brent", "skew": "Put-Call Skew", "breadth": "A/D Breadth",
     }
     driver_str = ", ".join(driver_labels.get(d, d) for d in drivers) if drivers else "none"
-    return f"⚡ {severity} ({score:.0f}/100) | Drivers: {driver_str}"
+    return f"⚡ Stress Index: {severity} ({score:.0f}/100) | Drivers: {driver_str}"
 
 
 def save_stress_index(stress: Dict, trade_date: Optional[str] = None) -> bool:

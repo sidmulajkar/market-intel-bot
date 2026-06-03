@@ -14,6 +14,10 @@ def main():
 
     symbols = get_watchlist()
     deals   = get_all_deals(watchlist=symbols)
+    if not deals.get("all"):
+        print("   🟡 No deals reported today — skipping push")
+        print("✅ DEALS TRACKER COMPLETE")
+        return
     send_text(format_deals_message(deals))
 
     if deals["all"]:

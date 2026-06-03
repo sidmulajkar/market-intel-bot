@@ -61,6 +61,9 @@ VALID_RANGES = {
     "^N225":      (5000, 100000),# Nikkei 225
     "LQD":        (50, 200),     # iShares IG Corporate Bond ETF
     "SOXX":       (50, 1000),    # Semiconductor ETF
+    "SMH":        (20, 2000),    # VanEck Semiconductor ETF (~$630 in 2026)
+    "COPX":       (10, 200),     # Copper Miners ETF
+    "NIFTYGS10YR.NS": (100, 5000),  # Nifty G-Sec 10YR index
     "KWEB":       (5, 200),      # China Internet ETF (KWEB)
 }
 
@@ -87,7 +90,10 @@ _MAX_DAILY_CHANGE_PCT = {
     "NQ=F":       5.0,
     "^N225":      5.0,
     "LQD":        3.0,
-    "SOXX":       5.0,
+    "SOXX":       10.0,   # ETFs can move >5% on semiconductor cycles
+    "SMH":        10.0,
+    "COPX":       10.0,
+    "NIFTYGS10YR.NS": 5.0,
     "KWEB":       8.0,
 }
 
@@ -396,12 +402,16 @@ def fetch_macro_anchors() -> list:
         {"name": "Copper",          "symbol": "HG=F"},        # Dr. Copper — growth proxy
         {"name": "US 2Y Yield",     "symbol": "2YY=F"},       # Fed expectations
         {"name": "India 10Y Yield", "symbol": "INDIA10Y=X"},  # Sovereign borrowing cost
+        {"name": "Nifty GS 10YR",   "symbol": "NIFTYGS10YR.NS"},  # Active Nifty G-Sec index tracker
         {"name": "S&P 500 Futures", "symbol": "ES=F"},        # US equity futures
         {"name": "Nasdaq Futures",  "symbol": "NQ=F"},        # US tech futures
         {"name": "Nikkei 225",      "symbol": "^N225"},       # Japan equity index
         {"name": "IG Corp Bonds",   "symbol": "LQD"},         # Investment-grade credit stress
         {"name": "Semiconductors",  "symbol": "SOXX"},        # Global growth cycle canary
         {"name": "China Internet",  "symbol": "KWEB"},        # Regulatory arbitrage proxy
+        {"name": "EM ETF",          "symbol": "EEM"},         # MSCI EM — India vs EM RS
+        {"name": "Semiconductor ETF","symbol": "SMH"},        # P12.1 — AI compute cycle proxy
+        {"name": "Copper Miners ETF","symbol": "COPX"},       # P12.1 — AI/green grid copper demand
     ]
 
     symbols = [a["symbol"] for a in anchors]
@@ -1234,4 +1244,29 @@ def fetch_us_employment() -> Dict:
         "recession_score": recession_score,
         "recession_level": recession_level,
         "signals": signals,
+    }
+
+
+def get_india_10y_yield(fallback: float = 7.0) -> dict:
+    """Dual-source India 10Y G-Sec yield fetcher.
+
+    Source A: yfinance INDIA10Y=X (often delisted — best-effort).
+    Source B: Hardcoded last-known print with drift warning.
+    """
+    try:
+        import yfinance as yf
+        d = yf.download("INDIA10Y=X", period="5d", progress=False)
+        if d is not None and not d.empty:
+            close = d["Close"]
+            val = close.iloc[-1]
+            val = float(val.iloc[0]) if hasattr(val, "iloc") else float(val)
+            if val and 4.0 <= val <= 12.0:
+                return {"IN10Y": round(val, 2), "source": "yfinance", "note": ""}
+    except Exception:
+        pass
+
+    return {
+        "IN10Y": fallback,
+        "source": "RBI API unavailable",
+        "note": "using last known print" if fallback else "RBI API unavailable, no last known print",
     }
