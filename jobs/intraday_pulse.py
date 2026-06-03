@@ -52,6 +52,14 @@ def main():
     if not result.get("ok"):
         reason = result.get("reason", "Unknown")
         print(f"⏭️ Pulse skipped: {reason}")
+        # Send Telegram for data failures (not expected boundary skips)
+        if reason not in ("Outside market hours",):
+            from datetime import datetime
+            from src.db import get_bot_state, set_bot_state
+            last_fail = get_bot_state("last_pulse_fail_reason")
+            if last_fail != reason:
+                set_bot_state("last_pulse_fail_reason", reason)
+                ts.send_text(f"⏭️ *Intraday Pulse:* {reason}")
         return
 
     record = result.get("record", {})

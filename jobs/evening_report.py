@@ -153,8 +153,9 @@ def main():
                         print("✅ EVENING REPORT COMPLETE")
                         return
                     elif regime_label == "NEUTRAL":
-                        # Nothing additive — suppress entirely
-                        print("   🔇 US quiet + news unchanged + NEUTRAL regime → suppressing evening report")
+                        # Brief keepalive — no material change, no silent completion
+                        send_text(f"📌 *Evening:* US session quiet. NEUTRAL posture unchanged. No new global delta.")
+                        print(f"   📌 Quiet US session — NEUTRAL confirmation sent")
                         print("✅ EVENING REPORT COMPLETE")
                         return
                     else:
@@ -175,7 +176,8 @@ def main():
                     print("✅ EVENING REPORT COMPLETE")
                     return
                 elif regime_label == "NEUTRAL":
-                    print("   🔇 US quiet + no news + NEUTRAL regime → suppressing evening report")
+                    send_text(f"📌 *Evening:* US session quiet. NEUTRAL posture unchanged. No new global delta.")
+                    print(f"   📌 Quiet US session — NEUTRAL confirmation sent")
                     print("✅ EVENING REPORT COMPLETE")
                     return
                 else:

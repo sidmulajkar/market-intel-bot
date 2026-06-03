@@ -92,9 +92,10 @@ def main():
     nifty_moved = nifty_change_abs > 1.0
 
     if not nifty_moved and not vix_spike and not has_extreme:
-        # No push on quiet days — regime card is the pinned source of truth
+        # Brief keepalive — no material change, no silent completion
         skip_note = f"Nifty {nifty_change_pct:+.2f}% (< 1.0% threshold)"
-        print(f"   🟡 Quiet session — no Telegram push ({skip_note})")
+        print(f"   🟡 Quiet session — sending keepalive ({skip_note})")
+        send_text(f"📌 *Midday:* Quiet session. {skip_note}. No material change.")
         print("✅ MIDDAY SCAN COMPLETE")
         return
 

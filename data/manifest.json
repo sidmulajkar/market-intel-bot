@@ -1,0 +1,33 @@
+{
+  "version": "0000000",
+  "generated_at": "2026-06-03T00:00:00Z",
+  "fingerprint_buckets": {
+    "nifty": 100,
+    "vix": 1,
+    "brent": 1.0,
+    "usdinr": 0.1,
+    "dxy": 0.5
+  },
+  "fragility": {
+    "cap_neutral": 65,
+    "force_defensive": 85
+  },
+  "adaptive_weights": {
+    "Stagflation": 1.0,
+    "West_Asia": 1.0,
+    "EM_Contagion": 1.0,
+    "Carry_Unwind": 1.0,
+    "De-dollarization": 1.0,
+    "Tech_Cycle": 1.0
+  },
+  "sector_tilt_map": {
+    "Stagflation": {"bullish": ["IT", "Pharma"], "bearish": ["O&G", "PSU Banks"]},
+    "West_Asia": {"bullish": ["Defence", "Energy"], "bearish": ["Airlines", "Hotels"]},
+    "EM_Contagion": {"bullish": ["IT", "Pharma"], "bearish": ["PSU Banks", "Realty"]},
+    "Carry_Unwind": {"bullish": ["IT", "Pharma"], "bearish": ["PSU Banks", "NBFC"]},
+    "De-dollarization": {"bullish": ["Gold", "Metals"], "bearish": ["IT"]},
+    "Tech_Cycle": {"bullish": ["IT", "Consumption"], "bearish": ["Banks", "PSU"]}
+  },
+  "erp_deciles": [-2.5, -2.1, -1.8, -1.5, -1.2, -0.9, -0.6, -0.3, 0.0, 0.4],
+  "steady_state_template": "🟢 Steady state since {last_regime_time}. Regime: {regime} | Nifty: {nifty} | VIX: {vix}. No material change."
+}
