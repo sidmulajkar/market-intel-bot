@@ -24,6 +24,9 @@ class Guardian:
     def __init__(self, manifest: Optional[dict] = None):
         self.manifest = manifest or {}
         self.issues: List[str] = []
+        self._source_count = 0
+        self._null_count = 0
+        self._delay_count = 0
         self._critical_anchors = {"BRENT", "USDINR", "VIX", "DXY"}
 
     def check_source(self, anchor: str, value, source: str, latency_ms: int) -> None:
@@ -35,14 +38,18 @@ class Guardian:
             source: 'live', 'fallback', or 'cache'
             latency_ms: Time in ms for the fetch
         """
+        self._source_count += 1
         if latency_ms > 10000 and source == "live":
             self.issues.append(f"{anchor}: timeout ({latency_ms}ms)")
+            self._delay_count += 1
 
         if value is None:
             self.issues.append(f"{anchor}: null")
+            self._null_count += 1
 
         if source == "fallback" and anchor in self._critical_anchors:
             self.issues.append(f"{anchor}: delayed")
+            self._delay_count += 1
 
     def finalize(self, anchors: Dict[str, float]) -> TriageLevel:
         """Evaluate all source reports and return triage level.
@@ -56,34 +63,33 @@ class Guardian:
         if self._critical_glitch(anchors):
             return TriageLevel.RED
 
-        total = len(anchors) or 1
-        null_count = sum(1 for i in self.issues if "null" in i)
-        delay_count = sum(1 for i in self.issues if "delayed" in i or "timeout" in i)
-        null_pct = null_count / total
+        total = self._source_count or len(anchors) or 1
+        null_pct = self._null_count / total
 
         if null_pct > 0.30:
             return TriageLevel.RED
 
-        if delay_count >= 2 or null_pct > 0.20:
+        if self._delay_count >= 2 or null_pct > 0.20:
             return TriageLevel.YELLOW
 
         return TriageLevel.GREEN
 
     def _critical_glitch(self, a: Dict[str, float]) -> bool:
-        """Detect API glitches that produce absurd daily changes."""
+        """Detect API glitches — checks against hard sanity bounds (no PREV data needed)."""
         if not a:
             return True
 
+        # Sanity bounds: anything beyond these is an API glitch
+        _sanity_max = {"BRENT": 300, "USDINR": 200, "DXY": 200, "VIX": 100}
+
         for anchor in self._critical_anchors:
             cur = a.get(anchor)
-            prev_key = f"PREV_{anchor}"
-            prev = a.get(prev_key)
-
-            if cur is not None and prev is not None and prev > 0:
-                change_pct = abs(cur - prev) / prev * 100
-                if anchor in ("BRENT", "USDINR", "DXY") and change_pct > 30:
-                    self.issues.append(f"{anchor}: glitch ({change_pct:.0f}% daily change)")
-                    return True
+            max_val = _sanity_max.get(anchor)
+            if cur is not None and max_val and cur > max_val:
+                self.issues.append(f"{anchor}: glitch ({cur})")
+                return True
+            if cur is None:
+                self.issues.append(f"{anchor}: null")
 
         return False
 

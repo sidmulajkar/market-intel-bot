@@ -8,6 +8,12 @@ Quant Layer: percentiles, cross-signals, significance labels
 from typing import Dict, Optional, Tuple
 import hashlib
 
+_triage_yellow = False
+
+def set_triage_mode(yellow: bool) -> None:
+    global _triage_yellow
+    _triage_yellow = yellow
+
 def render_scorecard(correct: int, total: int, avg_brier: float) -> str:
     """Unified Brier scorecard — single format across all jobs.
 
@@ -36,40 +42,17 @@ def format_scenario_block(state) -> str:
         pctiles = get_percentiles_from_csv()
         if pctiles:
             pillars = classify_pillars(pctiles)
-            if pillars:
-                # Build pillar block with inline lifecycle suffix (P4.2)
-                pillar_lines = []
-                for p in pillars[:2]:
-                    # Compute lifecycle suffix inline
-                    lc_suffix = ""
-                    try:
-                        from src.pillar_lifecycle import compute_pillar_lifecycle, get_pillar_history_from_db
-                        history = get_pillar_history_from_db(p["name"])
-                        lc = compute_pillar_lifecycle(p["name"], p["score"], history)
-                        if lc.get("ok") and lc.get("formatted"):
-                            lc_suffix = f" | {lc['formatted']}"
-                    except Exception:
-                        pass
-                    pillar_lines.append(f"{p['emoji']} *{p['label']}* — {p['tier']} ({p['score']:.0f}/100){lc_suffix}")
-                    meaningful = [d for d in p.get("active_dims", []) if d.get("contribution", 0) >= 0.01]
-                    if meaningful:
-                        dims_str = ", ".join(
-                            f"{d['name']} {d['value_pctile']:.0f}p{'↑' if d['direction'] == 'stress' else '↓'}"
-                            for d in meaningful[:5]
-                        )
-                        pillar_lines.append(f"  🔴 Detection: {dims_str}")
-                if pillar_lines:
-                    blocks.append("\n".join(pillar_lines))
 
         macro = getattr(state, 'macro', None)
 
         # ── Transmission Mechanics (Phase 2.3): causal chain per pillar ──
+        current_vals = {}
+        baseline_vals = {}
         if pillars and macro:
             try:
                 from src.transmission_mechanics import compute_transmission, format_transmission
                 from src.csv_data import load_history
 
-                current_vals = {}
                 for attr, key in [("brent", "brent"), ("usdinr", "usdinr"),
                                    ("dxy", "dxy"), ("us_10y", "us10y"),
                                    ("gold", "gold"), ("cboe_vix", "cboe_vix")]:
@@ -83,7 +66,6 @@ def format_scenario_block(state) -> str:
                     current_vals["soxx_nq_pctile"] = pctiles.get("SOXX_NQ_Ratio", 50)
                     current_vals["credit_ratio_pctile"] = pctiles.get("Credit_Ratio", 50)
 
-                baseline_vals = {}
                 df = load_history("anchors")
                 if not df.empty and len(df) >= 20:
                     lookback = df.tail(252) if len(df) >= 252 else df
@@ -93,18 +75,45 @@ def format_scenario_block(state) -> str:
                     for key, col in col_map.items():
                         if col in lookback.columns:
                             baseline_vals[key] = float(lookback[col].mean())
-
-                tx_lines = []
-                for p in pillars[:2]:
-                    tx = compute_transmission(p["name"], current_vals, baseline_vals)
-                    if tx and not tx.get("error"):
-                        tx_str = format_transmission(p["name"], tx)
-                        if tx_str:
-                            tx_lines.append(tx_str)
-                if tx_lines:
-                    blocks[-1] += "\n" + "\n".join(tx_lines)
             except Exception:
                 pass
+
+        # Build pillar block with inline transmission per-pillar
+        if pillars:
+            pillar_blocks = []
+            for p in pillars[:2]:
+                # Compute lifecycle suffix inline
+                lc_suffix = ""
+                try:
+                    from src.pillar_lifecycle import compute_pillar_lifecycle, get_pillar_history_from_db
+                    history = get_pillar_history_from_db(p["name"])
+                    lc = compute_pillar_lifecycle(p["name"], p["score"], history)
+                    if lc.get("ok") and lc.get("formatted"):
+                        lc_suffix = f" | {lc['formatted']}"
+                except Exception:
+                    pass
+
+                parts = [f"{p['emoji']} *{p['label']}* — {p['tier']} ({p['score']:.0f}/100){lc_suffix}"]
+                meaningful = [d for d in p.get("active_dims", []) if d.get("contribution", 0) >= 0.01]
+                if meaningful:
+                    dims_str = ", ".join(
+                        f"{d['name']} {d['value_pctile']:.0f}p{'↑' if d['direction'] == 'stress' else '↓'}"
+                        for d in meaningful[:5]
+                    )
+                    parts.append(f"  🔴 Detection: {dims_str}")
+
+                # Transmission for this pillar (interleaved — not lumped at end)
+                if current_vals and baseline_vals:
+                    from src.transmission_mechanics import compute_transmission, format_transmission
+                    tx = compute_transmission(p["name"], current_vals, baseline_vals)
+                    tx_str = format_transmission(p["name"], tx) if tx and not tx.get("error") else ""
+                    if tx_str:
+                        parts.append(tx_str)
+
+                pillar_blocks.append("\n".join(parts))
+
+            if pillar_blocks:
+                blocks.append("\n\n".join(pillar_blocks))
 
         # ── India Clone Engine (T4.2): 6D percentile matching ──
         if all([
@@ -2020,6 +2029,9 @@ def format_options_block(symbol: str = "NIFTY", run_label: str = "morning") -> s
     Morning: uses computed values directly.
     Evening: compares to morning snapshot for OI shifts.
     """
+    if _triage_yellow:
+        print("   ⚠️ format_options_block: suppressed (Guardian YELLOW)")
+        return ""
     try:
         from src.options_engine import run_options_analysis, fetch_nse_options_chain, compute_oi_shifts, format_derivatives_intel, get_latest_snapshot
 

@@ -32,13 +32,16 @@ def parse_ai_output(raw_text: str) -> Dict:
         "headline": None,
     }
 
-    # REGIME: Risk-on / Risk-off / Neutral / Transition
+    # REGIME: Risk-on / Risk-off / Neutral only — "Transition" is not a regime
     regime_match = re.search(
-        r"REGIME[:\s]+(Risk-on|Risk-off|Neutral|Transition)",
+        r"REGIME[:\s]+(Risk-on|Risk-off|Neutral)",
         raw_text, re.IGNORECASE
     )
     if regime_match:
-        result["regime"] = regime_match.group(1).strip()
+        raw_regime = regime_match.group(1).strip()
+        # Map AI labels to canonical regime set
+        regime_map = {"Risk-on": "BULLISH", "Risk-off": "DEFENSIVE", "Neutral": "NEUTRAL"}
+        result["regime"] = regime_map.get(raw_regime, raw_regime)
 
     # Confidence: HIGH / MEDIUM / LOW
     conf_match = re.search(
@@ -237,6 +240,15 @@ def validate_yesterday_prediction(nifty_closes: list = None) -> Dict:
 
         # Check regime accuracy
         pred_regime = prediction.get("regime", "")
+        # Fallback to arbiter's final_regime if AI prediction is empty or invalid
+        if not pred_regime or pred_regime not in ("BULLISH", "NEUTRAL", "DEFENSIVE"):
+            try:
+                from src.db import get_market_state
+                arbiter_state = get_market_state(yesterday)
+                if arbiter_state and arbiter_state.get("final_regime"):
+                    pred_regime = arbiter_state["final_regime"]
+            except Exception:
+                pass
         regime_correct = False
         if pred_regime:
             # Map predicted regime to direction

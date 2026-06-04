@@ -11,6 +11,50 @@ from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
 
 
+FP_ANCHOR_MAP = {
+    "^NSEI": "NIFTY",
+    "^INDIAVIX": "VIX",
+    "USDINR=X": "USDINR",
+    "BZ=F": "BRENT",
+    "DX-Y.NYB": "DXY",
+}
+
+
+def build_anchor_dict(
+    anchor_data: list,
+    index_data: dict = None,
+    fii_net: float = None
+) -> Dict[str, float]:
+    """Extract fingerprint-relevant values from anchor list + global indices.
+
+    Args:
+        anchor_data: List from fetch_macro_anchors() with {symbol, price, ok}
+        index_data: Dict from fetch_global_indices() keyed by country name
+        fii_net: FII net flow in Cr (or None)
+    Returns:
+        dict with NIFTY, VIX, USDINR, BRENT, DXY, FII_NET keys (as available)
+    """
+    result = {}
+
+    for a in (anchor_data or []):
+        sym = a.get("symbol", "")
+        if sym in FP_ANCHOR_MAP and a.get("ok") and a.get("price") is not None:
+            result[FP_ANCHOR_MAP[sym]] = a["price"]
+
+    if index_data:
+        india = index_data.get("India", {})
+        if india.get("ok") and india.get("price"):
+            result["NIFTY"] = india["price"]
+        vix_entry = index_data.get("India VIX", {})
+        if vix_entry.get("ok") and vix_entry.get("price"):
+            result["VIX"] = vix_entry["price"]
+
+    if fii_net is not None:
+        result["FII_NET"] = fii_net
+
+    return result
+
+
 def compute_raw_fingerprint(anchors: Dict[str, float], manifest: dict) -> str:
     """Hash ONLY cheap raw inputs. NEVER computed state.
 
@@ -72,4 +116,4 @@ def should_skip(
     if elapsed < heartbeat_min * 60:
         return True, f"Steady state. Fingerprint unchanged ({int(elapsed / 60)}min since last send, heartbeat={heartbeat_min}min)."
 
-    return False, f"Heartbeat due ({int(elapsed / 60)}min > {heartbeat_min}min threshold). Sending keepalive."
+    return True, f"Heartbeat due ({int(elapsed / 60)}min > {heartbeat_min}min threshold). Sending keepalive."

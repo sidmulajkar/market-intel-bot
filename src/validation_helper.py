@@ -100,6 +100,21 @@ def _log_scrubber_event(event: str, details: dict) -> None:
         pass
 
 
+# Lines starting with these prefixes are deterministic bot output (not AI).
+# The scrubber must not strip them — they carry structured data, not speculation.
+_DETERMINISTIC_PREFIX = r'^(━|📌|🟢|🔴|🟡|📊|📈|📉|⚠️|🚨)'
+
+def _is_deterministic_line(stripped: str) -> bool:
+    """Check if line is deterministic Python-generated bot output (not AI text)."""
+    if not re.match(_DETERMINISTIC_PREFIX, stripped):
+        return False
+    # Lines containing "Posture:" or "Open Posture:" (deterministic prefix or not) are always AI
+    if re.search(r'\*?Posture:', stripped):
+        return False
+    if re.search(r'\*?Open\s+Posture:', stripped):
+        return False
+    return True
+
 def _strip_trading_signals(text: str) -> str:
     """Remove trading advice and speculative language from AI output — keep only factual statements."""
     lines = text.split('\n')
@@ -108,6 +123,10 @@ def _strip_trading_signals(text: str) -> str:
     for line in lines:
         stripped = line.strip()
         if not stripped:
+            filtered.append(line)
+            continue
+        # Deterministic bot output lines carry structured data — skip trading signal check
+        if _is_deterministic_line(stripped):
             filtered.append(line)
             continue
         is_signal = False
@@ -165,12 +184,27 @@ def _strip_ghost_regime(text: str) -> str:
     stripped_count = 0
     for line in lines:
         stripped = line.strip()
+        # Deterministic bot output carries the Arbiter's regime card — never strip it
+        if _is_deterministic_line(stripped):
+            skip_next = False
+            filtered.append(line)
+            continue
         # Match: REGIME:, emoji + REGIME:, *REGIME:, **REGIME:, etc.
         if re.match(r'^[*\s]*[\U0001F300-\U0001FAFF]*\s*REGIME[:\s]', stripped, re.IGNORECASE):
             skip_next = True
             stripped_count += 1
             continue
-        if skip_next and re.match(r'^(Confidence|Dominant)', stripped, re.IGNORECASE):
+        # Match: Posture: lines (AI-generated, always stripped)
+        if re.match(r'^[*\s]*[📌]?\s*\*?Posture:', stripped):
+            skip_next = True
+            stripped_count += 1
+            continue
+        # Match: Open Posture: lines (AI-generated)
+        if re.match(r'^[*\s]*[📌]?\s*\*?Open\s+Posture:', stripped):
+            skip_next = True
+            stripped_count += 1
+            continue
+        if skip_next and re.match(r'^(Confidence|Dominant|Why|Observation|Triggers)', stripped, re.IGNORECASE):
             stripped_count += 1
             continue
         # Ghost phase labels appended below regime card — not in canonical set

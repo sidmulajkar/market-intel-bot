@@ -330,7 +330,7 @@ def main():
                 top_consequence = f"VIX {a['price']:.1f} elevated"
                 break
 
-    posture_line = f"📌 Open Posture: {regime_label} | {gap_direction}"
+    posture_line = f"📌 Market Context: {regime_label} | {gap_direction}"
     if top_consequence:
         posture_line += f" | {top_consequence}"
 

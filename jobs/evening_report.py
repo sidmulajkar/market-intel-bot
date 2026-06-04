@@ -78,7 +78,7 @@ def _send_evening_brief_confirmation(regime_label: str, valid_index: dict):
     even when global markets are quiet.
     """
     # Build a one-liner with key macro data
-    parts = [f"{regime_label} posture unchanged."]
+    parts = [f"{regime_label} regime unchanged."]
     try:
         from src.db import get_latest_market_state
         prev = get_latest_market_state()
@@ -153,14 +153,14 @@ def main():
                         print("✅ EVENING REPORT COMPLETE")
                         return
                     elif regime_label == "NEUTRAL":
-                        # Brief keepalive — no material change, no silent completion
-                        send_text(f"📌 *Evening:* US session quiet. NEUTRAL posture unchanged. No new global delta.")
+                        # Brief keepalive — no notable change, no silent completion
+                        send_text(f"📌 *Evening:* US session quiet. NEUTRAL regime unchanged. No new global delta.")
                         print(f"   📌 Quiet US session — NEUTRAL confirmation sent")
                         print("✅ EVENING REPORT COMPLETE")
                         return
                     else:
                         # Directional regime — send brief confirmation
-                        send_text(f"📌 *Evening:* US session quiet. {regime_label} posture unchanged. No new global delta.")
+                        send_text(f"📌 *Evening:* US session quiet. {regime_label} regime unchanged. No new global delta.")
                         print(f"   📌 Quiet US session — {regime_label} confirmation sent")
                         print("✅ EVENING REPORT COMPLETE")
                         return
@@ -176,12 +176,12 @@ def main():
                     print("✅ EVENING REPORT COMPLETE")
                     return
                 elif regime_label == "NEUTRAL":
-                    send_text(f"📌 *Evening:* US session quiet. NEUTRAL posture unchanged. No new global delta.")
+                    send_text(f"📌 *Evening:* US session quiet. NEUTRAL regime unchanged. No new global delta.")
                     print(f"   📌 Quiet US session — NEUTRAL confirmation sent")
                     print("✅ EVENING REPORT COMPLETE")
                     return
                 else:
-                    send_text(f"📌 *Evening:* US session quiet. {regime_label} posture unchanged. No new global delta.")
+                    send_text(f"📌 *Evening:* US session quiet. {regime_label} regime unchanged. No new global delta.")
                     print(f"   📌 Quiet US session — {regime_label} confirmation sent")
                     print("✅ EVENING REPORT COMPLETE")
                     return
@@ -277,20 +277,18 @@ Evening global markets (US session):
 {nifty_close_line}
 {news_block}
 
-Market sentiment: {consensus_sentiment.upper()}
+Market sentiment: {consensus_sentiment.upper() if consensus_sentiment else "NEUTRAL"}
 
 Evening report for Indian investors — factual summary only, NO predictions or trading advice:
 1. 🌃 US Session Direction + magnitude
 2. 📰 Top Catalyst (from news headlines)
 3. 🌍 Overnight Risk Setup (what to watch, not what will happen)
-4. 🇮🇳 India context: current regime posture
+4. 🇮🇳 India context: current regime
 
-Under 100 words. Reference actual data only. No bias, no key levels, no conditionals.
+Under 100 words. Reference actual data only. No bias, no key levels, no conditionals. Do not use the word 'Posture' or 'posture'. Use 'regime' instead.
 """
 
     def make_fallback():
-        from src.posture_engine import compute_posture
-
         parts = []
         if nifty_close_line:
             parts.append(nifty_close_line)
@@ -299,41 +297,29 @@ Under 100 words. Reference actual data only. No bias, no key levels, no conditio
             top = validated_news[0]
             parts.append(f"📰 {top.get('headline', '')[:50]}...")
 
-        # Append posture line from available anchor data
-        posture_vix = posture_usdinr = posture_brent = None
-        posture_fii = posture_dii = None
-        for a in (anchor_data if 'anchor_data' in dir() else []):
-            if not a.get("ok") or not a.get("price"):
-                continue
-            name = a.get("name", "")
-            if name == "India VIX":
-                posture_vix = a["price"]
-            elif name == "USD/INR":
-                posture_usdinr = a["price"]
-            elif name == "Brent Crude":
-                posture_brent = a["price"]
-        posture = compute_posture(
-            vix=posture_vix, usdinr=posture_usdinr, brent=posture_brent,
-        )
-
         text = " | ".join(parts[:4])
-        text += f"\n\n📌 *Posture:* {posture.posture} | {posture.therefore}"
-        text += f"\n  Watch: {' | '.join(t for t in posture.triggers[:2])}"
+        # Context line locked to arbiter's regime (never contradicts final_regime)
+        _context_map = {
+            "BULLISH": "Broad market strength; constructive session.",
+            "NEUTRAL": "No dominant macro driver. Range-bound session.",
+            "DEFENSIVE": "Elevated macro stress indicators active.",
+        }
+        regime_label = regime_info.get("regime", "NEUTRAL") if 'regime_info' in dir() else "NEUTRAL"
+        context = _context_map.get(regime_label, "Range-bound session.")
+        text += f"\n\n📌 *Context:* Regime: {regime_label}. {context}"
+        # Watch levels from arbiter's watch_levels (not posture engine)
+        watch_levels = regime_info.get("watch_levels", "") if 'regime_info' in dir() else ""
+        if watch_levels:
+            text += f"\n  Watch: {watch_levels}"
         return text
 
     def _build_outlook_line():
+        """Built from arbiter's watch_levels — not posture engine (avoid regime contradiction)."""
         try:
-            from src.posture_engine import compute_posture
             from src.db import get_latest_market_state
             prev = get_latest_market_state()
-            macro = prev.get("macro", {}) if prev else {}
-            posture = compute_posture(
-                vix=macro.get("vix"),
-                usdinr=macro.get("usdinr"),
-                brent=macro.get("brent"),
-            )
-            if posture.posture != "NO EDGE" or posture.triggers:
-                return f"  Watch: {' | '.join(t for t in posture.triggers[:2])}"
+            if prev and prev.get("watch_levels"):
+                return f"  Watch: {prev['watch_levels']}"
         except Exception:
             pass
         return ""
@@ -356,8 +342,9 @@ Under 100 words. Reference actual data only. No bias, no key levels, no conditio
         if nifty_close_line and not bluf:
             msg += f"{nifty_close_line}\n\n"
         msg += text
+        # Suppress duplicate outlook if AI/fallback already printed watch guidance
         outlook = _build_outlook_line()
-        if outlook:
+        if outlook and "Watch:" not in text:
             msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{outlook}"
         send_text(msg)
 

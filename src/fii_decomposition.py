@@ -191,10 +191,28 @@ def _compute_category_path() -> Dict:
         return {"ok": False, "message": f"SEBI FPI path error: {e}"}
 
 
-def format_fii_decomposition(decomp: Dict) -> str:
-    """Format FII decomposition for AI prompt injection."""
+def format_fii_decomposition(decomp: Dict, aggregate_fii_net: float = 0.0) -> str:
+    """Format FII decomposition for AI prompt injection.
+
+    Args:
+        decomp: Decomposition result dict from compute_fii_decomposition()
+        aggregate_fii_net: Total FII net flow (all entities) for coverage check
+
+    Returns:
+        Formatted string or coverage gate warning if bulk-deal sample is too small.
+    """
     if not decomp.get("ok"):
         return ""
+
+    # Coverage gate: if decomposition covers < 20% of aggregate flow, warn
+    total_outflow = abs(decomp.get("total_outflow_cr", 0))
+    agg_abs = abs(aggregate_fii_net)
+    if agg_abs > 0 and total_outflow / agg_abs < 0.20:
+        coverage_pct = total_outflow / agg_abs * 100
+        return (
+            f"FII Decomposition: Institution-level data pending "
+            f"(bulk-deal coverage {coverage_pct:.0f}% < 20% of aggregate flow)"
+        )
 
     source_label = decomp.get("data_source_label", "")
     lines = [f"[FII Decomposition — Entity Concentration] {source_label}".strip()]

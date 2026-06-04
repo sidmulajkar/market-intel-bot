@@ -29,6 +29,10 @@ from src.db             import get_client, save_macro_snapshots_batch, get_seen_
 from src.validator      import validate_articles
 from src.validation_helper import _validate_with_output_type, _OUTPUT_TYPE_CONFIG
 from src.compute_budget import ComputeBudget, get_block_fallback, BLOCK_PRIORITY
+from src.manifest import load as manifest_load
+from src.fingerprint import compute_raw_fingerprint, build_anchor_dict, should_skip
+from src.bot_state import get_skip_meta, update_skip_meta
+from src.guardian import Guardian, TriageLevel
 
 
 
@@ -329,7 +333,7 @@ def _check_evening_delta() -> bool:
         if m_regime and e_regime and e_regime != m_regime:
             return False
 
-        # No material change — send compressed
+        # No notable change — send compressed
         override = persisted.get("final_override_reason", "") if persisted else ""
         macro_data = persisted.get("macro", {}) if persisted else {}
         u = macro_data.get("usdinr", "")
@@ -353,13 +357,13 @@ def _check_evening_delta() -> bool:
             if hi:
                 compressed += f" | ⚠️ {hi}"
             else:
-                compressed += " | Tracking — no material change."
+                compressed += " | Tracking — no notable change."
         except Exception:
-            compressed += " | Tracking — no material change."
+            compressed += " | Tracking — no notable change."
 
         from src.telegram_sender import send_text
         send_text(compressed)
-        print("   ✅ Delta Tracker: no material change — compressed")
+        print("   ✅ Delta Tracker: no notable change — compressed")
         return True
     except Exception as e:
         print(f"   ⚠️ Delta Tracker check: {e}")
@@ -447,19 +451,40 @@ def main():
     try:
         anchor_data = fetch_macro_anchors()
 
-        # ── P10 Sentinel: Preflight data integrity check ────────────────
+        # ── P18/P14/P16: Guardian + Fingerprint Skip Gate ─────────
         try:
-            from src.sentinel import preflight_check
-            from src.db import get_prev_macro_anchors, anchors_list_to_dict
-            current = anchors_list_to_dict(anchor_data)
-            if current:
-                prev = get_prev_macro_anchors()
-                is_safe, reason = preflight_check(current, prev)
-                if not is_safe:
-                    send_text(f"🚨 DATA INTEGRITY FAILURE: {reason} Regime locked to previous state.")
-                    sys.exit(1)
+            from datetime import datetime, timezone
+            _manifest = manifest_load()
+            guardian = Guardian(_manifest)
+            for a in anchor_data or []:
+                guardian.check_source(
+                    a.get("symbol", ""), a.get("price"),
+                    "live" if a.get("ok") else "fallback", 0,
+                )
+            _anchors_dict = build_anchor_dict(anchor_data, index_data)
+            _current_fp = compute_raw_fingerprint(_anchors_dict, _manifest)
+            _last_fp, _last_sent_at = get_skip_meta()
+            _skip, _reason = should_skip(_current_fp, _last_fp, _last_sent_at, heartbeat_min=240)
+            if _skip:
+                if "Heartbeat" in _reason:
+                    send_text(f"📌 *MARKET INTEL ({mode.upper()})*: Steady state. No notable change.")
+                    update_skip_meta(_current_fp, datetime.now(timezone.utc).isoformat())
+                else:
+                    print(f"⏭️  FINGERPRINT SKIP: {_reason}")
+                print("✅ MARKET INTEL COMPLETE (skipped)")
+                return
+            update_skip_meta(_current_fp, datetime.now(timezone.utc).isoformat())
+            _triage = guardian.finalize(_anchors_dict)
+            if _triage == TriageLevel.RED:
+                send_text("🚨 DATA INTEGRITY FAILURE: Macro fetch >30% null. Pipeline halted.")
+                sys.exit(1)
+            elif _triage == TriageLevel.YELLOW:
+                from src.formatters import set_triage_mode
+                set_triage_mode(True)
+                from src.telegram_sender import set_triage_badge
+                set_triage_badge("⚠️ *Partial Data*")
         except Exception as e:
-            print(f"   ⚠️ Sentinel preflight: {e}")
+            print(f"   ⚠️ Guardian/fingerprint: {e}")
 
         blocks["block_2"] = format_macro_anchors(anchor_data)
         print(f"   → {len(blocks['block_2'])} chars")
@@ -835,8 +860,21 @@ def main():
 
         # Build today's snapshot from collected data
         _ctx_rq = getattr(format_context_block, 'last_ctx', None) or {}
+
+        # Live Nifty from global indices (not CSV) — keeps display consistent with Open/Close
+        _live_nifty = None
+        _live_nifty_chg = None
+        try:
+            _in = (index_data or {}).get("India", {})
+            if _in.get("price"):
+                _live_nifty = _in["price"]
+                _live_nifty_chg = _in.get("change_pct")
+        except Exception:
+            pass
+
         snapshot_data = {
-            "nifty_close": nifty_closes[-1] if nifty_closes else None,
+            "nifty_close": _live_nifty or (nifty_closes[-1] if nifty_closes else None),
+            "nifty_return_1d": _live_nifty_chg,
             "nifty_pe": None,  # Will be populated from valuation if available
             "india_vix": None,
             "pcr": extra_signals.get("pcr"),
@@ -879,8 +917,8 @@ def main():
         if fno_analysis and fno_analysis.get("fii"):
             snapshot_data["fii_fno_net"] = fno_analysis["fii"].get("net")
 
-        # Compute 1D return
-        if nifty_closes and len(nifty_closes) >= 2:
+        # Compute 1D return from CSV fallback (only if live data unavailable)
+        if snapshot_data.get("nifty_return_1d") is None and nifty_closes and len(nifty_closes) >= 2:
             snapshot_data["nifty_return_1d"] = round(
                 ((nifty_closes[-1] / nifty_closes[-2]) - 1) * 100, 2
             )

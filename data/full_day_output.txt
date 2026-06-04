@@ -1,0 +1,171 @@
+======================================================================
+  FULL-DAY TELEGRAM OUTPUT VALIDATION
+  Date: 2026-06-04
+  Jobs: 8 | Messages: 7 | Errors: 0 | Status: ✅ PASSED
+======================================================================
+
+──────────────────────────────────────────────────────────────────────
+  📨 Morning Market Intel (7:00 AM)
+──────────────────────────────────────────────────────────────────────
+📌 Fragility: MODERATE (60/100) Base:72 Breadth:67 Peak:63
+📌 *Morning Intel Check:* Neutral | USDINR ₹95.75, Brent $96.97, VIX 16.28 | ⚠️ RBI MPC Decision
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+  📨 Morning Brief (8:00 AM)
+──────────────────────────────────────────────────────────────────────
+🟡 *Regime: NEUTRAL* | Fragility: 60/100
+Drivers: Brent $97 (stress) | USDINR ₹95.8 (extreme) | FII ₹5,336Cr (selling)
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📰 *Top Headlines:*
+• Taiwan beefs up anti-ship missile arsenal to counter threat … (Reuters, trust 10/10)
+• Indian shares muted on Mideast jitters; traders eye RBI poli… (Reuters, trust 10/10)
+• Gold rises on softer dollar, oil as markets weigh US-Iran pe… (Reuters, trust 10/10)
+
+📌 *Scorecard:*
+Yesterday: transition → Neutral ❌
+Calibration: building (n=3). Hit rate: 0/3.
+
+📌 Risk Calendar (Next 7D)
+🔴 06-04: 📌 RBI MPC Decision
+🔴 06-05: 🌐 US NFP (May)
+🟡 06-05: 📌 India Services PMI (May)
+🔴 06-10: 📈 India CPI (May)
+🔴 06-10: 🌐 US CPI (May)
+🟡 06-10: 📌 India IIP (Apr)
+🔴 06-11: 🌐 US FOMC Decision
+
+[Upcoming Event Volatility Profiles]
+  RBI MPC Decision (Jun 04): Avg Nifty move ±0.6% (n=30) | VIX typically falls 1.2pts post-decision
+  India Services PMI (May) (Jun 05): Avg Nifty move ±0.8% (n=60) | VIX typically stable post-decision
+  US NFP (May) (Jun 05): Avg Nifty move ±0.8% (n=60) | VIX typically stable post-decision
+  India CPI (May) (Jun 10): Avg Nifty move ±0.6% (n=60) | VIX typically stable post-decision
+  India IIP (Apr) (Jun 10): Avg Nifty move ±0.7% (n=60) | VIX typically stable post-decision
+  US CPI (May) (Jun 10): Avg Nifty move ±0.6% (n=60) | VIX typically stable post-decision
+  US FOMC Decision (Jun 11): Avg Nifty move ±0.7% (n=40) | VIX typically stable post-decision
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+  📨 Market Open (9:15 AM)
+──────────────────────────────────────────────────────────────────────
+📈 *MARKET OPEN — 9:15 AM IST*
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+🟡 *REGIME: NEUTRAL* | Nifty 23,343 (-0.3%)
+
+ Overnight: 🇺🇸 US -0.7%
+⚠️ Gap Up: TITAN +3.1%, COALINDIA +2.1%
+📉 Gap Down: INFY -1.6%
+📰 Taiwan beefs up anti-ship missile arsenal to counter threat … (Reuters, trust 10/10)
+
+[CONSEQUENCE LAYER — India Impact]
+⚠️ India VIX: 16.4 (+0.5%): VIX above baseline by 9% (15.0 → 16.4)
+⚠️ US10Y above baseline by 29bps: FII outflow pressure
+🚨 Copper above baseline by 43% (4.50 → 6.45): ₹975Cr/yr industrial input cost | capex cycle sensitivity
+⚠️ DXY below baseline by 4.3% (104.0 → 99.5): ₹645Cr/yr FII relief (β=0.85)
+
+_Note: Options data unavailable._
+
+📌 *Bulk/Block Deals:*
+🔴 PREMIERENE: 3153₹ / 4271₹ out → net -1118₹ Cr
+🟢 POLICYBZR: 665₹ / 280₹ out → net +385₹ Cr
+🟢 ALKEM: 385₹ / 0₹ out → net +385₹ Cr
+⚠️ SEBI filings lag ~10 days
+
+⚠️ *Anomalies (3%+):* TITAN +3.1%
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+  📨 Market Close (3:30 PM)
+──────────────────────────────────────────────────────────────────────
+📌 *END OF DAY*
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+🟡 *REGIME: NEUTRAL* | Nifty 23,344 (-0.3%)
+
+📌 *Scorecard:* Yesterday transition → Neutral ❌
+  Calibration: building (n=3). Hit rate: 0/3.
+
+📌 Fragility: MODERATE (60/100) Base:72 Breadth:67 Peak:63
+
+📌 *Stagflation & Supply Shock* — ELEVATED (63/100) | EMERGING | Day 1
+  🔴 Detection: Brent 79p↑, USDINR 99p↑, Cu_Au_Ratio 17p↓, US10Y 89p↑, Gold 94p↑
+💱 *Carry Trade Unwind* — ACTIVE (47/100) | EMERGING | Day 1
+  🔴 Detection: USDINR 99p↑, Gold 94p↑, US10Y 89p↑
+  📌 Transmission — Heatflation:
+    • Real yield: 6.3
+    • Yield status: POSITIVE
+    • CAD increase: 11.0
+  📌 Transmission:
+    • Net carry: 231.8
+    • FII break-even met: Yes
+
+📉 *DRAWDOWN:* -11.3% from 252D high | Velocity: -0.1%/day (SLOW)
+
+📌 *Supplementary:*
+💧 Liquidity Freeze: Not detected
+📌 IN10Y: 7.00% (RBI API unavailable) — using last known print
+India vs EM (30D): +0.0% (outperforming)
+Adaptive Weights: all at 1.0 (default)
+
+📌 Nifty 23,344 (-0.3%) | VIX 16.3
+
+📌 *Flows:* FII Net: ₹-5,336Cr | DII Net: ₹+5,510Cr
+
+[FII Decomposition — Entity Concentration] (bulk deals only)
+  Classification: Concentrated exit
+  Concentration: 100.0% (Top 5 / Total Net Sellers)
+  Total Net Sellers: 1 entities
+  Total Net Outflow: ₹88Cr
+  Top 5 Net Outflow: ₹88Cr
+  Top Entity: BlackRock (-₹88Cr)
+  Detail: Single fund or manager derisking — typically reverses within 5-7 days
+  Top Net Sellers:
+    🇺🇸 BlackRock: -₹88Cr (asset_manager)
+
+📌 DII Capacity: 99.8% deployed (5D avg) | Status: SATURATED (DII eating into cash reserves — unsustainable) | MF Inflows: ₹+11Cr/d (insufficient) | FII 5D Sell: ₹38,243Cr
+
+📉 *Derivatives:* PCR unavailable (NSE v3 lag) | GEX: N/A | Max Pain: N/A
+
+📌 *India Drivers:* TITAN +3.1% (top India mover)
+
+ *Overnight:* 🇬🇧 UK +0.2% | 🇩🇪 Germany +0.6% | 🇫🇷 France +0.8%
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+_See you tomorrow!_
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+  📨 Evening Market Intel (6:00 PM)
+──────────────────────────────────────────────────────────────────────
+📌 Fragility: MODERATE (60/100) Base:72 Breadth:67 Peak:63
+📌 *Evening Intel Check:* Neutral | USDINR ₹95.74, Brent $97.08, VIX 16.34 | ⚠️ RBI MPC Decision
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+  📨 Evening Report (8:00 PM)
+──────────────────────────────────────────────────────────────────────
+*EVENING REPORT*
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+No dominant macro driver. Range-bound posture.
+
+📌 Nifty closed 23,354 (-0.2%) | 🇺🇸 US: -0.74% [CLOSED] | 📰 Taiwan beefs up anti-ship missile arsenal to count...
+
+  Watch: Brent >$97 confirms stress | INR ₹97+ escalates; INR <₹94 → de-escalation (252d baseline: ₹83)
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+  Watch: Brent >$96 → escalation; Brent <$85 → de-escalation | INR ₹97+ escalates; INR <₹94 → de-escalation (252d baseline: ₹83)
+──────────────────────────────────────────────────────────────────────
+
+======================================================================
+  SUMMARY
+======================================================================
+  Jobs run:       8
+  Messages sent:  7
+  Errors:         0
+  Status:         ✅ PASSED
+======================================================================

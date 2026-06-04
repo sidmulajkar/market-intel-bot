@@ -17,6 +17,12 @@ BASE    = f"https://api.telegram.org/bot{TOKEN}"
 # Allowed emoji set (9 classes). Everything else maps to one of these or is stripped.
 _ALLOWED_EMOJI = set("🟢🔴🟡📈📉➡️⚠️🚨📌")
 
+_triage_badge = ""
+
+def set_triage_badge(badge: str) -> None:
+    global _triage_badge
+    _triage_badge = badge
+
 
 class InfrastructureLeakageError(Exception):
     """Raised when message content contains infrastructure/debug strings."""
@@ -88,6 +94,8 @@ def send_text(text: str, parse_mode: str = "Markdown") -> bool:
     if not text or not text.strip():
         print("⚠️ send_text: empty string — skipping")
         return False
+    if _triage_badge and not text.lstrip().startswith(_triage_badge):
+        text = _triage_badge + "\n" + text
     scrubbed = _scrub_emoji(text)
 
     # Final-pass leakage scrubber (import here to avoid circular dependency)

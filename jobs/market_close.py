@@ -9,6 +9,10 @@ from src.telegram_sender import send_text
 from src.db              import was_alert_sent, log_alert_sent
 from src.validator       import validate_articles, assess_sentiment_consensus
 from src.validation_helper import build_ground_truth_from_index
+from src.manifest import load as manifest_load
+from src.fingerprint import compute_raw_fingerprint, build_anchor_dict, should_skip
+from src.bot_state import get_skip_meta, update_skip_meta
+from src.guardian import Guardian, TriageLevel
 from typing import Dict
 
 
@@ -128,19 +132,40 @@ def main():
         from src.context_engine import run_contextualization
         anchor_data = fetch_macro_anchors()
 
-        # ── P10 Sentinel: Preflight data integrity check ────────────────
+        # ── P18/P14/P16: Guardian + Fingerprint Skip Gate ─────────
         try:
-            from src.sentinel import preflight_check
-            from src.db import get_prev_macro_anchors, anchors_list_to_dict
-            current = anchors_list_to_dict(anchor_data)
-            if current:
-                prev = get_prev_macro_anchors()
-                is_safe, reason = preflight_check(current, prev)
-                if not is_safe:
-                    send_text(f"🚨 DATA INTEGRITY FAILURE: {reason} Regime locked to previous state.")
-                    sys.exit(1)
+            from datetime import timezone
+            _manifest = manifest_load()
+            guardian = Guardian(_manifest)
+            for a in anchor_data or []:
+                guardian.check_source(
+                    a.get("symbol", ""), a.get("price"),
+                    "live" if a.get("ok") else "fallback", 0,
+                )
+            _anchors_dict = build_anchor_dict(anchor_data, index_data)
+            _current_fp = compute_raw_fingerprint(_anchors_dict, _manifest)
+            _last_fp, _last_sent_at = get_skip_meta()
+            _skip, _reason = should_skip(_current_fp, _last_fp, _last_sent_at, heartbeat_min=240)
+            if _skip:
+                if "Heartbeat" in _reason:
+                    send_text("📌 *MARKET CLOSE*: Steady state. No notable change.")
+                    update_skip_meta(_current_fp, datetime.now(timezone.utc).isoformat())
+                else:
+                    print(f"⏭️  FINGERPRINT SKIP: {_reason}")
+                print("✅ MARKET CLOSE COMPLETE (skipped)")
+                return
+            update_skip_meta(_current_fp, datetime.now(timezone.utc).isoformat())
+            _triage = guardian.finalize(_anchors_dict)
+            if _triage == TriageLevel.RED:
+                send_text("🚨 DATA INTEGRITY FAILURE: Macro fetch >30% null. Pipeline halted.")
+                sys.exit(1)
+            elif _triage == TriageLevel.YELLOW:
+                from src.formatters import set_triage_mode
+                set_triage_mode(True)
+                from src.telegram_sender import set_triage_badge
+                set_triage_badge("⚠️ *Partial Data*")
         except Exception as e:
-            print(f"   ⚠️ Sentinel preflight: {e}")
+            print(f"   ⚠️ Guardian/fingerprint: {e}")
 
         if anchor_data:
             ctx = run_contextualization(anchor_data)
@@ -185,12 +210,17 @@ def main():
         try:
             from src.fii_decomposition import compute_fii_entity_concentration, format_fii_decomposition
             decomp = compute_fii_entity_concentration(days=7)
+            _agg_net = fii_net if 'fii_net' in dir() and fii_net is not None else 0.0
             if decomp.get("ok"):
-                decomp_str = format_fii_decomposition(decomp)
+                decomp_str = format_fii_decomposition(decomp, aggregate_fii_net=_agg_net)
                 if decomp_str:
                     flows_block += "\n\n" + decomp_str
-            elif "Entity data pending" not in flows_block and flows_block.strip():
-                flows_block += " | Entity data pending"
+            elif "Entity data pending" not in flows_block:
+                # Independent fallback — don't gate on flows_block.strip()
+                if flows_block:
+                    flows_block += " | Entity data pending"
+                else:
+                    flows_block += "\n\n📌 *FII Decomposition:* Entity data pending."
         except Exception as e:
             print(f"   ⚠️ FII decomposition: {e}")
 
@@ -216,6 +246,8 @@ def main():
                     match_str = format_pillar_flow_match(match)
                     if match_str:
                         flows_block += "\n\n" + match_str
+                else:
+                    flows_block += "\n\n📌 *Pillar-Flow Match:* Sector data pending (backfill required)."
         except Exception as e:
             print(f"   ⚠️ Pillar-flow match: {e}")
 
@@ -233,6 +265,10 @@ def main():
 
     except Exception:
         pass
+
+    # Null-safe fallback: ensure Flows header always present (even when P5 blocks fire but main flow data missing)
+    if not flows_block.startswith("📊 *Flows:*"):
+        flows_block = "📌 *Flows:* Data pending (5AM fetch required)\n" + flows_block
 
     # ── Derivatives block (PCR, Max Pain, GEX, Skew) ──────────────
     derivs_block = ""
@@ -434,6 +470,7 @@ def main():
         yv = validate_yesterday_prediction()
         if yv and yv.get("ok"):
             regime_correct = yv.get("regime_correct", False)
+            verdict_label = "correct" if regime_correct else "wrong (prediction ≠ actual)"
             emoji = "✅" if regime_correct else "❌"
             predicted = yv.get("predicted_regime", "?")
             actual = yv.get("actual_regime", "?")
@@ -444,8 +481,8 @@ def main():
             total = week.get("total", 0)
             scorecard = render_scorecard(correct, total, avg_brier)
             brier_block = (
-                f"\n📌 *Scorecard:* Yesterday {predicted} → {actual} {emoji}\n"
-                f"  {scorecard}"
+                f"\n📌 *Scorecard:* Predicted regime: {predicted} → actual regime: {actual} {emoji}\n"
+                f"  → {verdict_label} | {scorecard}"
             )
         else:
             brier_block = "\n⚠️ *Scorecard:* Pending (yesterday's data unavailable)"
@@ -564,11 +601,13 @@ def main():
         rotation_block = ""
         try:
             from src.sector_rotation_map import format_rotation_map
+            from src.db import get_client
+            _sb = get_client()
             if ms:
                 fragility = ms.get("fragility_score")
                 p_scores = ms.get("pillar_scores", {}) or {}
                 active_pillars = [k for k, v in p_scores.items() if isinstance(v, (int, float)) and v >= 40]
-                rotation_block = format_rotation_map(active_pillars, fragility)
+                rotation_block = format_rotation_map(active_pillars, fragility, supabase=_sb)
         except Exception:
             pass
 

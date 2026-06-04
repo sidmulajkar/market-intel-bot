@@ -77,11 +77,20 @@ def get_fallback_brief(index_data: dict, validated_news: list, sentiment: str, a
                     posture_usdinr = a["price"]
                 elif name == "Brent Crude":
                     posture_brent = a["price"]
-            posture = compute_posture(
-                vix=posture_vix, usdinr=posture_usdinr, brent=posture_brent,
-            )
-            lines.append(f"\n📌 *Posture:* {posture.posture}")
-            lines.append(f"  {posture.therefore}")
+            # Context locked to arbiter's regime — never use separate posture engine
+            try:
+                from src.db import get_latest_market_state
+                _ms = get_latest_market_state()
+                _regime = (_ms or {}).get("final_regime", "NEUTRAL")
+            except Exception:
+                _regime = "NEUTRAL"
+            _ctx_map = {
+                "BULLISH": "Broad market strength; constructive session.",
+                "NEUTRAL": "No dominant macro driver. Range-bound posture.",
+                "DEFENSIVE": "Elevated macro stress indicators active.",
+            }
+            ctx = _ctx_map.get(_regime, "Range-bound posture.")
+            lines.append(f"\n📌 *Context:* Regime: {_regime}. {ctx}")
         except Exception:
             pass
 
@@ -502,6 +511,7 @@ def main():
             yv = validate_yesterday_prediction()
             if yv.get("ok"):
                 regime_correct = yv.get("regime_correct", False)
+                verdict_label = "correct" if regime_correct else "wrong (prediction ≠ actual)"
                 emoji = "✅" if regime_correct else "❌"
                 predicted = yv.get("predicted_regime", "?")
                 actual = yv.get("actual_regime", "?")
@@ -514,9 +524,9 @@ def main():
 
                 scorecard = render_scorecard(correct, total, avg_brier)
                 brier_line = (
-                    f"\n\n📌 *Scorecard:*\n"
-                    f"Yesterday: {predicted} → {actual} {emoji}\n"
-                    f"{scorecard}"
+                    f"\n\n📌 *Scorecard:*"
+                    f" Predicted regime: {predicted} → actual regime: {actual} {emoji}\n"
+                    f"  → {verdict_label} | {scorecard}"
                 )
                 regime_card += brier_line
         except Exception:

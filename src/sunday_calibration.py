@@ -8,6 +8,7 @@ to maximize F1 score. Outputs calibration report + optional threshold overrides.
 No AI. All numpy/math. Reads from CSV + pillar_metrics table.
 """
 
+import os
 import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -296,3 +297,34 @@ if __name__ == "__main__":
             print(f"   Deciles: {len(erp.get('decile_boundaries', []))} boundaries, {erp.get('samples', 0)} samples")
     except Exception as e:
         print(f"   ⚠️ ERP deciles: {e}")
+        erp = {}
+
+    # ── P16: Write manifest.json ──────────────────────────────────
+    print("\n📋 Writing manifest.json...")
+    try:
+        import hashlib, json
+        _manifest_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                       "data", "manifest.json")
+        _weights = locals().get("weights", {})
+        _tilt_map = locals().get("tilt_map", {})
+        _erp_deciles = erp.get("decile_boundaries", []) if isinstance(erp, dict) else []
+        manifest = {
+            "version": hashlib.sha256(str(datetime.now().timestamp()).encode()).hexdigest()[:7],
+            "generated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "fingerprint_buckets": {
+                "nifty": 100, "vix": 1, "brent": 1.0, "usdinr": 0.1, "dxy": 0.5
+            },
+            "fragility": {"cap_neutral": 65, "force_defensive": 85},
+            "adaptive_weights": _weights if _weights else {
+                "Stagflation": 1.0, "West_Asia": 1.0, "EM_Contagion": 1.0,
+                "Carry_Unwind": 1.0, "De-dollarization": 1.0, "Tech_Cycle": 1.0
+            },
+            "sector_tilt_map": _tilt_map if _tilt_map else {},
+            "erp_deciles": _erp_deciles if len(_erp_deciles) == 10 else [-2.5, -2.1, -1.8, -1.5, -1.2, -0.9, -0.6, -0.3, 0.0, 0.4],
+            "steady_state_template": "🟢 Steady state since {last_regime_time}. Regime: {regime} | Nifty: {nifty} | VIX: {vix}. No notable change.",
+        }
+        with open(_manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+        print(f"   ✅ Manifest written (v{manifest['version']})")
+    except Exception as e:
+        print(f"   ⚠️ Manifest write: {e}")

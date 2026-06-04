@@ -1,22 +1,26 @@
 import sys
 import os
 import hashlib
+import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data_fetcher    import fetch_global_indices, fetch_top_movers, fetch_general_news
+from src.data_fetcher    import fetch_global_indices, fetch_top_movers, fetch_general_news, fetch_macro_anchors
 from src.ai_engine       import AIEngine
 from src.telegram_sender import send_text
 from src.db              import was_alert_sent, log_alert_sent, get_latest_market_state
 from src.validator       import validate_articles, assess_sentiment_consensus
 from src.validation_helper import ai_generate_and_validate, build_ground_truth_from_index
 from src.formatters      import format_options_block
+from src.manifest import load as manifest_load
+from src.fingerprint import compute_raw_fingerprint, build_anchor_dict, should_skip
+from src.bot_state import get_skip_meta, update_skip_meta
+from src.guardian import Guardian, TriageLevel
 
 
 def _get_arbiter_regime() -> dict:
     """Read arbitrated regime from MarketState — never recompute."""
     try:
-        from datetime import datetime
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
         prev = get_latest_market_state(before_date=today)
         if prev and prev.get("final_regime"):
             return {
@@ -46,6 +50,41 @@ def main():
         if v.get("ok") and v.get("price", 0) > 0
     }
     print(f"   Indices: {len(valid_index)}/18 | Movers: {len(movers.get('india',{}).get('gainers',[]))} gainers")
+
+    # ── P18/P14/P16: Guardian + Fingerprint Skip Gate ─────────
+    try:
+        _m_anchor = fetch_macro_anchors()
+        _manifest_mid = manifest_load()
+        guardian = Guardian(_manifest_mid)
+        for a in _m_anchor or []:
+            guardian.check_source(
+                a.get("symbol", ""), a.get("price"),
+                "live" if a.get("ok") else "fallback", 0,
+            )
+        _anchors_dict = build_anchor_dict(_m_anchor, index_data)
+        _current_fp = compute_raw_fingerprint(_anchors_dict, _manifest_mid)
+        _last_fp, _last_sent_at = get_skip_meta()
+        _skip, _reason = should_skip(_current_fp, _last_fp, _last_sent_at, heartbeat_min=240)
+        if _skip:
+            if "Heartbeat" in _reason:
+                send_text("📌 *MIDDAY SCAN*: Steady state. No notable change.")
+                update_skip_meta(_current_fp, datetime.datetime.now(datetime.timezone.utc).isoformat())
+            else:
+                print(f"⏭️  FINGERPRINT SKIP: {_reason}")
+            print("✅ MIDDAY SCAN COMPLETE (skipped)")
+            return
+        update_skip_meta(_current_fp, datetime.datetime.now(datetime.timezone.utc).isoformat())
+        _triage = guardian.finalize(_anchors_dict)
+        if _triage == TriageLevel.RED:
+            send_text("🚨 DATA INTEGRITY FAILURE: Macro fetch >30% null. Pipeline halted.")
+            sys.exit(1)
+        elif _triage == TriageLevel.YELLOW:
+            from src.formatters import set_triage_mode
+            set_triage_mode(True)
+            from src.telegram_sender import set_triage_badge
+            set_triage_badge("⚠️ *Partial Data*")
+    except Exception as e:
+        print(f"   ⚠️ Guardian/fingerprint: {e}")
 
     # ── Validate news + sentiment ──────────────────────────────────
     ai = AIEngine()
@@ -92,10 +131,10 @@ def main():
     nifty_moved = nifty_change_abs > 1.0
 
     if not nifty_moved and not vix_spike and not has_extreme:
-        # Brief keepalive — no material change, no silent completion
+        # Brief keepalive — no notable change, no silent completion
         skip_note = f"Nifty {nifty_change_pct:+.2f}% (< 1.0% threshold)"
         print(f"   🟡 Quiet session — sending keepalive ({skip_note})")
-        send_text(f"📌 *Midday:* Quiet session. {skip_note}. No material change.")
+        send_text(f"📌 *Midday:* Quiet session. {skip_note}. No notable change.")
         print("✅ MIDDAY SCAN COMPLETE")
         return
 
@@ -168,8 +207,7 @@ def main():
             adv = breadth["advances"]
             dec = breadth["declines"]
             if adv == 0 and dec == 0:
-                from datetime import datetime
-                if datetime.now().weekday() >= 5:
+                if datetime.datetime.now().weekday() >= 5:
                     lines.append("🏥 Midday Breadth: — (weekend)")
                     print("   ⚠️ Weekend scan — skip gate was triggered by pre-market data")
                 else:
@@ -197,8 +235,7 @@ def main():
             from src.delta import news_fingerprint_hash
 
             # Load cross-job headline dedup from Supabase
-            from datetime import datetime as _dt
-            _today_str = _dt.now().strftime("%Y-%m-%d")
+            _today_str = datetime.datetime.now().strftime("%Y-%m-%d")
             _prev_hashes = get_seen_headlines(_today_str)
             if _prev_hashes:
                 _set_form_hashes(_prev_hashes)
@@ -318,9 +355,8 @@ def main():
 
     # ── Regime / Fragility context (Fix 6) ───────────────────────────
     try:
-        from datetime import datetime
         from src.db import get_latest_market_state
-        _prev = get_latest_market_state(before_date=datetime.now().strftime("%Y-%m-%d"))
+        _prev = get_latest_market_state(before_date=datetime.datetime.now().strftime("%Y-%m-%d"))
         if _prev and _prev.get("final_regime"):
             _reg = _prev["final_regime"]
             _frag = _prev.get("fragility_score")
@@ -361,7 +397,6 @@ def main():
     try:
         # Get bull/bear context
         from src.context_engine import run_contextualization, get_fii_dii_context, get_macro_context
-        from src.data_fetcher import fetch_macro_anchors
         fii_ctx  = get_fii_dii_context(days=30)
         macro_ctx = get_macro_context()
         anchor_data = fetch_macro_anchors()
@@ -421,12 +456,18 @@ def main():
             )
         except Exception:
             pass
+        # Build body content
+        body_parts = "\n".join(lines)
+        computed = pillar_summary or text
+        # Empty body guard — send heartbeat instead of blank message
+        if not body_parts.strip() and not computed:
+            _ts = datetime.datetime.now().strftime("%H:%M")
+            send_text(f"📊 *MIDDAY SCAN* ({_ts}): No notable change. Nifty {nifty_change_pct:+.2f}%.")
+            return
         msg = "📊 *MIDDAY MARKET SCAN*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         if bluf:
             msg += bluf + "\n\n"
-        msg += "\n".join(lines)
-        # Use computed pillar summary instead of AI fluff
-        computed = pillar_summary or text
+        msg += body_parts
         if computed:
             msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{computed}"
         if derivs_block:
