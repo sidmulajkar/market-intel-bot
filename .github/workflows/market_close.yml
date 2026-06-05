@@ -22,6 +22,12 @@ jobs:
         with:
           path: ${{ env.pythonLocation }}
           key: ${{ runner.os }}-py${{ steps.python.outputs.python-version }}-req-${{ hashFiles('requirements.txt') }}
+      - name: 💾 Cache skip state
+        uses: actions/cache@v4
+        with:
+          path: data/skip_state.json
+          key: skip-state-${{ github.run_id }}
+          restore-keys: skip-state-
       - run: pip install -r requirements.txt --quiet --disable-pip-version-check
         if: steps.cache-venv.outputs.cache-hit != 'true'
       - name: 🔔 Run Market Close

@@ -52,4 +52,16 @@ def load(path: str = None) -> Dict[str, Any]:
     if not template:
         raise ValueError("Manifest steady_state_template is empty")
 
+    tmpl = manifest.get("templates", {})
+    if not isinstance(tmpl, dict):
+        raise ValueError("Manifest.templates must be a dict")
+    for key in ("heartbeat", "yellow_stub", "no_change_short", "no_change_standard", "intel_stubs"):
+        if key not in tmpl or not tmpl[key]:
+            raise ValueError(f"Manifest.templates.{key} is missing or empty")
+    if not isinstance(tmpl.get("intel_stubs"), dict):
+        raise ValueError("Manifest.templates.intel_stubs must be a dict")
+    for regime in ("BULLISH", "NEUTRAL", "DEFENSIVE"):
+        if regime not in tmpl["intel_stubs"]:
+            raise ValueError(f"Manifest.templates.intel_stubs missing {regime}")
+
     return manifest

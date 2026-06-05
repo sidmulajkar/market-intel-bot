@@ -85,6 +85,16 @@ def get_dynamic_weights(supabase=None) -> Dict[str, float]:
     except Exception as e:
         print(f"⚠️ get_dynamic_weights error: {e}")
 
+    # Fall back to manifest.json weights
+    try:
+        from src.manifest import load as _load_manifest
+        m = _load_manifest()
+        mw = m.get("adaptive_weights", {})
+        if mw and isinstance(mw, dict) and any(v != 1.0 for v in mw.values()):
+            return mw
+    except Exception:
+        pass
+
     return _default_weights()
 
 

@@ -3,12 +3,12 @@
 Hashes bucketed raw anchors (NOT computed state) so the skip gate runs in
 <100ms before any heavy module loads. Pair with manifest.json for bucket sizes.
 
-Heartbeat logic prevents radio silence on unchanged days.
+No hard-skip-with-silence. Fingerprint match always sends a deterministic stub.
 """
 
 import hashlib
 from datetime import datetime, timezone
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 
 FP_ANCHOR_MAP = {
@@ -25,15 +25,7 @@ def build_anchor_dict(
     index_data: dict = None,
     fii_net: float = None
 ) -> Dict[str, float]:
-    """Extract fingerprint-relevant values from anchor list + global indices.
-
-    Args:
-        anchor_data: List from fetch_macro_anchors() with {symbol, price, ok}
-        index_data: Dict from fetch_global_indices() keyed by country name
-        fii_net: FII net flow in Cr (or None)
-    Returns:
-        dict with NIFTY, VIX, USDINR, BRENT, DXY, FII_NET keys (as available)
-    """
+    """Extract fingerprint-relevant values from anchor list + global indices."""
     result = {}
 
     for a in (anchor_data or []):
@@ -56,11 +48,7 @@ def build_anchor_dict(
 
 
 def compute_raw_fingerprint(anchors: Dict[str, float], manifest: dict) -> str:
-    """Hash ONLY cheap raw inputs. NEVER computed state.
-
-    Bucket sizes from manifest prevent tiny ticks from busting cache.
-    Manifest version invalidates cache when thresholds change.
-    """
+    """Hash ONLY cheap raw inputs. NEVER computed state."""
     buckets = manifest.get("fingerprint_buckets", {})
     version = manifest.get("version", "0000000")
 
@@ -89,31 +77,18 @@ def compute_raw_fingerprint(anchors: Dict[str, float], manifest: dict) -> str:
     return hashlib.blake2b(canon.encode(), digest_size=8).hexdigest()
 
 
-def should_skip(
-    current_fp: str,
-    last_fp: Optional[str],
-    last_sent_at: Optional[datetime],
-    heartbeat_min: int = 240,
-) -> Tuple[bool, str]:
-    """Decide whether to skip full compute.
+def hours_since(dt: Optional[datetime]) -> float:
+    """Compute hours elapsed since a datetime. Returns large if dt is None."""
+    if dt is None:
+        return 9999.0
+    return (datetime.now(timezone.utc) - dt).total_seconds() / 3600
 
-    Returns (skip, reason).
-    - Skip if fingerprint unchanged AND heartbeat window hasn't elapsed.
-    - Force send on heartbeat even if fingerprint unchanged (prevents radio silence).
-    """
-    now = datetime.now(timezone.utc)
 
-    if last_fp is None:
-        return False, "No prior fingerprint — first run"
-
-    if last_fp != current_fp:
-        return False, f"Fingerprint changed ({last_fp[:8]} → {current_fp[:8]})"
-
-    if last_sent_at is None:
-        return True, "Steady state. Fingerprint unchanged (no prior send time)."
-
-    elapsed = (now - last_sent_at).total_seconds()
-    if elapsed < heartbeat_min * 60:
-        return True, f"Steady state. Fingerprint unchanged ({int(elapsed / 60)}min since last send, heartbeat={heartbeat_min}min)."
-
-    return True, f"Heartbeat due ({int(elapsed / 60)}min > {heartbeat_min}min threshold). Sending keepalive."
+def fmt_time_since(dt: Optional[datetime]) -> str:
+    """Human-readable time since last send."""
+    if dt is None:
+        return "never"
+    h = hours_since(dt)
+    if h < 1:
+        return f"{int(h * 60)}m ago"
+    return f"{int(h)}h ago"

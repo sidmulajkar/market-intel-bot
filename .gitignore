@@ -38,9 +38,16 @@ htmlcov/
 
 # Runtime state / caches
 .news_seen.json
+data/skip_state.json
 
 # Generated analysis output
 full_day_analyst_output.md
+
+# One-off utilities (not part of cron pipeline)
+scripts/backfill_paper_pnl.py
+
+# Phase C modules (deferred from v0.5-beta commit)
+src/state_journal.py
 
 # OpenCode / OpenClaude / Claude Code local config — NEVER commit
 .opencode/

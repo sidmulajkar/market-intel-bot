@@ -107,6 +107,7 @@ def fetch_nse_options_chain(symbol: str = "NIFTY") -> List[Dict]:
 
     results = []
     try:
+        print("   🔄 TIER 1: NSE v3 live fetch...")
         resp = nse_get(url, timeout=20, retries=1)
         if resp.status_code == 200:
             data = resp.json()
@@ -121,21 +122,24 @@ def fetch_nse_options_chain(symbol: str = "NIFTY") -> List[Dict]:
                     _write_chain_cache(_CACHE_FILE, expiry_str, results)
                     if _options_breaker:
                         _options_breaker.record_success()
+                    print(f"   ✅ TIER 1: NSE v3 OK ({len(results)} strikes)")
                     return results
         else:
-            print(f"⚠️  Options v3 API returned {resp.status_code}")
+            print(f"⚠️  TIER 1: NSE v3 returned {resp.status_code}")
     except Exception as e:
-        print(f"⚠️  Options v3 fetch error: {e}")
+        print(f"⚠️  TIER 1: NSE v3 fetch error: {e}")
 
     # Fallback: file cache (populated by earlier successful fetch)
+    print("   🔄 TIER 2: File cache fallback...")
     cached = _read_chain_cache(_CACHE_FILE)
     if cached:
-        print(f"   📦 Using cached options data (expiry {cached['expiry']})")
+        print(f"   📦 TIER 2: Cache OK (expiry {cached['expiry']})")
         if _options_breaker:
             _options_breaker.record_success()
         return cached["data"]
 
-    print("   ⚠️ No options data from any source")
+    print("   ⚠️ TIER 2: No file cache available")
+    print("   ⚠️ ALL TIERS EXHAUSTED: No options data from NSE v3 or file cache")
     if _options_breaker:
         _options_breaker.record_failure()
     return []

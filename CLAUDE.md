@@ -806,115 +806,133 @@ Cold, technical audit against the codebase as documented:
 
 ---
 
-## Remaining Gaps (Post-P14/P16/P18)
+## Operational Roadmap: Beta → v1.0
 
-The 8 items below are the gap between 8.4/10 and a truly robust navigation system. First 3 are high-impact structural issues; the rest are correctness/polish.
-
-### 1. P17 Curve-Fit Risk (Holdout Wall)
-**Problem:** The Living Thresholds grid search on 5Y CSV is in-sample optimization unless a rolling holdout wall is enforced. Recomputing max-IC thresholds using data that includes last week chases noise.
-
-**Fix:** Mandate an expanding 12-month holdout. Threshold hunter trains on `T-12M`, validates on the most recent 12 months. Only validation-approved params reach the manifest. Zero new infrastructure — just `train_test_split` by date in `sunday_calibration.py`.
-
-**Classification:** P17 spec amendment (non-negotiable gate before thresholds ship).
-
-### 2. Silent Monday (Weekend Gap Detection)
-**Problem:** First job is 5AM FII fetch / 7AM Intel. A weekend geopolitical event can gap the market before the Monday pipeline runs. No weekend global pulse.
-
-**Fix:** Monday 7AM job begins by checking if **any** anchor moved >3σ from Friday close using yfinance (free, async) before doing anything else. If triggered, suppress normal brief and emit a **Global Gap Alert** instead.
-
-**Classification:** New phase (P21). Wires into Guardian triage as a pre-compute check that can force YELLOW/RED.
-
-### 3. Emergency Model (Complexity Circuit Breaker)
-**Problem:** When adaptive weights drop below 40% accuracy over 30 days, staying in the full pillar/fragility complex is actively worse than a simpler model. No protocol to revert.
-
-**Fix:** `bot_state.emergency_model` flag. When 30-day regime accuracy < 40%, downgrade to legacy 3-layer arbiter (no pillars, no fragility). Wired into `regime_arbiter.py` as a Layer 0 check: if emergency model active, skip everything above it.
-
-**Classification:** New phase (P24). Circuit breaker on complexity — prevents system from outsmarting itself with unvalidated machinery.
-
-### 4. AI Blackout Mode (Not Failover)
-**Problem:** Current deterministic fallback when both Groq+Gemini fail is Python bullet-point stubs. Functional but reads like debug output.
-
-**Fix:** Pre-compute a template for every regime transition pair (6 permutations) and store in manifest. On double AI outage, fallback reads like human prose without an LLM: `"Regime shifted from CAUTIOUS to DEFENSIVE as Stagflation escalation (63→78) crossed the Fragility 85 threshold."`
-
-**Classification:** New phase (P20). Low effort, cosmetic improvement on an existing fallback path.
-
-### 5. Clone Confidence Suppression
-**Problem:** Clone engine always prints the nearest historical analog, even when Euclidean distance is >1.5σ from cluster center — that's storytelling, not signal.
-
-**Fix:** Compute clone confidence as inverse of normalized distance. Suppress clone block when confidence < threshold (e.g., 0.30). The distance metric already exists in the NN search; confidence is dividing two existing numbers.
-
-**Classification:** New phase (P22). ~10-line change in `src/clone_engine.py`.
-
-### 6. FII Data Staleness
-**Problem:** FII/DII from NSE has T+1 reporting lag. The 5AM fetch stores it as today. If 7AM Intel runs before fresh data arrives, downstream modules (stress, decomposition, DII capacity) compute with stale inputs — silently.
-
-**Fix:** Add `source_date` field to flows table. If `source_date < today`, append `(data lag: T-1)` to FII line. `fii_decomposition.py` and `dii_capacity.py` check this before reporting concentration or status.
-
-**Classification:** Bug fix / P5 enhancement. Data-quality gate on an existing pipeline.
-
-### 7. Event Cascade Logic
-**Problem:** Event calendar lists events. Event volatility profiles them. But there's no cascade logic connecting related events: if RBI MPC is tomorrow AND CPI was today AND CPI >0.5σ above expectation, the pre-MPC positioning block should say `⚠️ High CPI into hawkish MPC raises tail-risk probability`.
-
-**Fix:** Link event outcomes in the prompt engine. Deterministic — two event outcomes + transmission rule. RBI MPC happens 6x/year, CPI monthly — payoff is concentrated on ~12-18 high-impact days.
-
-**Classification:** New phase (P25). Moderate refactor of `event_volatility.py` and prompt engine wiring.
-
-### 8. Suppressed Volatility Regime
-**Problem:** VIX sits at 11-13 in prolonged low-vol environments (e.g., 2017, 2021). Stress index uses VIX heavily (25% weight). Pillars may show structural fragility but VIX-based stress is suppressed — false tactical calm.
-
-**Fix:** If VIX < 15 for 10+ days, replace VIX's 25% weight in Base Stress with VVIX or Nifty ATR(14). Single conditional branch in `stress_index.py` and fragility Base component.
-
-**Classification:** Bug fix / P4 enhancement. Low effort, meaningful blind spot correction.
+**Constraint:** Do not start Phase B until Phase A is fully wired. `manifest.json` is the dependency for everything else. No feature is added before the membrane is sealed.
 
 ---
 
-## Bridges to 9.0 (Post-P14/P16/P18 Enhancement)
+### Phase A: Ship Preparation (Week 1)
 
-The gap from 8.4 to 9.0 is not more features. It is **temporal integrity, adversarial self-checking, and institutional memory.** All buildable under GHA/Supabase constraints.
+Push `v0.5-beta` with no hidden state, no `TODO()` in working code, all modules wired to graceful fallback.
 
-### P27: State Journal (Split-Brain Cure)
-**Problem:** `market_state` is a single mutable row. If a job dies mid-write (anchors written, regime not yet), the next job reads a half-truth.
+#### A.1 Manifest Schema Lock (P16)
+**Problem:** `fingerprint_buckets`, `adaptive_weights`, `erp_deciles`, `sector_tilt_map` scattered across modules. Weekday jobs ignore pre-computed values.
 
-**Fix:** Append-only `state_journal` table. Every job, on success, appends one row: `timestamp`, `job_tag`, `fingerprint`, `regime`, `fragility`, `pillars`. `market_state` stays as fast read path; journal is recovery/audit trail only. If a job dies, previous journal row is intact — re-run appends a new valid row. ~30 rows/month, trivial storage.
+**Action:**
+1. Finalize `data/manifest.json` schema with `fingerprint_buckets`, `fragility` thresholds, `adaptive_weights`, `sector_tilt_map`, `erp_deciles`, `templates` (intel stubs, heartbeat, yellow stub).
+2. `src/manifest.py`: `load()` validates schema, returns safe defaults if corrupt. No `KeyError` reaches a job runner.
+3. `jobs/sunday_calibration.py`: Append all pre-computed variables into this JSON as the single write commit at end of run.
 
-**Implementation:** `src/state_journal.py` — `append_journal(record)` called at end of each job runner. `get_latest_journal(date)` for recovery reads. No changes to existing `market_state` CRUD.
+**Test:** `python3 -c "from src.manifest import load; d=load(); assert 'fingerprint_buckets' in d"`
 
-### P28: Promise Engine (Temporal Coherence)
-**Problem:** Bot says one thing Tuesday, contradicts Wednesday. Pillar lifecycle is sticky; AI has no memory of prior narrative.
+#### A.2 P14 Fingerprint Gate Wiring
+**Problem:** `src/fingerprint.py` exists but is not called. Dry-run still runs 8 jobs regardless of anchor stability.
 
-**Fix:** Before computing today, read yesterday's `state_journal`. Compare driver values (Brent, USDINR for Stagflation) to today's anchors. If drivers improved >3σ but lifecycle is still ESCALATING → emit `⚠️ REGIME DRIFT: Stagflation drivers eased. Lifecycle stale.` and fast-track lifecycle toward DE-ESCALATING. 6 matcher functions (one per pillar). Gated behind 2-day confirmation to avoid false signals.
+**Action:**
+1. Add to top of `jobs/market_intel.py`, `jobs/midday_scan.py`, `jobs/market_close.py`:
+   ```python
+   manifest = load_manifest()
+   fp = compute_raw_fingerprint(current_anchors, manifest["version"])
+   last_fp, last_sent_at = get_last_fp()
+   if should_skip(current_fp=fp, last_fp=last_fp, last_sent_at=last_sent_at):
+       if >4h: send(manifest.templates["heartbeat"])
+       sys.exit(0)
+   ```
+2. `should_skip` logic: `fp == last_fp ∧ <4h → exit 0` (hard skip, no Telegram). `fp == last_fp ∧ ≥4h → heartbeat template` (deterministic, no AI). `fp != last_fp → full pipeline → update bot_state`.
 
-**Implementation:** `src/promise_engine.py` — `check_temporal_coherence(yesterday_state, today_anchors, today_pillars) → Optional[str]`. Wired into `market_close.py` supplementary block.
+**Test:** `DRY_RUN=1 python3 jobs/market_intel.py` (first run full, second run skip).
 
-### P29: Pillar Decay / Half-Life (Lifecycle 2.0)
-**Problem:** A pillar at ESCALATING for 20 days has decaying predictive power, but its Fragility contribution stays constant.
+#### A.3 P18 Guardian Integration (Replace P10 Sentinel)
+**Problem:** P10 is binary halt/compute. P18 YELLOW tier exists but is not invoked.
 
-**Fix:** Manifest gains `pillar_half_lives` dict. When `lifecycle_age > half_life`, multiply Fragility contribution by `exp(-0.1 × (age - half_life))`. Half-lives: Carry Unwind 5d, West Asia 7d, Stagflation 10d, EM Contagion 12d, Tech Cycle 20d, De-dollarization 25d.
+**Action:**
+1. Replace ad-hoc sanity checks with `Guardian.check_source()` per fetcher, `finalize(anchors) → triage`.
+2. `triage == RED → send_alert, sys.exit(1)`. `YELLOW → suppress options_block`, bypass AI (use `manifest.templates["yellow_stub"]`), append `⚠️ Delayed/Partial` badge.
 
-**Implementation:** Pure manifest math in `fragility_index.py` Intensity component. Zero API calls. Age from `state_journal` history.
+**Test:** Mock NSE timeout → verify options block suppressed, badge present.
 
-### P30: Paper P&L (Skin in the Game)
-**Problem:** Bot reports accuracy but has no documented cost of being wrong. No friction-adjusted track record.
+#### A.4 Options Fallback Chain Fix
+**Problem:** `📉 Derivatives: PCR unavailable (NSE v3 lag)` is permanent. 4-tier fallback not resolving.
 
-**Fix:** In `prediction_tracker.py`, maintain paper portfolio: `position = +1 (BULLISH), 0 (NEUTRAL), -1 (DEFENSIVE)`. Daily return = `position(t-1) × Nifty_return(t)`. Friction 0.12% STT + slippage on position-change days. Reported in `weekly_digest`: `Paper Track (YTD): Gross +3.2% | Net +1.8% | Buy-Hold +4.5%`. Sunday compute only.
+**Action:**
+1. Instrument each tier in `src/options_engine.py` (Supabase → MarketState → NSE v3 live → file cache). Log which tier is the failure point.
+2. If NSE v3 is structurally unreliable after 1 week of production logging, **reclassify derivatives as conditional bonus block** (move to `/gex` command only). Do not let a dead third of the system block the other two layers.
 
-**Implementation:** Extend `prediction_tracker.py` with paper P&L columns. Sunday calibration pre-computes YTD returns. ~2 min added to Sunday job.
+---
 
-### P31: Hollow Liquidity Detector (DII Put Failure)
-**Problem:** DII Capacity shows SATURATED but doesn't flag the exact moment when the market becomes an "air pocket" — no bid for the next marginal seller.
+### Phase B: Validation & Calibration (Week 2–3)
 
-**Fix:** Pure logic gate using existing data: `IF dii_capacity == SATURATED AND fii_5d < -8000 AND advance_decline < 0.7 THEN emit ⚠️ LIQUIDITY: Hollow. DII Put inactive.`
+Prove that mathematical thresholds mean something. Replace guesswork with evidence.
 
-**Implementation:** `src/liquidity_proxy.py` — `compute_liquidity_stress(ctx) → Optional[str]`. Appended to regime line in `market_close.py`. Zero new data sources.
+#### B.1 P17 Living Thresholds with Holdout Wall
+**Problem:** Fragility 65/85 and adaptive weights are unvalidated.
 
-### P32: Containment Mode (Correlated Failure)
-**Problem:** Guardian YELLOW handles one delayed source. RED halts everything. No mode for when market structure itself is opaque (NSE API down + yfinance forex down = real dislocation, not code bug).
+**Action:** In `sunday_calibration.py`, grid search Fragility thresholds [50–90 step 5] and adaptive weights on `T-12M` training set. Validate on last 90 days holdout. Only validation-approved parameters reach `manifest.json`. If holdout accuracy ≤ equal-weights, keep defaults and log a warning.
 
-**Fix:** In `guardian.py`, if ≥2 major source classes fail simultaneously (Equity Spot + Forex, or Equity + Options), trigger CONTAINMENT. Regime locked to previous. Hard-coded template: `🔒 MARKET STRUCTURE OPAQUE: Multi-source data degradation. Regime locked to [previous].` Logged to `analytics_ledger`.
+**Forbidden:** No grid search on weekday jobs (10-min timeout).
 
-**Implementation:** Extend `guardian.py` — `source_classes` dict tracking failure by class. `finalize()` returns CONTAINMENT level when ≥2 classes have >50% failure rate.
+#### B.2 Paper P&L Prototype (P30)
+**Problem:** Scorecard tracks regime transitions but has no cost of being wrong.
 
-### Budget
+**Action:**
+1. `prediction_tracker.py`: `position_today = map_regime_to_position(final_regime)` (+1/0/-1). Daily return = `position_yesterday × Nifty_return_today`. Friction 0.12% STT + 5bps slippage on position-change days.
+2. Weekly: `Paper Track (YTD): Gross +X% | Net +Y% | Buy-Hold +Z%`.
+
+**Success:** After 30 days of production, check if net paper P&L has positive alpha vs buy-hold. If not, Fragility Index is decorative.
+
+---
+
+### Phase C: Temporal Integrity (Week 3–4)
+
+Prevent stale narratives, phantom regimes, silent data rot.
+
+#### C.1 P27 State Journal
+**Problem:** `market_state` is mutable single row. Partial write corrupts next run.
+
+**Action:** New Supabase table `state_journal(timestamp, job_tag, fingerprint, regime, fragility, pillars, triage, manifest_version)`. Every job on success calls `append(record)`. On crash, next run reads last journal row to warm up `market_state`.
+
+#### C.2 P28 Promise Engine
+**Problem:** Pillar stays `ESCALATING` even if macro drivers reversed >3σ.
+
+**Action:** Define `PILLAR_DRIVERS` mapping in `pillar_lifecycle.py`. Before final formatting, compare current drivers to yesterday's `state_journal`. If drivers improved >3σ but lifecycle is `ESCALATING`, append `⚠️ REGIME DRIFT: Stagflation drivers eased. Lifecycle stale.`
+
+#### C.3 P29 Pillar Decay / Half-Life
+**Problem:** Pillar at `ESCALATING` for 20 days has decaying predictive power but Fragility contribution stays constant.
+
+**Action:** Add `pillar_half_lives` to manifest. In `fragility_index.py`: `effective_score = raw_score × lifecycle_mult × exp(-0.1 × max(0, age - half_life))`. Age from `state_journal`.
+
+---
+
+### Phase D: User Utility Hardening (Week 4)
+
+#### D.1 P15 Divergence Block
+**Problem:** Bot always describes smoke. Users need to know when smoke is benign.
+
+**Action:** Three cheap sensors before AI call:
+- Cross-asset divergence (Nifty flat but VIX rising)
+- Sector divergence (>2 sectors moving >1% opposite)
+- Macro-implied vs actual (Consequence Engine implied Nifty move vs actual)
+If no divergence and regime unchanged → `manifest.templates["steady_state"]` (no AI). Only if divergence detected → allow AI.
+
+#### D.2 P31 Hollow Liquidity + P32 Containment
+**Action:**
+1. `src/liquidity_proxy.py`: `IF dii_capacity == SATURATED AND fii_5d < -8000 AND advance_decline < 0.7 → ⚠️ HOLLOW LIQUIDITY: DII Put inactive.`
+2. `src/guardian.py`: If ≥2 source classes fail simultaneously → CONTAINMENT (lock regime, pre-canned alert).
+
+---
+
+### Phase E: AI Economics (Backport to P14)
+
+**Problem:** Morning/Evening Intel burn AI tokens even when unchanged.
+
+**Action:** Add `intel_stubs` to manifest per regime. If fingerprint unchanged and triage GREEN → bypass AI, return `manifest.intel_stubs[regime].format(...)`. Reserve AI for: regime transitions, YELLOW triage, fragility > 80.
+
+**Success Metric:** AI API calls drop ~14/week → ~4/week without user-perceived quality loss.
+
+---
+
+### Budget (Weekday Impact All Phases)
 
 | Addition | GHA Time | DB Storage | Writes/Run |
 |----------|----------|------------|------------|
@@ -929,34 +947,25 @@ The gap from 8.4 to 9.0 is not more features. It is **temporal integrity, advers
 
 ---
 
-## Build Sequence: P13–P32 (Complete Roadmap)
+### Forbidden Items (Deferred Out of Scope)
 
-**Immediate sprint:** Production-verify P14 fingerprint skip (confirms ~40% cost cut). Debug NSE v3 options fallback chain or downgrade to conditional bonus block.
+| Item | Why Blocked |
+|------|-------------|
+| Real-time entity-level FII data | No public API. SEBI bulk deals cover <20%. |
+| SRF Utilization / G-SIB LCR | Confidential / lagged (RBI monthly). |
+| COT Net-Short Positioning | Too large for 10-min GHA timeout. |
+| New macro pillars | Architecture closed. No P13. |
 
-**H1 phases (validate signal before adding surface):** P17 expanding holdout wall in sunday_calibration.py. P30 paper P&L in prediction_tracker.py. P27 state journal for split-brain recovery.
+### Success Criteria
 
-**H2 phases:** Structurally beneficial (P15 divergence block, P21 silent Monday, P20 AI blackout mode, P22 clone confidence, P23 FII staleness).
-
-**H3 phases (Bridges to 9.0):** Temporal coherence and institutional memory (P31 hollow liquidity, P32 containment mode, P28 promise engine, P29 pillar decay).
-
-| Order | Phase | Effort | Value | Depends On | Status |
-|-------|-------|--------|-------|------------|--------|
-| 1 | P14 production verify | 1 day | High — ~40% AI/token cost cut | Live Supabase credentials | 🏗️ |
-| 2 | P17 (Holdout Wall) | 1.5 day | High — replaces threshold guesswork with evidence | P14 stable pipeline | 📋 |
-| 3 | P30 (Paper P&L) | 1 day | Medium — friction-adjusted track record | Sunday calibration exists | 📋 |
-| 4 | P27 (State Journal) | 0.5 day | High — split-brain protection, audit trail | None | 📋 |
-| 5 | P15 (Divergence Block) | 1 day | Medium — three cheap sensors for "smoke is benign" | P14 stable pipeline | 📋 |
-| 6 | P21 (Silent Monday) | 0.5 day | High — prevents stale data on gap-open days | P18 guardian | 📋 |
-| 7 | P20 (AI Blackout Mode) | 0.5 day | Medium — pre-computed templates for AI outage | P16 manifest | 📋 |
-| 8 | P22 (Clone Confidence) | 0.25 day | Low — suppress weak analog matches | None | 📋 |
-| 9 | P23 (FII Staleness) | 0.25 day | Medium — annotate stale flow data | None | 📋 |
-| 10 | P24 (Emergency Model) | 1 day | High — complexity circuit breaker | P17 accuracy tracking | 📋 |
-| 11 | P25 (Event Cascade) | 1 day | Medium — link related event outcomes | P6 event_volatility exists | 📋 |
-| 12 | P26 (Suppressed Volatility) | 0.5 day | Medium — VVIX/ATR override for low-VIX regimes | P4 stress_index exists | 📋 |
-| 13 | P31 (Hollow Liquidity) | 0.5 day | Medium — logic gate, zero new data | P5 DII Capacity exists | 📋 |
-| 14 | P32 (Containment Mode) | 0.5 day | Medium — extends Guardian source class tracking | P18 Guardian exists | 📋 |
-| 15 | P28 (Promise Engine) | 1 day | Medium — temporal coherence, narrative drift | P27 journal | 📋 |
-| 16 | P29 (Pillar Decay) | 0.5 day | Low — manifest half-lives, pure math decay | P27 history | 📋 |
+| Milestone | Deliverable | Exit Criteria |
+|-----------|-------------|---------------|
+| **v0.5-beta** | GitHub push | 7-message dry-run passes; no `TODO` in working code |
+| **v0.6** | P14+P18 wired | Flat-day messages ≤ 2; Guardian YELLOW handles NSE timeout |
+| **v0.7** | P17 holdout + P30 live | 12-week rolling paper P&L positive net of friction; adaptive weights ≠ 1.0 |
+| **v0.8** | P27+P28+P29 | State journal append-only; Promise Engine flags stale lifecycles; pillar decay active |
+| **v0.9** | P15 divergence + P31/P32 | Hollow liquidity fires; AI tokens cut 60% via manifest stubs |
+| **v1.0** | Stable 90-day run | Zero silent failures; scorecard calibration (n>30); regime accuracy published |
 
 ---
 
@@ -1044,4 +1053,4 @@ Full suite: `python3 test_all_outputs.py` — 7 sections, 26 scrubber patterns
 Supabase tests: `.venv/bin/python3 test_supabase_full.py` (requires `SUPABASE_URL`+`SUPABASE_KEY`)
 Full-day dry-run: `DRY_RUN=1 python3 jobs/<job>.py` for each of the 5 daily jobs
 
-**Current status:** 7/7 test sections pass. Full-day dry-run: 8/8 jobs, 0 errors, 7 Telegram messages. P7–P12 locked. P14/P16/P18 modules created and wired into all 3 main jobs (market_intel, midday_scan, market_close). Batch-4 compliance fixes complete. Build phases: P0–P12 ✅, P14/P16/P18 ✅, batch-4 ✅, P20–P26 📋 (designed, not built), P27–P32 📋 (Bridges to 9.0, validated). Overall rating: 7.0/10 — ship as beta. Next sprint: P14 production verify → P17 holdout → P30 paper P&L.
+**Current status:** 7/7 test sections pass. Full-day dry-run: 8/8 jobs, 0 errors, 7 Telegram messages. P7–P12 locked. P14/P16/P18 modules created and wired into all 3 main jobs (market_intel, midday_scan, market_close). Batch-4 compliance fixes complete. Build phases: P0–P12 ✅, P14/P16/P18 ✅, batch-4 ✅. Next: Phase A (Ship Prep) → Phase B (Validation) → Phase C (Temporal) → Phase D (Utility) → Phase E (AI Econ). See Operational Roadmap above.

@@ -511,6 +511,15 @@ def main():
     except Exception as e:
         print(f"⚠️ Movers text: {e}")
 
+    # ── P30: Paper P&L ────────────────────────────────
+    try:
+        from src.prediction_tracker import format_paper_pnl
+        pnl_block = format_paper_pnl(days=min(90, 30))
+        if pnl_block:
+            send_text(pnl_block)
+    except Exception as e:
+        print(f"⚠️ Paper P&L: {e}")
+
     send_text("📅 *Weekly digest complete!*\n_See you Monday 🌅_")
     print("✅ WEEKLY DIGEST COMPLETE")
 

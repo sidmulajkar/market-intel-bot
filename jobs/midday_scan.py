@@ -12,7 +12,7 @@ from src.validator       import validate_articles, assess_sentiment_consensus
 from src.validation_helper import ai_generate_and_validate, build_ground_truth_from_index
 from src.formatters      import format_options_block
 from src.manifest import load as manifest_load
-from src.fingerprint import compute_raw_fingerprint, build_anchor_dict, should_skip
+from src.fingerprint import compute_raw_fingerprint, build_anchor_dict, hours_since, fmt_time_since
 from src.bot_state import get_skip_meta, update_skip_meta
 from src.guardian import Guardian, TriageLevel
 
@@ -51,7 +51,7 @@ def main():
     }
     print(f"   Indices: {len(valid_index)}/18 | Movers: {len(movers.get('india',{}).get('gainers',[]))} gainers")
 
-    # ── P18/P14/P16: Guardian + Fingerprint Skip Gate ─────────
+    # ── P18/P14/P16: Guardian + Fingerprint Gate ─────────
     try:
         _m_anchor = fetch_macro_anchors()
         _manifest_mid = manifest_load()
@@ -63,17 +63,45 @@ def main():
             )
         _anchors_dict = build_anchor_dict(_m_anchor, index_data)
         _current_fp = compute_raw_fingerprint(_anchors_dict, _manifest_mid)
-        _last_fp, _last_sent_at = get_skip_meta()
-        _skip, _reason = should_skip(_current_fp, _last_fp, _last_sent_at, heartbeat_min=240)
-        if _skip:
-            if "Heartbeat" in _reason:
-                send_text("📌 *MIDDAY SCAN*: Steady state. No notable change.")
-                update_skip_meta(_current_fp, datetime.datetime.now(datetime.timezone.utc).isoformat())
-            else:
-                print(f"⏭️  FINGERPRINT SKIP: {_reason}")
-            print("✅ MIDDAY SCAN COMPLETE (skipped)")
+        _meta = get_skip_meta()
+        if _current_fp == _meta.last_fingerprint:
+            # ── FAST PATH: deterministic stub, no compute/AI ──
+            _h = hours_since(_meta.last_sent_at)
+            _tpl_key = "no_change_short" if _h < 4 else "no_change_standard"
+            _tpl = _manifest_mid["templates"][_tpl_key]
+            _msg = _tpl.format(
+                regime=_meta.last_regime,
+                fragility=_meta.last_fragility,
+                nifty=_anchors_dict.get("NIFTY", 0),
+                vix=_anchors_dict.get("VIX", 0),
+                time_since=fmt_time_since(_meta.last_sent_at),
+            )
+            send_text(f"📌 *MIDDAY SCAN*\n{_msg}")
+            update_skip_meta(
+                fingerprint=_current_fp,
+                sent_at_iso=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                regime=_meta.last_regime,
+                fragility=_meta.last_fragility,
+            )
+            try:
+                from src.state_journal import append_journal
+                append_journal(
+                    job_tag="midday_scan",
+                    regime=_meta.last_regime,
+                    fragility=_meta.last_fragility,
+                    fingerprint=_current_fp,
+                    manifest_version=_manifest_mid.get("version"),
+                    nifty=_anchors_dict.get("NIFTY"),
+                    vix=_anchors_dict.get("VIX"),
+                )
+            except Exception:
+                pass
+            print("✅ MIDDAY SCAN COMPLETE (fast-path stub)")
             return
-        update_skip_meta(_current_fp, datetime.datetime.now(datetime.timezone.utc).isoformat())
+        update_skip_meta(
+            fingerprint=_current_fp,
+            sent_at_iso=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        )
         _triage = guardian.finalize(_anchors_dict)
         if _triage == TriageLevel.RED:
             send_text("🚨 DATA INTEGRITY FAILURE: Macro fetch >30% null. Pipeline halted.")
@@ -489,7 +517,25 @@ def main():
         )
     else:
         send_midday("")
+
+    # ── P27: State Journal append (fail-open) ──
+    try:
+        from src.state_journal import append_journal
+        _ri = locals().get("regime_info", {})
+        append_journal(
+            job_tag="midday_scan",
+            regime=_ri.get("regime"),
+            fingerprint=locals().get("_current_fp"),
+            manifest_version=locals().get("_manifest_mid", {}).get("version"),
+            triage=str(locals().get("_triage", "GREEN")),
+            nifty=locals().get("valid_index", {}).get("India", {}).get("price"),
+            vix=locals().get("valid_index", {}).get("VIX", {}).get("price"),
+        )
+    except Exception:
+        pass
+
     print("✅ MIDDAY SCAN COMPLETE")
+    print(f"  → Total execution: {time.time() - _job_start:.1f}s")
 
 if __name__ == "__main__":
     main()

@@ -193,6 +193,76 @@ def format_pillar_with_lifecycle(pillar: Dict, lifecycle: Dict) -> str:
     return f"  📊 Lifecycle: {lc}"
 
 
+def detect_stale_lifecycle(
+    pillar_name: str,
+    current_lifecycle_state: str,
+    current_score: float,
+    recent_history: List[Dict],
+    lookback: int = 3,
+) -> Optional[str]:
+    """P28: Check if lifecycle state is stale relative to driver improvement.
+
+    A lifecycle still showing ESCALATING or SUSTAINED while the pillar's
+    raw drivers have improved >3σ is stale — the narrative hasn't caught up
+    to the data.
+
+    Args:
+        pillar_name: e.g., "STAGFLATION_SUPPLY"
+        current_lifecycle_state: e.g., "ESCALATING"
+        current_score: current pillar score
+        recent_history: list of dicts with 'trade_date', 'score' from
+                        state_journal or pillar_metrics (last ~5 days)
+        lookback: number of recent entries to compare
+
+    Returns:
+        Warning string if lifecycle is stale, None otherwise.
+    """
+    if current_lifecycle_state not in ("ESCALATING", "SUSTAINED"):
+        return None
+
+    recent = recent_history[-lookback:] if len(recent_history) >= lookback else recent_history
+    scores = [r.get("score", 0) for r in recent if isinstance(r.get("score"), (int, float))]
+
+    if len(scores) < 3:
+        return None
+
+    # Compute driver improvement: drop > 5 points from peak in lookback window
+    peak = max(scores)
+    current_vs_peak = current_score - peak
+    # Score dropping more than threshold
+    if current_vs_peak <= -5.0:
+        return (
+            f"⚠️ REGIME DRIFT: {_pillar_display_name(pillar_name)} drivers eased. "
+            f"Lifecycle ({current_lifecycle_state}) may be stale."
+        )
+
+    # Mean-reversion check: if scores are monotonically decreasing over 3 days
+    try:
+        three_day_drop = scores[-1] - scores[0]
+        if three_day_drop <= -4.0:
+            return (
+                f"⚠️ REGIME DRIFT: {_pillar_display_name(pillar_name)} easing for "
+                f"{lookback}d. Lifecycle ({current_lifecycle_state}) may be stale."
+            )
+    except (IndexError, TypeError):
+        pass
+
+    return None
+
+
+def _pillar_display_name(name: str) -> str:
+    """Convert STAGFLATION_SUPPLY to 'Stagflation' for user-facing output."""
+    mapping = {
+        "STAGFLATION_SUPPLY": "Stagflation",
+        "WEST_ASIA": "West Asia",
+        "EM_CONTAGION": "EM Contagion",
+        "CARRY_UNWIND": "Carry Unwind",
+        "DE_DOLLARIZATION": "De-dollarization",
+        "TECH_CYCLE": "Tech Cycle",
+    }
+    return mapping.get(name, name.replace("_", " ").title())
+
+
 def get_pillar_history_from_db(pillar_name: str, days: int = 30) -> List[Dict]:
     """Fetch pillar score history from Supabase pillar_metrics table."""
     try:

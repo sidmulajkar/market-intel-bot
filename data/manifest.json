@@ -1,6 +1,6 @@
 {
-  "version": "v1-0000000",
-  "generated_at": "2026-06-03T00:00:00Z",
+  "version": "e0d633e",
+  "generated_at": "2026-06-05T18:19:06Z",
   "fingerprint_buckets": {
     "nifty": 100,
     "vix": 1,
@@ -9,25 +9,52 @@
     "dxy": 0.5
   },
   "fragility": {
-    "cap_neutral": 65,
-    "force_defensive": 85
+    "cap_neutral": 65.0,
+    "force_defensive": 85.0
   },
   "adaptive_weights": {
-    "Stagflation": 1.0,
-    "West_Asia": 1.0,
-    "EM_Contagion": 1.0,
-    "Carry_Unwind": 1.0,
-    "De-dollarization": 1.0,
-    "Tech_Cycle": 1.0
+    "STAGFLATION_SUPPLY": 0.743,
+    "WEST_ASIA": 0.792,
+    "EM_CONTAGION": 0.751,
+    "CARRY_UNWIND": 0.765,
+    "DE_DOLLARIZATION": 0.833,
+    "TECH_CYCLE_BURST": 0.7
   },
-  "sector_tilt_map": {
-    "Stagflation": {"bullish": ["IT", "Pharma"], "bearish": ["O&G", "PSU Banks"]},
-    "West_Asia": {"bullish": ["Defence", "Energy"], "bearish": ["Airlines", "Hotels"]},
-    "EM_Contagion": {"bullish": ["IT", "Pharma"], "bearish": ["PSU Banks", "Realty"]},
-    "Carry_Unwind": {"bullish": ["IT", "Pharma"], "bearish": ["PSU Banks", "NBFC"]},
-    "De-dollarization": {"bullish": ["Gold", "Metals"], "bearish": ["IT"]},
-    "Tech_Cycle": {"bullish": ["IT", "Consumption"], "bearish": ["Banks", "PSU"]}
+  "sector_tilt_map": {},
+  "erp_deciles": [
+    -2.5,
+    -2.1,
+    -1.8,
+    -1.5,
+    -1.2,
+    -0.9,
+    -0.6,
+    -0.3,
+    0.0,
+    0.4
+  ],
+  "steady_state_template": "\ud83d\udfe2 Steady state since {last_regime_time}. Regime: {regime} | Nifty: {nifty} | VIX: {vix}. No notable change.",
+  "pillar_half_lives": {
+    "STAGFLATION_SUPPLY": 10,
+    "WEST_ASIA": 7,
+    "EM_CONTAGION": 14,
+    "CARRY_UNWIND": 10,
+    "DE_DOLLARIZATION": 21,
+    "TECH_CYCLE_BURST": 14
   },
-  "erp_deciles": [-2.5, -2.1, -1.8, -1.5, -1.2, -0.9, -0.6, -0.3, 0.0, 0.4],
-  "steady_state_template": "🟢 Steady state since {last_regime_time}. Regime: {regime} | Nifty: {nifty} | VIX: {vix}. No material change."
+  "pillar_decay": {
+    "decay_rate": 0.1,
+    "half_life_default": 14
+  },
+  "templates": {
+    "heartbeat": "\ud83d\udfe2 Steady state. Regime: {regime} | Nifty: {nifty:.0f} | VIX: {vix:.1f}. No notable change.",
+    "no_change_short": "\ud83d\udfe1 Steady State: {regime} | Nifty {nifty:.0f} | VIX {vix:.1f}\n\ud83d\udca4 No material change.",
+    "no_change_standard": "\ud83d\udfe1 Steady State: {regime} (Fragility: {fragility}) | Nifty {nifty:.0f} | VIX {vix:.1f}\n\ud83d\udca4 Macro drivers unchanged since {time_since}.\n\ud83d\udccc Next full scan on material shift.",
+    "yellow_stub": "\u26a0\ufe0f *Partial Data* \u2014 AI analysis unavailable.\n\n\ud83d\udccc *Regime:* {regime} ({confidence})\n\ud83d\udcca Nifty: {nifty:.0f} | VIX: {vix:.1f} | USDINR: {usdinr:.2f} | Brent: {brent:.1f}\n\ud83d\udcc8 FII: {fii_cr:.0f} Cr | DII: {dii_cr:.0f} Cr\n\nDeterministic summary: Data quality insufficient for AI narrative.",
+    "intel_stubs": {
+      "BULLISH": "\ud83d\udfe2 *Market Context:* Positive setup. Regime: {regime} | Nifty: {nifty:.0f} | VIX: {vix:.1f}. Momentum supportive with {top_pillar} in check. FII flows constructive at {fii_cr:.0f} Cr.",
+      "NEUTRAL": "\ud83d\udfe1 *Market Context:* Balanced. Regime: {regime} | Nifty: {nifty:.0f} | VIX: {vix:.1f}. {top_pillar} present but contained. No dominant directional bias.",
+      "DEFENSIVE": "\ud83d\udd34 *Market Context:* Caution warranted. Regime: {regime} | Nifty: {nifty:.0f} | VIX: {vix:.1f}. Fragility elevated at {fragility:.0f}. {top_pillar} structural risk active."
+    }
+  }
 }

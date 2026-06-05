@@ -12,6 +12,7 @@ Fix (Analyst 1):
   EMERGING × 0.6, ESCALATING × 1.3, SUSTAINED × 1.0, DE-ESCALATING × 0.7.
 """
 from typing import Dict, List, Optional
+import math
 
 # Component weights
 BASE_WEIGHT = 0.40         # Existing Stress Index
@@ -86,9 +87,11 @@ def compute_fragility_index(stress_score: float, pillars: List[Dict]) -> Dict:
         raw_scores.append(raw)
         mult = _get_lifecycle_multiplier(p)
         dyn = dynamic_weights.get(p.get("id", p.get("name", "")), 1.0)
-        adjusted = raw * mult * dyn
-        # Apply debt stress multiplier to Carry_Unwind pillar
         p_id = p.get("id", p.get("name", ""))
+        # P29: pillar decay — age vs half-life reduces intensity contribution
+        decay = _get_pillar_decay(p_id, p.get("age_days", 0), p.get("lifecycle_state", "EMERGING"))
+        adjusted = raw * mult * dyn * decay
+        # Apply debt stress multiplier to Carry_Unwind pillar
         if debt_mult > 1.0 and "carry" in p_id.lower().replace(" ", "_"):
             adjusted *= debt_mult
         scores.append(adjusted)
@@ -141,6 +144,36 @@ def _build_message(fragility: float, severity: str, drivers: List[str]) -> str:
     if fragility >= 50:
         return f"Moderate: {severity} ({fragility:.0f}/100) — monitoring"
     return f"Low: {severity} ({fragility:.0f}/100) — no structural constraint"
+
+
+def _get_pillar_decay(pillar_id: str, age_days: int, lifecycle_state: str) -> float:
+    """P29: Compute pillar decay multiplier based on age vs half-life.
+
+    A pillar beyond its half-life loses predictive power exponentially.
+    Only applies to ESCALATING/SUSTAINED/DE-ESCALATING states.
+
+    decay = exp(-0.1 * max(0, age_days - half_life))
+
+    Returns multiplier in (0, 1].
+    """
+    if age_days <= 0 or lifecycle_state in ("EMERGING", "INACTIVE"):
+        return 1.0
+
+    try:
+        from src.manifest import load as _load_manifest
+        m = _load_manifest()
+        half_lives = m.get("pillar_half_lives", {})
+        decay_rate = m.get("pillar_decay", {}).get("decay_rate", 0.1)
+        half_life = half_lives.get(pillar_id, m.get("pillar_decay", {}).get("half_life_default", 14))
+    except Exception:
+        half_life = 14
+        decay_rate = 0.1
+
+    excess = max(0, age_days - half_life)
+    if excess <= 0:
+        return 1.0
+
+    return math.exp(-decay_rate * excess)
 
 
 def _get_external_debt_stress_multiplier() -> float:

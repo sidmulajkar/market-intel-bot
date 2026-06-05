@@ -1,84 +1,114 @@
-"""Helpers for reading/writing fingerprint skip gate metadata in bot_state.
+"""Helpers for reading/writing fingerprint skip gate metadata.
 
-Usage:
-    last_fp, last_sent_at = get_skip_meta()
-    update_skip_meta("a1b2c3d...", "2026-06-03T08:00:00Z")
+Primary storage: data/skip_state.json (local file, GHA-cacheable).
+Fallback: Supabase bot_state table (if file unavailable).
 """
 
+import json, os
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional
 
-try:
-    from supabase import create_client
-    _SUPABASE_AVAILABLE = True
-except ImportError:
-    _SUPABASE_AVAILABLE = False
+_SKIP_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "skip_state.json")
 
 
-def _get_client():
-    """Lazy-init Supabase client. Returns None if env vars missing."""
-    import os
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
-    if not url or not key:
-        return None
-    return create_client(url, key)
+class SkipMeta(NamedTuple):
+    last_fingerprint: Optional[str]
+    last_sent_at: Optional[datetime]
+    last_regime: str
+    last_fragility: float
 
 
-def get_skip_meta() -> Tuple[Optional[str], Optional[datetime]]:
-    """Read last_fingerprint and last_sent_at from bot_state.
-
-    Returns:
-        (last_fingerprint: str or None, last_sent_at: datetime or None)
-        Both None if row doesn't exist or Supabase unavailable.
-    """
-    if not _SUPABASE_AVAILABLE:
-        return None, None
-
+def _read_file() -> Optional[dict]:
     try:
-        client = _get_client()
-        if client is None:
-            return None, None
-        row = client.table("bot_state").select("last_fingerprint", "last_sent_at").limit(1).execute()
-        if row.data and len(row.data) > 0:
-            fp = row.data[0].get("last_fingerprint")
-            sent_raw = row.data[0].get("last_sent_at")
-            sent = None
-            if sent_raw:
-                try:
-                    sent = datetime.fromisoformat(str(sent_raw).replace("Z", "+00:00"))
-                except (ValueError, TypeError):
-                    sent = None
-            return fp, sent
-        return None, None
+        if not os.path.exists(_SKIP_FILE):
+            return None
+        with open(_SKIP_FILE) as f:
+            return json.load(f)
     except Exception:
-        return None, None
+        return None
 
 
-def update_skip_meta(fingerprint: str, sent_at_iso: str) -> bool:
-    """Write current fingerprint and send timestamp to bot_state.
-
-    Upserts into id=1 (single-row config table).
-
-    Args:
-        fingerprint: Current raw-anchor fingerprint (16 hex chars)
-        sent_at_iso: ISO timestamp of last message send
-
-    Returns:
-        True if write succeeded, False otherwise
-    """
-    if not _SUPABASE_AVAILABLE:
-        return False
-
+def _write_file(d: dict) -> bool:
     try:
-        client = _get_client()
-        if client is None:
-            return False
-        data = {
-            "last_fingerprint": fingerprint,
-            "last_sent_at": sent_at_iso,
-        }
-        client.table("bot_state").upsert(data, on_conflict="id").execute()
+        os.makedirs(os.path.dirname(_SKIP_FILE), exist_ok=True)
+        with open(_SKIP_FILE, "w") as f:
+            json.dump(d, f, default=str)
         return True
     except Exception:
         return False
+
+
+def _read_supabase() -> Optional[dict]:
+    try:
+        from supabase import create_client
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_KEY")
+        if not url or not key:
+            return None
+        client = create_client(url, key)
+        row = client.table("bot_state").select("value").eq("key", "skip_meta").limit(1).execute()
+        if row.data and len(row.data) > 0:
+            val = row.data[0].get("value")
+            if val:
+                return json.loads(val) if isinstance(val, str) else val
+    except Exception:
+        pass
+    return None
+
+
+def _write_supabase(d: dict) -> bool:
+    try:
+        from supabase import create_client
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_KEY")
+        if not url or not key:
+            return False
+        client = create_client(url, key)
+        client.table("bot_state").upsert(
+            {"key": "skip_meta", "value": json.dumps(d, default=str)},
+            on_conflict="key",
+        ).execute()
+        return True
+    except Exception:
+        return False
+
+
+def get_skip_meta() -> SkipMeta:
+    """Read skip metadata: try local file first, then Supabase, then defaults."""
+    defaults = SkipMeta(None, None, "NEUTRAL", 50.0)
+
+    d = _read_file()
+    if d is None:
+        d = _read_supabase()
+    if d is None:
+        return defaults
+
+    fp = d.get("last_fingerprint")
+    sent_raw = d.get("last_sent_at")
+    sent = None
+    if sent_raw:
+        try:
+            sent = datetime.fromisoformat(str(sent_raw).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            sent = None
+    regime = d.get("last_regime", "NEUTRAL") or "NEUTRAL"
+    fragility = d.get("last_fragility", 50.0) or 50.0
+    return SkipMeta(fp, sent, str(regime), float(fragility))
+
+
+def update_skip_meta(
+    fingerprint: str,
+    sent_at_iso: str,
+    regime: str = "NEUTRAL",
+    fragility: float = 50.0,
+) -> bool:
+    """Write fingerprint + send timestamp to local file AND Supabase (best-effort)."""
+    value = {
+        "last_fingerprint": fingerprint,
+        "last_sent_at": sent_at_iso,
+        "last_regime": regime,
+        "last_fragility": fragility,
+    }
+    ok = _write_file(value)
+    _write_supabase(value)  # best-effort
+    return ok

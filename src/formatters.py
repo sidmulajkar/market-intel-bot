@@ -2040,15 +2040,20 @@ def format_options_block(symbol: str = "NIFTY", run_label: str = "morning") -> s
 
         # Fallback: if live analysis failed, try stale Supabase snapshot
         if not analysis.get("ok"):
+            print("   🔄 TIER 3: Supabase stale snapshot fallback...")
             stale = get_latest_snapshot(symbol, run=run_label)
-            if not stale:
+            if stale:
+                print(f"   ✅ TIER 3a: Exact run '{run_label}' match from Supabase")
+            else:
                 # Try any run label (including yesterday's close/evening)
                 for fallback_run in ("morning", "midday", "evening", "close"):
                     stale = get_latest_snapshot(symbol, run=fallback_run)
                     if stale:
+                        print(f"   ✅ TIER 3b: Run '{fallback_run}' match from Supabase")
                         break
             if not stale:
                 # Broad fallback: any recent snapshot regardless of run label
+                print("   🔄 TIER 3c: Broadfallback — any recent snapshot from Supabase")
                 try:
                     from supabase import create_client
                     from src.options_engine import SUPABASE_URL, SUPABASE_KEY
@@ -2057,6 +2062,7 @@ def format_options_block(symbol: str = "NIFTY", run_label: str = "morning") -> s
                         result = client.table("options_snapshots").select("*").eq("symbol", symbol).order("created_at", desc=True).limit(1).execute()
                         if result.data:
                             stale = result.data[0]
+                            print(f"   ✅ TIER 3c: Broadfallback OK (date: {stale.get('date', 'unknown')})")
                 except Exception:
                     pass
             if stale:

@@ -156,6 +156,7 @@ def arbitrate_regime(state, flow_metrics: Optional[Dict] = None) -> RegimeVerdic
     # > 85 force DEFENSIVE, > 65 cap BULLISH to NEUTRAL (applied post-statistical).
     # Replaces old hard-coded USDINR/Brent price thresholds.
     if not override_regime:
+        _fragility_override_threshold = _get_force_defensive_threshold()
         fragility_score = getattr(state, "fragility_score", None)
         if fragility_score is None:
             try:
@@ -175,7 +176,7 @@ def arbitrate_regime(state, flow_metrics: Optional[Dict] = None) -> RegimeVerdic
             except Exception:
                 pass
         if fragility_score is not None and isinstance(fragility_score, (int, float)):
-            if fragility_score > 85:
+            if fragility_score > _fragility_override_threshold:
                 override_regime = "DEFENSIVE"
                 override_confidence = "HIGH"
                 override_reason = "fragility_index"
@@ -205,9 +206,10 @@ def arbitrate_regime(state, flow_metrics: Optional[Dict] = None) -> RegimeVerdic
                     dominant_driver = "Global risk-off overlay"
             narrative += " Global risk-off overlay active."
 
-        # Fragility > 65 cap: ban BULL, cap at NEUTRAL
+        # Fragility cap: ban BULL, cap at NEUTRAL
+        _fragility_cap_threshold = _get_cap_neutral_threshold()
         fragility_score = getattr(state, "fragility_score", None)
-        if fragility_score is not None and isinstance(fragility_score, (int, float)) and fragility_score > 65:
+        if fragility_score is not None and isinstance(fragility_score, (int, float)) and fragility_score > _fragility_cap_threshold:
             if regime == "BULLISH":
                 regime = "NEUTRAL"
                 narrative += f" (capped at NEUTRAL — Fragility {fragility_score:.0f}/100)"
@@ -372,3 +374,21 @@ def _narrative_from_bb(bb_norm: Optional[float], market_phase: Optional[str], da
         active_str = f"Fragility {fragility_score:.0f}/100, {data_count} signals"
         return f"Fragility-based assessment: {active_str}."
     return f"Insufficient data ({data_count} signals)."
+
+
+def _get_force_defensive_threshold() -> float:
+    """Read force_defensive threshold from manifest.json, fallback 85."""
+    try:
+        from src.manifest import load as _ml
+        return _ml().get("fragility", {}).get("force_defensive", 85.0)
+    except Exception:
+        return 85.0
+
+
+def _get_cap_neutral_threshold() -> float:
+    """Read cap_neutral threshold from manifest.json, fallback 65."""
+    try:
+        from src.manifest import load as _ml
+        return _ml().get("fragility", {}).get("cap_neutral", 65.0)
+    except Exception:
+        return 65.0

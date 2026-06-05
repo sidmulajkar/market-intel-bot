@@ -30,7 +30,7 @@ from src.validator      import validate_articles
 from src.validation_helper import _validate_with_output_type, _OUTPUT_TYPE_CONFIG
 from src.compute_budget import ComputeBudget, get_block_fallback, BLOCK_PRIORITY
 from src.manifest import load as manifest_load
-from src.fingerprint import compute_raw_fingerprint, build_anchor_dict, should_skip
+from src.fingerprint import compute_raw_fingerprint, build_anchor_dict, hours_since, fmt_time_since
 from src.bot_state import get_skip_meta, update_skip_meta
 from src.guardian import Guardian, TriageLevel
 
@@ -273,103 +273,6 @@ def _save_morning_fingerprint(snapshot_data: dict, state) -> None:
         print(f"   ⚠️ Morning fingerprint: {e}")
 
 
-def _check_evening_delta() -> bool:
-    """Compare evening metrics against morning fingerprint. Send compressed if no change. Returns True if sent."""
-    try:
-        import json
-        from datetime import datetime
-        from src.db import get_bot_state, get_market_state
-        from src.data_fetcher import fetch_macro_anchors, fetch_global_indices
-        from src.context_engine import get_fii_dii_context
-
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        raw = get_bot_state(f"morning_fingerprint_{today_str}")
-        if not raw:
-            return False
-
-        morning = json.loads(raw)
-        evening_anchors = fetch_macro_anchors() or []
-        evening_indices = fetch_global_indices() or {}
-
-        def _get(name):
-            for a in evening_anchors:
-                if a.get("name") == name and a.get("ok") and a.get("price"):
-                    return a["price"]
-            return None
-
-        e_vix = _get("India VIX")
-        e_usdinr = _get("USD/INR")
-        e_brent = _get("Brent Crude")
-        e_nifty = evening_indices.get("India", {}).get("price")
-
-        e_fii = None
-        try:
-            fii_ctx = get_fii_dii_context(days=5)
-            if fii_ctx.get("ok"):
-                e_fii = fii_ctx.get("fii_net")
-        except Exception:
-            pass
-
-        persisted = get_market_state(today_str)
-        e_regime = persisted.get("final_regime") if persisted else None
-
-        # Thresholds: diff beyond these → run full analysis
-        m_nifty = morning.get("nifty_close")
-        if m_nifty and e_nifty and abs(e_nifty - m_nifty) / m_nifty > 0.003:
-            return False
-        m_vix = morning.get("vix")
-        if m_vix and e_vix and abs(e_vix - m_vix) > 1.5:
-            return False
-        m_usdinr = morning.get("usdinr")
-        if m_usdinr and e_usdinr and abs(e_usdinr - m_usdinr) / m_usdinr > 0.005:
-            return False
-        m_brent = morning.get("brent")
-        if m_brent and e_brent and abs(e_brent - m_brent) / m_brent > 0.03:
-            return False
-        m_fii = morning.get("fii_net")
-        if m_fii is not None and e_fii is not None and abs(e_fii - m_fii) > 500:
-            return False
-        m_regime = morning.get("regime")
-        if m_regime and e_regime and e_regime != m_regime:
-            return False
-
-        # No notable change — send compressed
-        override = persisted.get("final_override_reason", "") if persisted else ""
-        macro_data = persisted.get("macro", {}) if persisted else {}
-        u = macro_data.get("usdinr", "")
-        b = macro_data.get("brent", "")
-        v = macro_data.get("vix", "")
-        triggers = []
-        if u:
-            triggers.append(f"USDINR ₹{u}")
-        if b:
-            triggers.append(f"Brent ${b}")
-        if v:
-            triggers.append(f"VIX {v}")
-        trigger_str = ", ".join(triggers[:3])
-        regime_label = (e_regime or morning.get("regime", "NEUTRAL")).lower().title()
-        compressed = f"📌 *EVENING INTEL CHECK:* {regime_label}"
-        if e_regime == "DEFENSIVE" and trigger_str:
-            compressed += f" | Triggers: {trigger_str}"
-        try:
-            from src.economic_calendar import get_high_impact_soon
-            hi = get_high_impact_soon(days=2)
-            if hi:
-                compressed += f" | ⚠️ {hi}"
-            else:
-                compressed += " | Tracking — no notable change."
-        except Exception:
-            compressed += " | Tracking — no notable change."
-
-        from src.telegram_sender import send_text
-        send_text(compressed)
-        print("   ✅ Delta Tracker: no notable change — compressed")
-        return True
-    except Exception as e:
-        print(f"   ⚠️ Delta Tracker check: {e}")
-        return False
-
-
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "morning"
     if mode not in ("morning", "evening"):
@@ -379,11 +282,6 @@ def main():
     print("=" * 50)
     print(f"📊 MARKET INTEL ({mode.upper()}) STARTING")
     print("=" * 50)
-
-    # Evening delta check: skip full computation if nothing changed
-    if mode == "evening" and _check_evening_delta():
-        print("✅ MARKET INTEL COMPLETE (compressed — no delta)")
-        return
 
     # Load master prompt
     try:
@@ -451,7 +349,7 @@ def main():
     try:
         anchor_data = fetch_macro_anchors()
 
-        # ── P18/P14/P16: Guardian + Fingerprint Skip Gate ─────────
+        # ── P18/P14/P16: Guardian + Fingerprint Gate ──────────────
         try:
             from datetime import datetime, timezone
             _manifest = manifest_load()
@@ -463,17 +361,45 @@ def main():
                 )
             _anchors_dict = build_anchor_dict(anchor_data, index_data)
             _current_fp = compute_raw_fingerprint(_anchors_dict, _manifest)
-            _last_fp, _last_sent_at = get_skip_meta()
-            _skip, _reason = should_skip(_current_fp, _last_fp, _last_sent_at, heartbeat_min=240)
-            if _skip:
-                if "Heartbeat" in _reason:
-                    send_text(f"📌 *MARKET INTEL ({mode.upper()})*: Steady state. No notable change.")
-                    update_skip_meta(_current_fp, datetime.now(timezone.utc).isoformat())
-                else:
-                    print(f"⏭️  FINGERPRINT SKIP: {_reason}")
-                print("✅ MARKET INTEL COMPLETE (skipped)")
+            _meta = get_skip_meta()
+            if _current_fp == _meta.last_fingerprint:
+                # ── FAST PATH: deterministic stub, no compute/AI ──
+                _h = hours_since(_meta.last_sent_at)
+                _tpl_key = "no_change_short" if _h < 4 else "no_change_standard"
+                _tpl = _manifest["templates"][_tpl_key]
+                _msg = _tpl.format(
+                    regime=_meta.last_regime,
+                    fragility=_meta.last_fragility,
+                    nifty=_anchors_dict.get("NIFTY", 0),
+                    vix=_anchors_dict.get("VIX", 0),
+                    time_since=fmt_time_since(_meta.last_sent_at),
+                )
+                send_text(f"📌 *MARKET INTEL ({mode.upper()})*\n{_msg}")
+                update_skip_meta(
+                    fingerprint=_current_fp,
+                    sent_at_iso=datetime.now(timezone.utc).isoformat(),
+                    regime=_meta.last_regime,
+                    fragility=_meta.last_fragility,
+                )
+                try:
+                    from src.state_journal import append_journal
+                    append_journal(
+                        job_tag=f"market_intel_{mode}",
+                        regime=_meta.last_regime,
+                        fragility=_meta.last_fragility,
+                        fingerprint=_current_fp,
+                        manifest_version=_manifest.get("version"),
+                        nifty=_anchors_dict.get("NIFTY"),
+                        vix=_anchors_dict.get("VIX"),
+                    )
+                except Exception:
+                    pass
+                print("✅ MARKET INTEL COMPLETE (fast-path stub)")
                 return
-            update_skip_meta(_current_fp, datetime.now(timezone.utc).isoformat())
+            update_skip_meta(
+                fingerprint=_current_fp,
+                sent_at_iso=datetime.now(timezone.utc).isoformat(),
+            )
             _triage = guardian.finalize(_anchors_dict)
             if _triage == TriageLevel.RED:
                 send_text("🚨 DATA INTEGRITY FAILURE: Macro fetch >30% null. Pipeline halted.")
@@ -1972,14 +1898,7 @@ def main():
     if validate_ai_response(analysis, min_words=50):
         bluf = _build_market_intel_bluf(snapshot_data)
         header = "*MARKET INTEL ({mode})*".format(mode=mode.upper())
-        msg = ""
-        if fragility_banner:
-            msg += fragility_banner + "\n"
-        if pillar_block:
-            msg += pillar_block + "\n\n"
-        if clone_block:
-            msg += clone_block + "\n"
-        msg += header + "\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        msg = header + "\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         if bluf:
             msg += bluf + "\n\n"
         msg += analysis + "\n\n━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -2083,6 +2002,23 @@ def main():
                 print(f"   {stage}: {t:.1f}s")
     if total_time > 240:
         print(f"⚠️ EXCEEDED 4-MIN LIMIT — consider splitting into separate jobs")
+
+    # ── P27: State Journal append (fail-open) ──────────────────────
+    try:
+        from src.state_journal import append_journal
+        _state_end = locals().get("state")
+        append_journal(
+            job_tag=f"market_intel_{mode}",
+            regime=getattr(_state_end, "final_regime", None),
+            fragility=getattr(_state_end, "fragility_score", None),
+            fingerprint=locals().get("_current_fp"),
+            manifest_version=locals().get("_manifest", {}).get("version"),
+            triage=str(locals().get("_triage", "GREEN")),
+            nifty=locals().get("_anchors_dict", {}).get("NIFTY"),
+            vix=locals().get("_anchors_dict", {}).get("VIX"),
+        )
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

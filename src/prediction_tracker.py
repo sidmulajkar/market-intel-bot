@@ -396,6 +396,168 @@ def format_weekly_accuracy() -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# P30: PAPER P&L — Position tracking with friction
+# ═══════════════════════════════════════════════════════════════════════════════
+
+REGIME_POSITION_MAP = {
+    "BULLISH": 1.0,
+    "NEUTRAL": 0.0,
+    "DEFENSIVE": -1.0,
+    "BEARISH": -1.0,
+}
+
+STT_FRICTION = 0.0012   # 0.12% STT on position-change days
+SLIPPAGE = 0.0005       # 5bps slippage on position-change days
+FRICTION_TOTAL = STT_FRICTION + SLIPPAGE  # 0.17% per change
+
+
+def map_regime_to_position(regime: str) -> float:
+    """Map a regime label to a target position: +1 (long), 0 (flat), -1 (short)."""
+    if not regime:
+        return 0.0
+    return REGIME_POSITION_MAP.get(regime.upper(), 0.0)
+
+
+def compute_paper_pnl(days: int = 30) -> Dict:
+    """Compute paper P&L from prediction_outcomes for last N days.
+
+    For each day with a prediction:
+      1. Read yesterday's predicted regime → yesterday's position
+      2. Read today's Nifty return
+      3. Daily P&L = yesterday_position × today_return
+      4. If position changed from day before → deduct friction
+      5. Compare against buy-hold benchmark
+
+    Returns: {
+        "ok": bool,
+        "gross_return_pct": float,
+        "net_return_pct": float,
+        "buy_hold_return_pct": float,
+        "alpha_pct": float,
+        "n_trading_days": int,
+        "position_changes": int,
+        "win_rate": float,
+        "avg_win": float,
+        "avg_loss": float,
+    }
+    """
+    from src.db import get_client
+
+    db = get_client()
+    if not db:
+        return {"ok": False, "message": "DB unavailable"}
+
+    try:
+        cutoff = (datetime.now() - timedelta(days=days + 5)).strftime("%Y-%m-%d")
+        outcomes = (
+            db.table("prediction_outcomes")
+            .select("*")
+            .gte("prediction_date", cutoff)
+            .order("prediction_date")
+            .execute()
+        )
+        if not outcomes.data or len(outcomes.data) < 2:
+            return {"ok": False, "message": f"Need ≥2 outcomes, have {len(outcomes.data) if outcomes.data else 0}"}
+
+        data = outcomes.data
+        # Also fetch predictions for position mapping
+        preds = (
+            db.table("daily_predictions")
+            .select("date, regime")
+            .gte("date", cutoff)
+            .order("date")
+            .execute()
+        )
+        pred_map = {}
+        for p in (preds.data or []):
+            pdate = p.get("date", "")
+            regime = p.get("regime", "")
+            if regime and regime in REGIME_POSITION_MAP:
+                pred_map[pdate] = regime
+
+        gross_returns = []
+        net_returns = []
+        position_changes = 0
+        prev_position = 0.0
+        wins = 0
+        losses = 0
+        total_win = 0.0
+        total_loss = 0.0
+
+        for i, outcome in enumerate(data):
+            pred_date = outcome.get("prediction_date", "")
+            change_pct = outcome.get("actual_nifty_change", 0)
+
+            # Position is determined by prediction made on pred_date (mapped from pred_date regime)
+            regime = pred_map.get(pred_date, "NEUTRAL")
+            position = map_regime_to_position(regime)
+
+            daily_return = position * change_pct
+            friction = 0.0
+            if position != prev_position and prev_position != 0 and position != 0:
+                friction = FRICTION_TOTAL * 100  # percentage points
+                position_changes += 1
+            elif position != prev_position and (prev_position == 0 or position == 0):
+                friction = FRICTION_TOTAL * 100 * 0.5  # half friction entering/exiting flat
+                position_changes += 1
+
+            gross_returns.append(daily_return)
+            net_returns.append(daily_return - friction)
+
+            if daily_return > 0:
+                wins += 1
+                total_win += daily_return
+            elif daily_return < 0:
+                losses += 1
+                total_loss += abs(daily_return)
+
+            prev_position = position
+
+        if not gross_returns:
+            return {"ok": False, "message": "No valid returns computed"}
+
+        gross_total = sum(gross_returns)
+        net_total = sum(net_returns)
+        n = len(gross_returns)
+
+        # Buy-hold benchmark: sum of Nifty daily returns (position=1 every day)
+        buy_hold = sum(o.get("actual_nifty_change", 0) for o in data)
+
+        return {
+            "ok": True,
+            "gross_return_pct": round(gross_total, 2),
+            "net_return_pct": round(net_total, 2),
+            "buy_hold_return_pct": round(buy_hold, 2),
+            "alpha_pct": round(net_total - buy_hold, 2),
+            "n_trading_days": n,
+            "position_changes": position_changes,
+            "win_rate": round(wins / max(wins + losses, 1) * 100, 1),
+            "avg_win": round(total_win / max(wins, 1), 2),
+            "avg_loss": round(total_loss / max(losses, 1), 2),
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def format_paper_pnl(days: int = 30) -> str:
+    """Format paper P&L report for Telegram."""
+    pnl = compute_paper_pnl(days=days)
+    if not pnl.get("ok"):
+        return ""
+
+    lines = ["📊 *PAPER P&L* (friction-adjusted)"]
+    lines.append(f"Period: ~{days}d | Trades: {pnl['n_trading_days']} | Changes: {pnl['position_changes']}")
+    lines.append(f"")
+    lines.append(f"Gross Return: `{pnl['gross_return_pct']:+.2f}%`")
+    lines.append(f"Net Return:   `{pnl['net_return_pct']:+.2f}%` (after {FRICTION_TOTAL*100:.2f}% friction/change)")
+    lines.append(f"Buy-Hold:     `{pnl['buy_hold_return_pct']:+.2f}%`")
+    lines.append(f"Alpha (net):  `{pnl['alpha_pct']:+.2f}%`")
+    lines.append(f"")
+    lines.append(f"Win Rate: {pnl['win_rate']}% | Avg Win: {pnl['avg_win']:+.2f}% | Avg Loss: {pnl['avg_loss']:.2f}%")
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SIGNAL ACCURACY TRACKING — Dynamic Weight Adjustment
 # Track which signals are actually predictive. Adjust bull/bear weights by hit rate.
 # ═══════════════════════════════════════════════════════════════════════════════

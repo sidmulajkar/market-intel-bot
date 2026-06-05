@@ -10,7 +10,7 @@ from src.db              import was_alert_sent, log_alert_sent
 from src.validator       import validate_articles, assess_sentiment_consensus
 from src.validation_helper import build_ground_truth_from_index
 from src.manifest import load as manifest_load
-from src.fingerprint import compute_raw_fingerprint, build_anchor_dict, should_skip
+from src.fingerprint import compute_raw_fingerprint, build_anchor_dict, hours_since, fmt_time_since
 from src.bot_state import get_skip_meta, update_skip_meta
 from src.guardian import Guardian, TriageLevel
 from typing import Dict
@@ -132,9 +132,9 @@ def main():
         from src.context_engine import run_contextualization
         anchor_data = fetch_macro_anchors()
 
-        # ── P18/P14/P16: Guardian + Fingerprint Skip Gate ─────────
+        # ── P18/P14/P16: Guardian + Fingerprint Gate ──────────────
         try:
-            from datetime import timezone
+            from datetime import datetime, timezone
             _manifest = manifest_load()
             guardian = Guardian(_manifest)
             for a in anchor_data or []:
@@ -144,17 +144,45 @@ def main():
                 )
             _anchors_dict = build_anchor_dict(anchor_data, index_data)
             _current_fp = compute_raw_fingerprint(_anchors_dict, _manifest)
-            _last_fp, _last_sent_at = get_skip_meta()
-            _skip, _reason = should_skip(_current_fp, _last_fp, _last_sent_at, heartbeat_min=240)
-            if _skip:
-                if "Heartbeat" in _reason:
-                    send_text("📌 *MARKET CLOSE*: Steady state. No notable change.")
-                    update_skip_meta(_current_fp, datetime.now(timezone.utc).isoformat())
-                else:
-                    print(f"⏭️  FINGERPRINT SKIP: {_reason}")
-                print("✅ MARKET CLOSE COMPLETE (skipped)")
+            _meta = get_skip_meta()
+            if _current_fp == _meta.last_fingerprint:
+                # ── FAST PATH: deterministic stub, no compute/AI ──
+                _h = hours_since(_meta.last_sent_at)
+                _tpl_key = "no_change_short" if _h < 4 else "no_change_standard"
+                _tpl = _manifest["templates"][_tpl_key]
+                _msg = _tpl.format(
+                    regime=_meta.last_regime,
+                    fragility=_meta.last_fragility,
+                    nifty=_anchors_dict.get("NIFTY", 0),
+                    vix=_anchors_dict.get("VIX", 0),
+                    time_since=fmt_time_since(_meta.last_sent_at),
+                )
+                send_text(f"📌 *MARKET CLOSE*\n{_msg}")
+                update_skip_meta(
+                    fingerprint=_current_fp,
+                    sent_at_iso=datetime.now(timezone.utc).isoformat(),
+                    regime=_meta.last_regime,
+                    fragility=_meta.last_fragility,
+                )
+                try:
+                    from src.state_journal import append_journal
+                    append_journal(
+                        job_tag="market_close",
+                        regime=_meta.last_regime,
+                        fragility=_meta.last_fragility,
+                        fingerprint=_current_fp,
+                        manifest_version=_manifest.get("version"),
+                        nifty=_anchors_dict.get("NIFTY"),
+                        vix=_anchors_dict.get("VIX"),
+                    )
+                except Exception:
+                    pass
+                print("✅ MARKET CLOSE COMPLETE (fast-path stub)")
                 return
-            update_skip_meta(_current_fp, datetime.now(timezone.utc).isoformat())
+            update_skip_meta(
+                fingerprint=_current_fp,
+                sent_at_iso=datetime.now(timezone.utc).isoformat(),
+            )
             _triage = guardian.finalize(_anchors_dict)
             if _triage == TriageLevel.RED:
                 send_text("🚨 DATA INTEGRITY FAILURE: Macro fetch >30% null. Pipeline halted.")
@@ -215,12 +243,8 @@ def main():
                 decomp_str = format_fii_decomposition(decomp, aggregate_fii_net=_agg_net)
                 if decomp_str:
                     flows_block += "\n\n" + decomp_str
-            elif "Entity data pending" not in flows_block:
-                # Independent fallback — don't gate on flows_block.strip()
-                if flows_block:
-                    flows_block += " | Entity data pending"
-                else:
-                    flows_block += "\n\n📌 *FII Decomposition:* Entity data pending."
+            else:
+                pass
         except Exception as e:
             print(f"   ⚠️ FII decomposition: {e}")
 
@@ -247,7 +271,7 @@ def main():
                     if match_str:
                         flows_block += "\n\n" + match_str
                 else:
-                    flows_block += "\n\n📌 *Pillar-Flow Match:* Sector data pending (backfill required)."
+                    pass
         except Exception as e:
             print(f"   ⚠️ Pillar-flow match: {e}")
 
@@ -266,9 +290,13 @@ def main():
     except Exception:
         pass
 
-    # Null-safe fallback: ensure Flows header always present (even when P5 blocks fire but main flow data missing)
-    if not flows_block.startswith("📊 *Flows:*"):
-        flows_block = "📌 *Flows:* Data pending (5AM fetch required)\n" + flows_block
+    # Suppress entirely if no flow data and no decomposition
+    if flows_block and not flows_block.startswith("📊 *Flows:*"):
+        if "Entity data pending" in flows_block and "Sector data pending" in flows_block:
+            flows_block = ""
+        elif "Entity data pending" in flows_block:
+            # Only the decomposition placeholder — suppress it too
+            flows_block = ""
 
     # ── Derivatives block (PCR, Max Pain, GEX, Skew) ──────────────
     derivs_block = ""
@@ -362,8 +390,8 @@ def main():
             derivs_block = f"📉 *Derivatives:* {' | '.join(parts)}"
             print(f"   ✅ Derivatives block built: {' | '.join(parts)}")
         else:
-            derivs_block = "📉 *Derivatives:* PCR unavailable (NSE v3 lag) | GEX: N/A | Max Pain: N/A"
-            print("   ⚠️ Derivatives block: no data — using stub")
+            derivs_block = ""
+            print("   ⚠️ Derivatives block: no data — suppressed")
         # GEX magnetic levels (from live fetch if available)
         try:
             from src.options_engine import format_gex_levels
@@ -485,9 +513,9 @@ def main():
                 f"  → {verdict_label} | {scorecard}"
             )
         else:
-            brier_block = "\n⚠️ *Scorecard:* Pending (yesterday's data unavailable)"
+            brier_block = ""
     except Exception:
-        brier_block = "\n⚠️ *Scorecard:* Pending (data unavailable)"
+        brier_block = ""
 
     def make_fallback():
         """Deterministic EOD text-only note — no AI needed. Blocks are rendered by send_eod."""
@@ -737,6 +765,21 @@ def main():
     # No AI — all blocks are deterministic. send_eod() assembles them
     # into a single message via reorder_market_blocks().
     send_eod("")
+
+    # ── P27: State Journal append (fail-open) ──
+    try:
+        from src.state_journal import append_journal
+        append_journal(
+            job_tag="market_close",
+            regime=locals().get("regime_label"),
+            nifty=locals().get("nifty"),
+            fingerprint=locals().get("_current_fp"),
+            manifest_version=locals().get("_manifest", {}).get("version"),
+            triage=str(locals().get("_triage", "GREEN")),
+        )
+    except Exception:
+        pass
+
     print("✅ MARKET CLOSE COMPLETE")
 
 if __name__ == "__main__":
