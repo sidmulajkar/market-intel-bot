@@ -212,8 +212,8 @@ if __name__ == "__main__":
     print("Sunday Simulation — Standalone execution")
     print("=" * 50)
 
-    from src.supabase_client import create_supabase_client
-    sb = create_supabase_client()
+    from src.db import get_client
+    sb = get_client()
     if not sb:
         print("❌ Supabase connection failed")
         sys.exit(1)

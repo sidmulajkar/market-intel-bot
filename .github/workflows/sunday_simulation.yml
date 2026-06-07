@@ -40,8 +40,8 @@ jobs:
         run: |
           python3 -c "
           from src.sunday_simulation import run_sunday_simulation
-          from src.supabase_client import create_supabase_client
-          sb = create_supabase_client()
+          from src.db import get_client
+          sb = get_client()
           if not sb:
             print('❌ Supabase connection failed')
             exit(1)

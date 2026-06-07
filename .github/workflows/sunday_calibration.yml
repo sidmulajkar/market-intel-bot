@@ -37,27 +37,28 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run full calibration + manifest write
-        run: python3 -c "
-from src.sunday_calibration import run_full_calibration
-result = run_full_calibration()
-if not result.get('ok'):
-    print('❌ Calibration pipeline failed')
-    exit(1)
-ep = result.get('episode_results', {})
-if ep.get('ok'):
-    print(f'Episodes passed: {ep.get(\"episodes_passed\", 0)}/{ep.get(\"episodes_evaluated\", 0)}')
-    print(f'Overall F1: {ep.get(\"overall_f1\")}')
-p17 = result.get('p17', {})
-if p17.get('ok'):
-    print(f'P17: cap_neutral={p17[\"cap_neutral\"]} force_defensive={p17[\"force_defensive\"]} holdout_acc={p17[\"holdout_accuracy\"]:.3f}')
-    if p17.get('used_defaults'):
-        print('⚠️ P17: Holdout ≤ baseline — keeping defaults')
-aw = result.get('adaptive_weights', {})
-non_default = {k: v for k, v in aw.items() if v != 1.0}
-if non_default:
-    print(f'Adaptive weights (non-default): {non_default}')
-else:
-    print('Adaptive weights: all 1.0 (insufficient history)')
-print(f'Manifest written: {result.get(\"manifest_written\", False)}')
-"
+        run: |
+          python3 -c "
+          from src.sunday_calibration import run_full_calibration
+          result = run_full_calibration()
+          if not result.get('ok'):
+              print('❌ Calibration pipeline failed')
+              exit(1)
+          ep = result.get('episode_results', {})
+          if ep.get('ok'):
+              print(f'Episodes passed: {ep.get(\"episodes_passed\", 0)}/{ep.get(\"episodes_evaluated\", 0)}')
+              print(f'Overall F1: {ep.get(\"overall_f1\")}')
+          p17 = result.get('p17', {})
+          if p17.get('ok'):
+              print(f'P17: cap_neutral={p17[\"cap_neutral\"]} force_defensive={p17[\"force_defensive\"]} holdout_acc={p17[\"holdout_accuracy\"]:.3f}')
+              if p17.get('used_defaults'):
+                  print('⚠️ P17: Holdout ≤ baseline — keeping defaults')
+          aw = result.get('adaptive_weights', {})
+          non_default = {k: v for k, v in aw.items() if v != 1.0}
+          if non_default:
+              print(f'Adaptive weights (non-default): {non_default}')
+          else:
+              print('Adaptive weights: all 1.0 (insufficient history)')
+          print(f'Manifest written: {result.get(\"manifest_written\", False)}')
+          "
         timeout-minutes: 12

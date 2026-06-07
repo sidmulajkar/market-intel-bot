@@ -49,6 +49,10 @@ scripts/backfill_paper_pnl.py
 # Phase C modules (deferred from v0.5-beta commit)
 src/state_journal.py
 
+#Agents file data
+AGENTS.md
+
+
 # OpenCode / OpenClaude / Claude Code local config — NEVER commit
 .opencode/
 .openclaude/
