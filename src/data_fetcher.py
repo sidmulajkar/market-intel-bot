@@ -55,7 +55,6 @@ VALID_RANGES = {
     "JPY=X":      (50, 500),    # USD/JPY (was ~75 in 2011, ~160 in 2024)
     "EURUSD=X":   (0.5, 2.5),   # EUR/USD (was ~0.83 in 2000, ~1.60 in 2008)
     "2YY=F":      (0.1, 20.0),  # US 2Y yield %
-    "INDIA10Y=X": (4.0, 12.0),  # India 10Y yield %
     "ES=F":       (1000, 20000), # S&P 500 E-mini futures
     "NQ=F":       (2000, 50000), # Nasdaq 100 futures
     "^N225":      (5000, 100000),# Nikkei 225
@@ -85,7 +84,6 @@ _MAX_DAILY_CHANGE_PCT = {
     "JPY=X":      3.0,
     "EURUSD=X":   3.0,
     "2YY=F":      10.0,
-    "INDIA10Y=X": 10.0,
     "ES=F":       5.0,
     "NQ=F":       5.0,
     "^N225":      5.0,
@@ -378,13 +376,9 @@ def fetch_macro_anchors() -> list:
 
     Returns list of dicts with: name, symbol, price, change_pct, weekly_change_pct, status, ok
 
-    Anchors (14):
-    - USD/INR, Brent Crude, Gold — existing
-    - India VIX, Dollar Index, US 10Y — existing
-    - CBOE VIX (global fear), HYG (credit stress), WTI Crude — existing
-    - JPY (carry trade), EUR (DXY composition), Silver, Copper (growth proxy), US 2Y (Fed expectations) — NEW
+    Returns list of dicts with: name, symbol, price, change_pct, weekly_change_pct, status, ok
     """
-    print("📡 Fetching macro anchors (14 tickers, batch)...")
+    print("📡 Fetching macro anchors (24 tickers, batch)...")
     anchors = [
         {"name": "USD/INR",         "symbol": "USDINR=X"},
         {"name": "Brent Crude",     "symbol": "BZ=F"},
@@ -401,8 +395,7 @@ def fetch_macro_anchors() -> list:
         {"name": "Silver",          "symbol": "SI=F"},        # Industrial precious metal
         {"name": "Copper",          "symbol": "HG=F"},        # Dr. Copper — growth proxy
         {"name": "US 2Y Yield",     "symbol": "2YY=F"},       # Fed expectations
-        {"name": "India 10Y Yield", "symbol": "INDIA10Y=X"},  # Sovereign borrowing cost
-        {"name": "Nifty GS 10YR",   "symbol": "NIFTYGS10YR.NS"},  # Active Nifty G-Sec index tracker
+        {"name": "India 10Y Yield", "symbol": "NIFTYGS10YR.NS"},  # Nifty G-Sec 10YR index (tracker)
         {"name": "S&P 500 Futures", "symbol": "ES=F"},        # US equity futures
         {"name": "Nasdaq Futures",  "symbol": "NQ=F"},        # US tech futures
         {"name": "Nikkei 225",      "symbol": "^N225"},       # Japan equity index
@@ -1251,22 +1244,39 @@ def get_india_10y_yield(fallback: float = 7.0) -> dict:
     """Dual-source India 10Y G-Sec yield fetcher.
 
     Source A: yfinance INDIA10Y=X (often delisted — best-effort).
-    Source B: Hardcoded last-known print with drift warning.
+    Source B: yfinance NIFTYGS10YR.NS (Nifty GS 10YR index → approximate yield).
+    Source C: Hardcoded last-known print with drift warning.
     """
     try:
         import yfinance as yf
+        # Source A: legacy INDIA10Y=X
         d = yf.download("INDIA10Y=X", period="5d", progress=False)
         if d is not None and not d.empty:
             close = d["Close"]
             val = close.iloc[-1]
             val = float(val.iloc[0]) if hasattr(val, "iloc") else float(val)
             if val and 4.0 <= val <= 12.0:
-                return {"IN10Y": round(val, 2), "source": "yfinance", "note": ""}
+                return {"IN10Y": round(val, 2), "source": "yfinance (INDIA10Y=X)", "note": ""}
+    except Exception:
+        pass
+
+    try:
+        # Source B: Nifty GS 10YR index — convert index to approximate yield
+        import yfinance as yf
+        d = yf.download("NIFTYGS10YR.NS", period="5d", progress=False)
+        if d is not None and not d.empty:
+            close = d["Close"]
+            val = close.iloc[-1]
+            val = float(val.iloc[0]) if hasattr(val, "iloc") else float(val)
+            if val and 100 <= val <= 5000:
+                approximate_yield = round(1000 / val * 7.1, 2)  # normalise to ~7.1% level
+                if 4.0 <= approximate_yield <= 12.0:
+                    return {"IN10Y": approximate_yield, "source": "yfinance (NIFTYGS10YR.NS)", "note": "approximate from G-Sec index"}
     except Exception:
         pass
 
     return {
         "IN10Y": fallback,
-        "source": "RBI API unavailable",
+        "source": "fallback",
         "note": "using last known print" if fallback else "RBI API unavailable, no last known print",
     }

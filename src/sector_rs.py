@@ -27,7 +27,8 @@ def fetch_sector_data() -> Dict:
     import time
 
     all_symbols = {NIFTY_50: "Nifty 50"}
-    all_symbols.update(SECTOR_INDICES)
+    for name, sym in SECTOR_INDICES.items():
+        all_symbols[sym] = name
 
     try:
         # Batch fetch all tickers at once (single yfinance call)

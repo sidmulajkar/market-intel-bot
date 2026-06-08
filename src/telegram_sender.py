@@ -144,6 +144,13 @@ def send_text(text: str, parse_mode: str = "Markdown") -> bool:
                 "parse_mode":               parse_mode,
                 "disable_web_page_preview": True,
             })
+            if not r.get("ok") and "can't parse entities" in r.get("description", ""):
+                print("⚠️  Markdown parse error (chunk) — retrying as plain text")
+                r = _post("sendMessage", json={
+                    "chat_id":                  CHAT_ID,
+                    "text":                     chunk,
+                    "disable_web_page_preview": True,
+                })
             success = success and r.get("ok", False)
         return success
 
@@ -153,6 +160,13 @@ def send_text(text: str, parse_mode: str = "Markdown") -> bool:
         "parse_mode":               parse_mode,
         "disable_web_page_preview": True,
     })
+    if not r.get("ok") and "can't parse entities" in r.get("description", ""):
+        print("⚠️  Markdown parse error — retrying as plain text")
+        r = _post("sendMessage", json={
+            "chat_id":                  CHAT_ID,
+            "text":                     text,
+            "disable_web_page_preview": True,
+        })
     return r.get("ok", False)
 
 def send_image(image_buf: BytesIO, caption: str = "") -> bool:

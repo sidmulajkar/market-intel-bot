@@ -2696,7 +2696,7 @@ def run_contextualization(anchor_data: List[Dict], extra_signals: Dict = None) -
             g_sec_yield = 7.1
             try:
                 import yfinance as yf
-                gsec = yf.Ticker("^NSEIGS").history(period="5d")
+                gsec = yf.Ticker("NIFTYGS10YR.NS").history(period="5d")
                 if not gsec.empty:
                     g_sec_yield = float(gsec["Close"].iloc[-1])
             except Exception:

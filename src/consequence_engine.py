@@ -270,7 +270,7 @@ def _get_dynamic_baseline(variable: str, csv_path: str = None) -> float:
             "us_10y": "^TNX",
             "wti": "CL=F",
             "copper": "HG=F",
-            "india_10y": "INDIA10Y=X",
+            "india_10y": "NIFTYGS10YR.NS",
         }
         column = sym_map.get(variable)
         if not column:
@@ -611,6 +611,7 @@ def compute_all_consequences(anchor_data: list, fii_data: dict = None) -> dict:
             "^VIX": "cboe_vix",
             "HYG": "hyg",
             "INDIA10Y=X": "india_10y",
+            "NIFTYGS10YR.NS": "india_10y",
         }
 
         for anchor in anchor_data:
@@ -754,7 +755,7 @@ def compute_net_fii_carry_yield() -> dict:
             db.table("macro_anchor_snapshots")
             .select("date, symbol, price")
             .gte("date", cutoff)
-            .in_("symbol", ["INDIA10Y=X", "^TNX", "USDINR=X"])
+            .in_("symbol", ["NIFTYGS10YR.NS", "^TNX", "USDINR=X"])
             .order("date")
             .execute()
         )
@@ -766,7 +767,7 @@ def compute_net_fii_carry_yield() -> dict:
         us_10y = None
         usdinr = None
         for row in reversed(result.data):
-            if row["symbol"] == "INDIA10Y=X" and india_10y is None:
+            if row["symbol"] in ("INDIA10Y=X", "NIFTYGS10YR.NS") and india_10y is None:
                 india_10y = row["price"]
             elif row["symbol"] == "^TNX" and us_10y is None:
                 us_10y = row["price"]

@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 import hashlib
 import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -35,6 +36,7 @@ def _get_arbiter_regime() -> dict:
     return {"regime": "NEUTRAL", "confidence": "LOW", "dominant_driver": "", "posture_text": "", "watch_levels": ""}
 
 def main():
+    _job_start = time.time()
     print("=" * 50)
     print("📊 MIDDAY SCAN STARTING")
     print("=" * 50)
