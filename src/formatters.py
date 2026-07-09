@@ -205,6 +205,9 @@ def reorder_market_blocks(
     drawdown_block: str = "",
     rotation_block: str = "",
     supplementary_block: str = "",
+    correlation_clamp_block: str = "",
+    vol_term_structure_block: str = "",
+    calendar_flow_block: str = "",
 ) -> str:
     """Reorder output blocks based on regime for dynamic India/Global split.
 
@@ -224,6 +227,12 @@ def reorder_market_blocks(
         sections.append(drawdown_block)
     if supplementary_block:
         sections.append(supplementary_block)
+    if correlation_clamp_block:
+        sections.append(correlation_clamp_block)
+    if vol_term_structure_block:
+        sections.append(vol_term_structure_block)
+    if calendar_flow_block:
+        sections.append(calendar_flow_block)
 
     if regime in ("DEFENSIVE", "BEARISH"):
         # 50/50 split: interleave India + Global
@@ -823,7 +832,8 @@ def _format_valuation_from_nse() -> str:
 
         # Equity Risk Premium
         erp = compute_equity_risk_premium(val["earnings_yield"], g_sec_yield)
-        lines.append(f"Equity Risk Premium: {erp['premium']:+.2f}% ({erp['label']})")
+        if erp.get("label"):
+            lines.append(f"Equity Risk Premium: {erp['premium']:+.2f}% ({erp['label']})")
 
         # Reverse DCF
         from src.valuation_engine import compute_reverse_dcf
@@ -1314,7 +1324,7 @@ def _format_news_line(article: dict) -> str:
         tags.append("Global")
     freshness = article.get("freshness_score", 10)
     if freshness < 5:
-        tags.append(f"stale ({freshness}/10)")
+        tags.append(f"aged ({freshness}/10)")
 
     # Clean editorial format with trust score
     if numbers:
@@ -1891,9 +1901,9 @@ def format_options_block(symbol: str = "NIFTY", run_label: str = "morning") -> s
                 from datetime import datetime, timezone
                 snap_date = stale.get("date", "unknown")
                 lines = []
-                lines.append("📊 *OPTIONS & DERIVATIVES (stale snapshot)*\n")
-                lines.append(f"┌─ Stale Data ──────────────────")
-                lines.append(f"│ Date: {snap_date} (live fetch failed)")
+                lines.append("📊 *OPTIONS & DERIVATIVES (reference)*\n")
+                lines.append(f"┌─ Snapshot ────────────────────")
+                lines.append(f"│ Date: {snap_date}")
                 if stale.get("pcr") is not None:
                     lines.append(f"│ PCR: {stale['pcr']}")
                 if stale.get("skew_25d") is not None:
@@ -2716,4 +2726,44 @@ def format_weekly_digest(scorecard: Dict = None, fii_pattern: Dict = None,
     lines.append("_Weekly digest — see you Monday! 🌅_")
 
     return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# INSTITUTIONAL BLOCKS: Correlation Clamp, Vol Term Structure, Calendar
+# ═══════════════════════════════════════════════════════════════════════
+
+def format_correlation_clamp_block(result: dict) -> str:
+    """Format correlation regime clamp for Telegram output.
+
+    Uses src.correlation_clamp.format_correlation_clamp internally.
+    Returns empty string when no clamps detected (format hygiene).
+    """
+    if not result.get("ok") or not result.get("clamps"):
+        return ""
+    from src.correlation_clamp import format_correlation_clamp
+    return format_correlation_clamp(result)
+
+
+def format_vol_term_structure_block(result: dict) -> str:
+    """Format VIX term structure for Telegram output.
+
+    Uses src.vol_term_structure.format_vol_term_structure internally.
+    Returns empty string when flat/insignificant (format hygiene).
+    """
+    if not result.get("ok"):
+        return ""
+    from src.vol_term_structure import format_vol_term_structure
+    return format_vol_term_structure(result)
+
+
+def format_calendar_flow_block(result: dict) -> str:
+    """Format calendar flow windows for Telegram output.
+
+    Uses src.calendar_flows.format_calendar_flows internally.
+    Returns empty string when no active windows (format hygiene).
+    """
+    if not result.get("ok"):
+        return ""
+    from src.calendar_flows import format_calendar_flows
+    return format_calendar_flows(result)
 

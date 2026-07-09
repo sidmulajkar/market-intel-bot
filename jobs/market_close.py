@@ -641,6 +641,14 @@ def main():
         except Exception:
             pass
 
+        # ── Vol Term Structure (computed early for pre-event check) ─
+        _vt = {}
+        try:
+            from src.vol_term_structure import compute_vol_term_structure
+            _vt = compute_vol_term_structure()
+        except Exception:
+            pass
+
         # P7–P12 Supplementary block (ERP, India vs EM, flags)
         supplementary_block = ""
         try:
@@ -723,8 +731,34 @@ def main():
             except Exception:
                 pass
 
+            # P16: Pre-event VIX term structure signal
+            try:
+                from src.vol_term_structure import check_vol_term_structure_pre_event
+                pre_evt = check_vol_term_structure_pre_event(_vt)
+                if pre_evt:
+                    sup_parts.append(pre_evt)
+            except Exception:
+                pass
+
             if sup_parts:
                 supplementary_block = "📋 *Supplementary:*\n" + "\n".join(sup_parts)
+        except Exception:
+            pass
+
+        # ── Correlation Clamp block ───────────────────────────────
+        correlation_clamp_block = ""
+        try:
+            from src.correlation_clamp import compute_correlation_clamp, format_correlation_clamp
+            _cc = compute_correlation_clamp()
+            correlation_clamp_block = format_correlation_clamp(_cc)
+        except Exception:
+            pass
+
+        # ── Vol Term Structure block ──────────────────────────────
+        vol_term_structure_block = ""
+        try:
+            from src.vol_term_structure import format_vol_term_structure
+            vol_term_structure_block = format_vol_term_structure(_vt)
         except Exception:
             pass
 
@@ -745,6 +779,8 @@ def main():
             drawdown_block=drawdown_block,
             rotation_block=rotation_block,
             supplementary_block=supplementary_block,
+            correlation_clamp_block=correlation_clamp_block,
+            vol_term_structure_block=vol_term_structure_block,
         )
         if not msg or not msg.strip():
             msg = _format_minimal_eod_fallback(regime_label, nifty, "", scenario_block or "")

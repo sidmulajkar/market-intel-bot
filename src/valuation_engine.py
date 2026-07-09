@@ -220,7 +220,8 @@ def format_valuation(val: Dict, g_sec_yield: float = None,
     # Equity Risk Premium (if G-Sec yield provided)
     if g_sec_yield is not None:
         erp = compute_equity_risk_premium(val["earnings_yield"], g_sec_yield)
-        lines.append(f"Equity Risk Premium: {erp['premium']:+.2f}% ({erp['label']})")
+        if erp.get("label"):
+            lines.append(f"Equity Risk Premium: {erp['premium']:+.2f}% ({erp['label']})")
 
     # Reverse DCF
     rdcf = compute_reverse_dcf(val["pe"])

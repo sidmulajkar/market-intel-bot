@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: market-intel-morning
+  group: bot-state-write
   cancel-in-progress: false
 
 jobs:
@@ -32,8 +32,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/skip_state.json
-          key: skip-state-${{ github.run_id }}
-          restore-keys: skip-state-
+          key: skip-state-${{ github.workflow }}-${{ github.run_id }}
+          restore-keys: skip-state-${{ github.workflow }}-
 
       - name: 📦 Install dependencies
         if: steps.cache-venv.outputs.cache-hit != 'true'
@@ -44,7 +44,6 @@ jobs:
         env:
           GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
           GOOGLE_AI_KEY:    ${{ secrets.GOOGLE_AI_KEY }}
-          HF_KEY:           ${{ secrets.HF_KEY }}
           FINNHUB_KEY:      ${{ secrets.FINNHUB_KEY }}
           SUPABASE_URL:     ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:     ${{ secrets.SUPABASE_KEY }}

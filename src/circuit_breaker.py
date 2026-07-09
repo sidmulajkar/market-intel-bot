@@ -4,15 +4,15 @@ Circuit Breaker — prevents cascading failures from degraded external services.
 Three states: CLOSED (normal) → OPEN (tripped) → HALF_OPEN (testing recovery).
 
 Usage:
-    breaker = CircuitBreaker(name="finbert", failure_threshold=3, recovery_timeout=300)
+    breaker = CircuitBreaker(name="options_api", failure_threshold=3, recovery_timeout=300)
 
     @breaker
-    def call_finbert(text):
+    def fetch_options_data():
         ...
 
 Or manually:
     with breaker:
-        call_finbert(text)
+        fetch_options_data()
 
 When OPEN, decorated functions return the default_return value immediately
 without executing the body.

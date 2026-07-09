@@ -26,6 +26,9 @@ NSE_HEADERS = {
 # Index symbols use different endpoint
 INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "NIFTY BANK", "FINNIFTY", "MIDCPNIFTY"}
 
+# Source tracking: set by fetch_nse_options_chain, read by analyze_options_chain
+_last_fetch_source = None  # "live" or "cache"
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # FETCH: NSE Options Chain
@@ -40,6 +43,7 @@ def fetch_nse_options_chain(symbol: str = "NIFTY") -> List[Dict]:
     Uses shared NSE session from nse_session.py for cookie management.
     Circuit breaker: trips after 3 failures, skips for 5 minutes.
     """
+    global _last_fetch_source
     from datetime import datetime, timedelta
     from src.nse_session import nse_get
 
@@ -122,6 +126,7 @@ def fetch_nse_options_chain(symbol: str = "NIFTY") -> List[Dict]:
                     _write_chain_cache(_CACHE_FILE, expiry_str, results)
                     if _options_breaker:
                         _options_breaker.record_success()
+                    _last_fetch_source = "live"
                     print(f"   ✅ TIER 1: NSE v3 OK ({len(results)} strikes)")
                     return results
         else:
@@ -136,6 +141,7 @@ def fetch_nse_options_chain(symbol: str = "NIFTY") -> List[Dict]:
         print(f"   📦 TIER 2: Cache OK (expiry {cached['expiry']})")
         if _options_breaker:
             _options_breaker.record_success()
+        _last_fetch_source = "cache"
         return cached["data"]
 
     print("   ⚠️ TIER 2: No file cache available")
@@ -587,6 +593,7 @@ def analyze_options_chain(symbol: str = "NIFTY", spot_price: float = None) -> Di
     """
     Full options analysis — fetch + compute all metrics including GEX, skew, advanced OI.
     """
+    global _last_fetch_source
     options_data = fetch_nse_options_chain(symbol)
     if not options_data:
         return {"ok": False, "message": "No options data"}
@@ -616,6 +623,7 @@ def analyze_options_chain(symbol: str = "NIFTY", spot_price: float = None) -> Di
         "skew": skew,
         "advanced_oi": advanced,
         "timestamp": datetime.now().isoformat(),
+        "data_source": _last_fetch_source or "unknown",
     }
 
 
@@ -647,6 +655,7 @@ def store_options_snapshot(symbol: str, run: str, analysis: Dict) -> bool:
             "skew_25d": analysis.get("skew", {}).get("risk_reversal_25d"),
             "support_zone": analysis.get("zones", {}).get("support_zone", []),
             "resistance_zone": analysis.get("zones", {}).get("resistance_zone", []),
+            "data_source": analysis.get("data_source", "unknown"),
         }
 
         client.table("options_snapshots").insert(data).execute()

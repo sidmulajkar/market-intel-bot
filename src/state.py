@@ -104,7 +104,7 @@ class FeatureVector(BaseModel):
     """Normalized features (-1 to 1) for ML/forecasting pipelines."""
     momentum_12m: Optional[float] = None     # 12-month Nifty return, normalized
     carry_fii: Optional[float] = None        # FII flow momentum
-    sentiment_finbert: Optional[float] = None # Aggregated FinBERT score
+    sentiment_finbert: Optional[float] = None # Aggregated sentiment score (Gemini/lexicon)
     vix_zscore: Optional[float] = None       # VIX deviation from mean
     breadth_score: Optional[float] = None    # A/D ratio normalized
     valuation_zscore: Optional[float] = None # P/E deviation from mean

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: morning-brief
+  group: bot-state-write
   cancel-in-progress: false
 
 jobs:
@@ -46,7 +46,6 @@ jobs:
           TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FINNHUB_KEY:      ${{ secrets.FINNHUB_KEY }}
-          HF_KEY:           ${{ secrets.HF_KEY }}
           SUPABASE_URL:     ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:     ${{ secrets.SUPABASE_KEY }}
         run: python jobs/morning_brief.py

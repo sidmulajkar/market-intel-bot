@@ -1,12 +1,10 @@
 """
-AI Engine — Groq + Google AI Studio
-Fixed: RateLimitError import + correct model names
+AI Engine — Groq + Google AI Studio (google-genai SDK)
 """
 import os
 import re
 import json
 import time
-import requests
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 
@@ -19,14 +17,12 @@ def _fmt_rupee_local(value: float) -> str:
 # ── GROQ ──────────────────────────────────────────────────────────
 try:
     from groq import Groq
-    # BUG FIX: RateLimitError is groq.APIStatusError in newer versions
-    # Use base Exception and check status code instead
     GROQ_AVAILABLE = True
 except ImportError:
     GROQ_AVAILABLE = False
     print("⚠️  groq not installed")
 
-# ── GOOGLE (google-genai SDK, replaces deprecated google.generativeai) ─
+# ── GOOGLE (google-genai SDK) ─────────────────────────────────────
 try:
     from google import genai as genai_client
     from google.genai import types as genai_types
@@ -41,7 +37,14 @@ except ImportError:
 
 GROQ_KEY   = os.environ.get('GROQ_API_KEY',  '')
 GOOGLE_KEY = os.environ.get('GOOGLE_AI_KEY', '')
-HF_KEY     = os.environ.get('HF_KEY',        '')
+
+# Gemini model fallback chain — newest/cheapest first.
+# google-genai SDK retries 429/5xx automatically (4 retries, exp backoff).
+_GEMINI_MODELS = [
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+]
 
 SYSTEM_PROMPT = (
     "You are a quantitative market analyst. Your output must:\n"
@@ -57,7 +60,8 @@ SYSTEM_PROMPT = (
 class AIEngine:
 
     def __init__(self):
-        self.groq_client  = None
+        self.groq_client   = None
+        self.google_client = None
         self.google_model = None
         self.google_search_client = None  # google-genai with Search Retrieval
         self._quota_cache: dict = {}  # {provider: (bool, timestamp)}
@@ -70,7 +74,17 @@ class AIEngine:
 
         if GOOGLE_AVAILABLE and GOOGLE_KEY:
             try:
-                self.google_client = genai_client.Client(api_key=GOOGLE_KEY)
+                self.google_client = genai_client.Client(
+                    api_key=GOOGLE_KEY,
+                    http_options=genai_types.HttpOptions(
+                        retry_options=genai_types.HttpRetryOptions(
+                            attempts=5,
+                            initial_delay=1.0,
+                            max_delay=30.0,
+                        ),
+                        timeout=30000,
+                    ),
+                )
             except Exception as e:
                 print(f"⚠️  Google AI init failed: {e}")
 
@@ -118,21 +132,25 @@ class AIEngine:
             return True  # Other errors (network etc) — let main call handle
 
     def _check_google_quota(self) -> bool:
-        """Minimal Google quota check."""
+        """Minimal Google quota check — tries model chain."""
         if not self.google_client:
             return False
-        try:
-            resp = self.google_client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=".",
-                config=genai_types.GenerateContentConfig(max_output_tokens=1, temperature=0),
-            )
-            return resp.text is not None
-        except Exception as e:
-            if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
-                print(f"   ⚠️ Google AI quota exhausted: {e}")
-                return False
-            return True
+        for model in _GEMINI_MODELS:
+            try:
+                resp = self.google_client.models.generate_content(
+                    model=model,
+                    contents=".",
+                    config=genai_types.GenerateContentConfig(max_output_tokens=1, temperature=0),
+                )
+                return resp.text is not None
+            except Exception as e:
+                if "404" in str(e) or "not found" in str(e).lower():
+                    continue  # try next model
+                if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
+                    print(f"   ⚠️ Google AI quota exhausted: {e}")
+                    return False
+                return True
+        return False
 
     def analyze(self, task: str, prompt: str, timeout_seconds: int = 15) -> str:
         """Call AI with hard timeout. Single attempt per provider — no retry chain."""
@@ -241,99 +259,87 @@ class AIEngine:
     def _try_google(self, prompt: str) -> str:
         if not self.google_client:
             return ""
-        try:
-            full_prompt = f"[SYSTEM INSTRUCTIONS]\n{SYSTEM_PROMPT}\n\n[USER REQUEST]\n{prompt}"
-            resp = self.google_client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=full_prompt,
-                config=genai_types.GenerateContentConfig(
-                    max_output_tokens=1000,
-                    temperature=0.3,
-                ),
-            )
-            return self._check_output_quality(resp.text)
-        except Exception as e:
-            print(f"   Google AI failed: {e}")
-            return ""
+        full_prompt = f"[SYSTEM INSTRUCTIONS]\n{SYSTEM_PROMPT}\n\n[USER REQUEST]\n{prompt}"
+        for model in _GEMINI_MODELS:
+            try:
+                resp = self.google_client.models.generate_content(
+                    model=model,
+                    contents=full_prompt,
+                    config=genai_types.GenerateContentConfig(
+                        max_output_tokens=1000,
+                        temperature=0.3,
+                    ),
+                )
+                return self._check_output_quality(resp.text)
+            except Exception as e:
+                if "404" in str(e) or "not found" in str(e).lower():
+                    continue  # try next model
+                print(f"   Google AI ({model}) failed: {e}")
+                return ""
+        return ""
 
     def _try_google_search(self, prompt: str) -> str:
-        """Gemini with Google Search Grounding — searches the web during generation.
+        """Gemini with Google Search Grounding — final fallback when all else fails.
 
-        This is the final fallback: when both Groq and standard Gemini fail,
-        we use Gemini + Google Search to get live web-grounded analysis.
-        The model can verify our numbers against live sources and find
-        fresh news that our APIs missed.
+        Uses web-grounded generation to verify numbers and find fresh news.
+        Tries model chain; search grounding may only work on certain models.
         """
         if not self.google_client:
             return ""
-        try:
-            print("   🔍 Falling back to Gemini + Google Search grounding...")
-            response = self.google_client.models.generate_content(
-                model='gemini-2.0-flash',
-                contents=f"[SYSTEM]\n{SYSTEM_PROMPT}\n\n[USER]\n{prompt}",
-                config=genai_types.GenerateContentConfig(
-                    tools=[genai_types.GoogleSearchRetrieval()],
-                    temperature=0.3,
-                    max_output_tokens=1000,
-                ),
-            )
-            text = response.text
+        # Models that support GoogleSearchRetrieval
+        search_models = ["gemini-2.0-flash", "gemini-2.5-flash-lite"]
+        for model in search_models:
+            try:
+                print(f"   🔍 Gemini + Google Search grounding ({model})...")
+                response = self.google_client.models.generate_content(
+                    model=model,
+                    contents=f"[SYSTEM]\n{SYSTEM_PROMPT}\n\n[USER]\n{prompt}",
+                    config=genai_types.GenerateContentConfig(
+                        tools=[genai_types.GoogleSearchRetrieval()],
+                        temperature=0.3,
+                        max_output_tokens=1000,
+                    ),
+                )
+                text = response.text
 
-            # Log grounding metadata (sources used)
-            if hasattr(response, 'grounding_metadata') and response.grounding_metadata:
-                gm = response.grounding_metadata
-                if gm.grounding_chunks:
-                    sources = [c.uri for c in gm.grounding_chunks[:3] if c.uri]
-                    if sources:
-                        print(f"   🔍 Search grounding used {len(sources)} web sources")
+                if hasattr(response, 'grounding_metadata') and response.grounding_metadata:
+                    gm = response.grounding_metadata
+                    if gm.grounding_chunks:
+                        sources = [c.uri for c in gm.grounding_chunks[:3] if c.uri]
+                        if sources:
+                            print(f"   🔍 Search grounding used {len(sources)} web sources")
 
-            return self._check_output_quality(text)
-        except Exception as e:
-            print(f"⚠️  Google Search grounding failed: {e}")
-            return ""
+                return self._check_output_quality(text)
+            except Exception as e:
+                if "404" in str(e) or "not found" in str(e).lower():
+                    continue
+                print(f"⚠️  Google Search grounding ({model}) failed: {e}")
+                return ""
+        return ""
 
     def sentiment(self, text: str) -> dict:
-        if not HF_KEY or not text.strip():
+        """Layered sentiment: Gemini (model chain) → keyword lexicon.
+        
+        Replaces FinBERT (HuggingFace Inference API) which was DNS-unreliable
+        in GHA (154s timeout per 8-headline batch).
+        """
+        if not text or not text.strip():
             return {"neutral": 1.0}
         if os.environ.get('DRY_RUN', '').lower() in ('1', 'true', 'yes'):
             return {"neutral": 1.0}
-        # Circuit breaker — skip entirely after 3 failures
+
+        # Tier 1: Gemini (batched as single-item list for interface compat)
         try:
-            from src.circuit_breaker import CircuitBreaker
-            _finbert_breaker = CircuitBreaker(
-                name="finbert", failure_threshold=3, recovery_timeout=300,
-            )
-            if _finbert_breaker.state == "OPEN":
-                return {"neutral": 1.0}
-        except Exception:
-            pass
-        API_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
-        headers = {"Authorization": f"Bearer {HF_KEY}"}
-        text    = text[:500]
-        for attempt in range(3):
-            try:
-                resp = requests.post(
-                    API_URL, headers=headers,
-                    json={"inputs": text}, timeout=30,
-                )
-                if resp.status_code == 200:
-                    result = resp.json()
-                    if result and isinstance(result[0], list):
-                        if '_finbert_breaker' in locals():
-                            _finbert_breaker.record_success()
-                        return {r["label"]: round(r["score"], 3)
-                                for r in result[0]}
-                elif resp.status_code == 503:
-                    print(f"⏳ FinBERT loading (attempt {attempt+1})...")
-                    time.sleep(20)
-                else:
-                    break
-            except Exception as e:
-                print(f"⚠️  FinBERT error: {e}")
-                time.sleep(5)
-        if '_finbert_breaker' in locals():
-            _finbert_breaker.record_failure()
-        return {"neutral": 1.0}
+            from src.sentiment import batch_sentiment_via_gemini
+            results = batch_sentiment_via_gemini([text], self.google_client)
+            if results and len(results) == 1:
+                return results[0]
+        except Exception as e:
+            print(f"   ⚠️ Gemini sentiment fell back: {e}")
+
+        # Tier 2: Lexicon fallback (pure Python, ~0.5ms)
+        from src.sentiment import sentiment_via_lexicon
+        return sentiment_via_lexicon(text)
 
     @staticmethod
     def morning_brief_prompt(index_data: dict, news_items: list = None, consensus_sentiment: str = "neutral") -> str:

@@ -278,6 +278,7 @@ def check_intraday_pillar_confirmation(
         if not driver_data or len(driver_data) < 2 or not nifty_data or len(nifty_data) < 2:
             results.append({
                 "pillar_name": pillar_name,
+                "pillar_label": pillar.get("label", pillar_name.replace("_", " ").title()),
                 "driver": driver["label"],
                 "result": "NO_DATA",
                 "detail": f"Insufficient intraday data for {driver['label']}",
@@ -320,6 +321,7 @@ def check_intraday_pillar_confirmation(
         if total_ticks < 2:
             results.append({
                 "pillar_name": pillar_name,
+                "pillar_label": pillar.get("label", pillar_name.replace("_", " ").title()),
                 "driver": driver["label"],
                 "result": "NO_DATA",
                 "detail": f"Insufficient active ticks for {driver['label']} ({total_ticks})",
@@ -336,6 +338,7 @@ def check_intraday_pillar_confirmation(
 
         results.append({
             "pillar_name": pillar_name,
+            "pillar_label": pillar.get("label", pillar_name.replace("_", " ").title()),
             "driver": driver["label"],
             "expected_correlation": driver["expected"],
             "result": result_label,
@@ -367,6 +370,7 @@ def format_intraday_pillar_check(check: Dict) -> str:
             icon = "❌"
         else:
             icon = "⚪"
-        lines.append(f"  {icon} {pc['pillar_name']}: {pc['result']} — {pc['detail']}")
+        p_label = pc.get("pillar_label", pc["pillar_name"])
+        lines.append(f"  {icon} {p_label}: {pc['result']} — {pc['detail']}")
 
     return "\n".join(lines)

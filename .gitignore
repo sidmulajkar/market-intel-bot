@@ -42,6 +42,8 @@ data/skip_state.json
 
 # Generated analysis output
 full_day_analyst_output.md
+telegram_analyst_verification.md
+telegram_architectural_verification.md
 
 # One-off utilities (not part of cron pipeline)
 scripts/backfill_paper_pnl.py

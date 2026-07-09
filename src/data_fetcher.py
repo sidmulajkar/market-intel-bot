@@ -696,6 +696,44 @@ def fetch_indian_news() -> List[Dict]:
     return articles
 
 
+def fetch_google_news(query: str = "NIFTY stock market India", max_results: int = 10) -> List[Dict]:
+    """Fetch news via Google News RSS (free, keyless, reliable).
+    
+    Google News RSS does not require API keys and works reliably from GHA.
+    Used as supplementary source when other RSS feeds fail.
+    """
+    import xml.etree.ElementTree as ET
+    from urllib.parse import quote
+
+    encoded = quote(f"{query} when:1d")
+    url = f"https://news.google.com/rss/search?q={encoded}&hl=en-IN&gl=IN&ceid=IN:en"
+
+    articles = []
+    try:
+        resp = requests.get(url, timeout=10, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; MarketIntelBot/1.0)"
+        })
+        if resp.status_code != 200:
+            return articles
+        root = ET.fromstring(resp.content)
+        for item in root.findall(".//item")[:max_results]:
+            title = item.findtext("title", "").strip()
+            link = item.findtext("link", "").strip()
+            source_elem = item.find("source")
+            source = source_elem.text if source_elem is not None else "Google News"
+            if title:
+                articles.append({
+                    "headline": title,
+                    "source":   source,
+                    "url":      link,
+                    "category": "google_news",
+                })
+    except Exception as e:
+        print(f"⚠️  Google News RSS: {e}")
+
+    return articles
+
+
 def fetch_market_breadth() -> Optional[Dict]:
     """
     Fetch NSE market breadth data (advance/decline, 52W highs/lows).

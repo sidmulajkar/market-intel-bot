@@ -381,7 +381,7 @@ def main():
         if bb.get("normalized") is not None:
             state.bull_bear_normalized = bb["normalized"]
         state.market_phase = ctx.get("market_phase", {}).get("phase")
-        state.cross_asset_regime = ctx.get("global_risk", {}).get("risk_mood")
+        state.cross_asset_regime = ctx.get("cross_asset_regime", {}).get("regime", "")
 
         # Populate macro
         macro = ctx.get("macro_context", {})
@@ -553,7 +553,23 @@ def main():
         except Exception as e:
             print(f"   ⚠️ Event volatility: {e}")
 
-        # ── P6.2: Pre-Event Positioning ────────────────────────
+        # ── P6.2: Correlation Regime Clamp ────────────────────
+        try:
+            from src.correlation_clamp import compute_correlation_clamp, format_correlation_clamp
+            clamp_result = compute_correlation_clamp()
+            clamp_block = format_correlation_clamp(clamp_result)
+        except Exception:
+            clamp_block = ""
+
+        # ── P6.3: Calendar Flows ──────────────────────────────
+        try:
+            from src.calendar_flows import get_calendar_flows, format_calendar_flows
+            cal_flow_result = get_calendar_flows()
+            cal_flow_block = format_calendar_flows(cal_flow_result)
+        except Exception:
+            cal_flow_block = ""
+
+        # ── P6.4: Pre-Event Positioning ────────────────────────
         try:
             from src.event_volatility import scan_upcoming_events
             ev_all = scan_upcoming_events(days_ahead=7)
@@ -593,13 +609,34 @@ def main():
         except Exception as e:
             print(f"   ⚠️ Pre-event positioning: {e}")
 
-        if regime_card:
+        # ── Pre-event VIX term structure signal ──────────────
+        try:
+            from src.vol_term_structure import compute_vol_term_structure, check_vol_term_structure_pre_event
+            _vt = compute_vol_term_structure()
+            pre_evt_vol = check_vol_term_structure_pre_event(_vt)
+        except Exception:
+            pre_evt_vol = ""
+
+        # Append systemic risk blocks before sending
+        extra_blocks = []
+        if clamp_block:
+            extra_blocks.append(clamp_block)
+        if cal_flow_block:
+            extra_blocks.append(cal_flow_block)
+        if pre_evt_vol:
+            extra_blocks.append(pre_evt_vol)
+        regime_supplement = "\n\n".join(extra_blocks)
+        regime_card_full = regime_card
+        if regime_supplement:
+            regime_card_full += "\n\n" + regime_supplement
+
+        if regime_card_full:
             merged = ""
             if brief_text:
                 merged += brief_text + "\n\n"
             if alerts_text:
                 merged += alerts_text + "\n\n"
-            merged += regime_card
+            merged += regime_card_full
             send_text(merged)
             print(f"   → Merged morning brief sent ({len(merged)} chars)")
     except Exception as e:

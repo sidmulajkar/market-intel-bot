@@ -16,6 +16,7 @@ from src.manifest import load as manifest_load
 from src.fingerprint import compute_raw_fingerprint, build_anchor_dict, hours_since, fmt_time_since
 from src.bot_state import get_skip_meta, update_skip_meta
 from src.guardian import Guardian, TriageLevel
+from src.daily_state import mark_job_completed
 
 
 def _get_arbiter_regime() -> dict:
@@ -37,6 +38,9 @@ def _get_arbiter_regime() -> dict:
 
 def main():
     _job_start = time.time()
+    _midday_fragility = None     # single fragility score for banner + context
+    _pillars_result = {}         # single pillar scores call
+    _pillar_check = {}           # single pillar confirmation check
     print("=" * 50)
     print("📊 MIDDAY SCAN STARTING")
     print("=" * 50)
@@ -275,7 +279,7 @@ def main():
                             lc_age = lc["age_days"]
                             lc_peak = lc.get("peak_score", "")
                             peak_str = f", Peak: {lc_peak:.0f}" if lc_peak else ""
-                            lc_label = p_name.replace("_", " ").title()
+                            lc_label = p.get("label", p_name.replace("_", " ").title())
                             lc_parts.append(f"{lc_label} ({lc_state}, Day {lc_age}{peak_str})")
                 if lc_parts:
                     pillar_lifecycle_str = " | ".join(lc_parts)
@@ -286,6 +290,7 @@ def main():
                 _frag = compute_fragility_index(_stress["stress_score"], _plls)
                 if _frag.get("ok"):
                     score = _frag["fragility_score"]
+                    _midday_fragility = score
                     severity = _frag["severity"]
                     drivers = _stress.get("top_drivers", [])
                     driver_labels = {
@@ -414,28 +419,43 @@ def main():
         morning = get_latest_snapshot("NIFTY", "morning")
         midday_analysis = run_options_analysis("NIFTY", store=True, run_label="midday")
         if morning and midday_analysis.get("ok"):
-            delta_parts = []
-            mp_m = morning.get("pcr")
-            mp_c = midday_analysis.get("pcr", {}).get("pcr")
-            if mp_m and mp_c and abs(mp_c - mp_m) > 0.01:
-                arrow = "↑" if mp_c > mp_m else "↓"
-                delta_parts.append(f"PCR {mp_m:.2f} → {mp_c:.2f} {arrow}")
+            # Freshness guard: both sides must be live for meaningful comparison
+            _both_live = (
+                morning.get("data_source") == "live"
+                and midday_analysis.get("data_source") == "live"
+            )
+            _morning_ts = morning.get("created_at", "")
+            _today_prefix = datetime.datetime.now().strftime("%Y-%m-%d")
+            _morning_from_today = _morning_ts.startswith(_today_prefix)
 
-            gex_m = morning.get("gex")
-            gex_c = midday_analysis.get("gex", {}).get("net_gex_cr")
-            if gex_m is not None and gex_c is not None and abs(gex_c - gex_m) > 10:
-                arrow = "↑" if gex_c > gex_m else "↓"
-                delta_parts.append(f"GEX ₹{gex_m:+.0f}Cr → ₹{gex_c:+.0f}Cr {arrow}")
+            if not _morning_from_today:
+                print("   ⚠️ Options delta: morning snapshot from previous day — suppressed")
+            elif not _both_live:
+                print(f"   ⚠️ Options delta: source mismatch (morning={morning.get('data_source')}, midday={midday_analysis.get('data_source')}) — suppressed")
+            else:
+                delta_parts = []
+                mp_m = morning.get("pcr")
+                mp_c = midday_analysis.get("pcr", {}).get("pcr")
+                if mp_m and mp_c and abs(mp_c - mp_m) > 0.01:
+                    arrow = "↑" if mp_c > mp_m else "↓"
+                    delta_parts.append(f"PCR {mp_m:.2f} → {mp_c:.2f} {arrow}")
 
-            skew_m = morning.get("skew_25d")
-            skew_c = midday_analysis.get("skew", {}).get("skew_25d")
-            if skew_m is not None and skew_c is not None and abs(skew_c - skew_m) > 0.3:
-                arrow = "↑" if skew_c > skew_m else "↓"
-                delta_parts.append(f"Skew {skew_m:+.1f} → {skew_c:+.1f} {arrow}")
+                gex_m = morning.get("gex")
+                gex_c = midday_analysis.get("gex", {}).get("net_gex_cr")
+                if gex_m is not None and gex_c is not None and abs(gex_c - gex_m) > 10:
+                    arrow = "↑" if gex_c > gex_m else "↓"
+                    delta_parts.append(f"GEX ₹{gex_m:+.0f}Cr → ₹{gex_c:+.0f}Cr {arrow}")
 
-            if delta_parts:
-                opt_delta_str = "📊 Options Delta (vs 09:15): " + " | ".join(delta_parts)
-            # GEX magnetic levels from midday snapshot
+                skew_m = morning.get("skew_25d")
+                skew_c = midday_analysis.get("skew", {}).get("skew_25d")
+                if skew_m is not None and skew_c is not None and abs(skew_c - skew_m) > 0.3:
+                    arrow = "↑" if skew_c > skew_m else "↓"
+                    delta_parts.append(f"Skew {skew_m:+.1f} → {skew_c:+.1f} {arrow}")
+
+                if delta_parts:
+                    opt_delta_str = "📊 Options Delta (vs 09:15): " + " | ".join(delta_parts)
+
+            # GEX magnetic levels from midday snapshot (shown regardless of delta freshness)
             try:
                 from src.options_engine import format_gex_levels
                 gex_lvl = format_gex_levels(midday_analysis.get("gex", {}), midday_analysis.get("spot_price"))
@@ -449,38 +469,31 @@ def main():
     if opt_delta_str:
         lines.append(opt_delta_str)
 
-    # ── Regime / Fragility context (Fix 6) ───────────────────────────
+    # ── Regime / Fragility context (single source of truth) ──────────
+    regime_info = _get_arbiter_regime()
     try:
-        from src.db import get_latest_market_state
-        _prev = get_latest_market_state(before_date=datetime.datetime.now().strftime("%Y-%m-%d"))
-        if _prev and _prev.get("final_regime"):
-            _reg = _prev["final_regime"]
-            _frag = _prev.get("fragility_score")
-            if _frag is not None:
-                comps = _prev.get("fragility_components", {})
-                _base = comps.get("base", 0)
-                _breadth = comps.get("breadth", 0)
-                _intensity = comps.get("intensity", 0)
-                lines.append(f"🏛 Regime: {_reg} | Fragility: {_frag:.0f}/100 (B:{_base:.0f} Br:{_breadth:.0f} P:{_intensity:.0f})")
-            else:
-                lines.append(f"🏛 Regime: {_reg}")
+        _reg = regime_info.get("regime", "NEUTRAL")
+        if _midday_fragility is not None:
+            lines.append(f"🏛 Regime: {_reg} | Fragility: {_midday_fragility:.0f}/100")
+        else:
+            lines.append(f"🏛 Regime: {_reg}")
     except Exception as e:
         print(f"   ⚠️ Regime context: {e}")
 
     # ── P6.3: Intraday Pillar Confirmation ──────────────────────────
     try:
         from src.pillar_classifier import get_current_pillar_scores
-        pillars_result = get_current_pillar_scores()
-        if pillars_result.get("ok") and pillars_result["pillars"]:
+        _pillars_result = get_current_pillar_scores()
+        if _pillars_result.get("ok") and _pillars_result["pillars"]:
             from src.intraday_pulse import check_intraday_pillar_confirmation, format_intraday_pillar_check
-            check = check_intraday_pillar_confirmation(pillars_result["pillars"])
-            if check.get("ok"):
-                pillar_check_text = format_intraday_pillar_check(check)
+            _pillar_check = check_intraday_pillar_confirmation(_pillars_result["pillars"])
+            if _pillar_check.get("ok"):
+                pillar_check_text = format_intraday_pillar_check(_pillar_check)
                 if pillar_check_text:
                     lines.append("\n" + pillar_check_text)
                     print(f"   → Intraday pillar check: {len(pillar_check_text)} chars")
             else:
-                print(f"   ⚠️ Intraday pillar check skipped: {check.get('reason', 'unknown')}")
+                print(f"   ⚠️ Intraday pillar check skipped: {_pillar_check.get('reason', 'unknown')}")
         else:
             print(f"   ⚠️ No active pillars for intraday check")
     except Exception as e:
@@ -518,24 +531,17 @@ def main():
         print(f"   ⚠️ AI or context failed: {e}")
         prompt = ""
 
-    regime_info = _get_arbiter_regime()
-
     # Build computed pillar status summary (replaces generic AI paragraph)
     def _build_pillar_status_summary() -> str:
-        """Compute a summary string from the intraday pillar check instead of AI fluff."""
+        """Compute a summary string from the intraday pillar check."""
         parts = []
         try:
-            from src.pillar_classifier import get_current_pillar_scores
-            pr = get_current_pillar_scores()
-            if pr.get("ok") and pr["pillars"]:
-                from src.intraday_pulse import check_intraday_pillar_confirmation
-                check = check_intraday_pillar_confirmation(pr["pillars"])
-                if check.get("ok") and check.get("pillar_confirmations"):
-                    for pc in check["pillar_confirmations"]:
-                        pname = pc["pillar_name"].replace("_", " ").title()
-                        status = pc["result"]
-                        parts.append(f"{pname}: {status.lower()}")
-            regime_label = regime_info.get("label", "NEUTRAL") if regime_info else "NEUTRAL"
+            if _pillar_check.get("ok") and _pillar_check.get("pillar_confirmations"):
+                for pc in _pillar_check["pillar_confirmations"]:
+                    pname = pc.get("pillar_label", pc["pillar_name"].replace("_", " ").title())
+                    status = pc["result"]
+                    parts.append(f"{pname}: {status.lower()}")
+            regime_label = regime_info.get("regime", "NEUTRAL") if regime_info else "NEUTRAL"
             status_str = " | ".join(parts) if parts else "No active pillars"
             return f"Pillar Status: {status_str}. Regime unchanged ({regime_label})."
         except Exception:
@@ -583,6 +589,22 @@ def main():
         )
     else:
         send_midday("")
+
+    # ── Persist midday findings to daily_state ──
+    try:
+        _midday_findings = {
+            "pillar_summary": pillar_summary,
+            "options_delta": opt_delta_str,
+            "regime": regime_info.get("regime") if regime_info else None,
+        }
+        if _pillar_check.get("ok") and _pillar_check.get("pillar_confirmations"):
+            _midday_findings["pillar_confirmations"] = [
+                {"pillar_name": p["pillar_name"], "result": p["result"]}
+                for p in _pillar_check["pillar_confirmations"]
+            ]
+        mark_job_completed("midday_scan", _midday_findings)
+    except Exception:
+        pass
 
     # ── P27: State Journal append (fail-open) ──
     try:

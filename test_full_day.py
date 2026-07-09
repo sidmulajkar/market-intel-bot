@@ -30,7 +30,6 @@ ENV_VARS = {
     "GROQ_API_KEY": os.environ.get("GROQ_API_KEY", ""),
     "GOOGLE_AI_KEY": os.environ.get("GOOGLE_AI_KEY", ""),
     "FINNHUB_KEY": os.environ.get("FINNHUB_KEY", ""),
-    "HF_KEY": os.environ.get("HF_KEY", ""),
     "TELEGRAM_TOKEN": "dummy-token-for-dry-run",
     "TELEGRAM_CHAT_ID": "dummy-chat-id",
 }

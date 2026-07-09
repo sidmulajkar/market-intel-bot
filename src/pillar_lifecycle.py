@@ -258,7 +258,7 @@ def _pillar_display_name(name: str) -> str:
         "EM_CONTAGION": "EM Contagion",
         "CARRY_UNWIND": "Carry Unwind",
         "DE_DOLLARIZATION": "De-dollarization",
-        "TECH_CYCLE": "Tech Cycle",
+        "TECH_CYCLE_BURST": "Tech Cycle",
     }
     return mapping.get(name, name.replace("_", " ").title())
 

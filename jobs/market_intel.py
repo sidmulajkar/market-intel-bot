@@ -633,7 +633,7 @@ def main():
         try:
             from src.shareholding_tracker import track_all_watchlist_shareholding
             # Use top 5 India gainers for shareholding tracking
-            top_stocks = [s["symbol"] for s in movers.get("india", {}).get("gainers", [])[:5]] if movers else []
+            top_stocks = [s["symbol"] + ".NS" for s in movers.get("india", {}).get("gainers", [])[:5]] if movers else []
             if top_stocks:
                 sh_results = track_all_watchlist_shareholding(top_stocks)
                 sig_changes = [r for r in sh_results if r.get("has_significant_change")]
@@ -1336,7 +1336,7 @@ def main():
         if bb.get("normalized") is not None:
             state.bull_bear_normalized = bb["normalized"]
         state.market_phase = market_phase.get("phase")
-        state.cross_asset_regime = ctx.get("global_risk", {}).get("risk_mood")
+        state.cross_asset_regime = ctx.get("cross_asset_regime", {}).get("regime", "")
 
         # Populate macro
         macro = ctx.get("macro_context", {})
