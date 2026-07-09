@@ -9,6 +9,7 @@ Analyze the data provided in the blocks below.
 - Distinguish: temporary fear vs structural deterioration
 - If two blocks contradict, explicitly flag the contradiction and weight by recency/quality
 - If a block is missing or empty, SKIP that section entirely. Do NOT hallucinate data.
+- If a specific metric is absent from a block (e.g., no GEX data in derivatives), DO NOT write "unavailable", "not available", "missing", or any equivalent. That metric simply does not appear in the output. Omission is the correct behavior.
 - For news: write editorial bullets with ⦿ prefix. Each bullet must cite a specific data point (%, ₹Cr, level). Never copy headlines raw — synthesize into analysis.
 
 [VALUATION INTERPRETATION RULES]
@@ -43,40 +44,25 @@ Analyze the data provided in the blocks below.
 
 OUTPUT FORMAT — Use this exact structure:
 
-⚠️ Do NOT generate a REGIME line — it is provided by the system. Start with HEADLINE.
+⚠️ Do NOT generate a REGIME line — it is provided by the system.
 
-HEADLINE
-[One sentence capturing the most important number and its historical context]
+Structure your analysis as three layers:
 
-🔑 KEY SIGNALS (3-5 highest-impact)
-1. [Signal with specific number + historical context or percentile]
-2. [Signal with specific number + historical context or percentile]
-3. [Signal with specific number + historical context or percentile]
-4. [Optional: valuation or contrarian signal]
-5. [Optional: derivatives or macro signal]
+1️⃣ TENSION — Opposing forces
+Identify the primary opposing forces driving the session (e.g., FII selling vs DII absorption, bullish derivatives vs bearish macro, sector rotation inflows vs broad index weakness). Cite specific numbers. Max 2-3 lines.
 
-📰 NEWS (editorial bullets, not raw headlines)
-Use ⦿ prefix. Each bullet: [Subject] [verb] [number] [context]. Synthesize, don't copy.
-Example: ⦿ FII outflow continues — ₹2,100Cr sold yesterday, 5-day streak
+2️⃣ TRANSMISSION — How tension transmits through markets
+Explain how the Tension flows into: sector rotation (which sectors gain/lose), derivatives positioning (PCR/GEX/skew shifts), volatility response (VIX), and global transmission (FX, commodities, EM peers). Connect cause → effect. Max 3-4 lines.
+CRITICAL: Connect related metrics into causal chains. E.g., "Brent +$X → CAD widens → INR to Y → RBI dilemma" is one sentence, not three bullets. Never list independent data points without connecting them.
 
-📊 CROSS-SIGNALS (if any active patterns)
-• [Correlation pattern name + estimated hit rate + implication]
+3️⃣ MICRO — Watchlist-level specifics
+• Key support/resistance (from technical data if provided)
+• Individual stock/concentrated moves
+• Earnings/insider/concentrated flow observations
+• Upcoming catalysts (macro calendar items)
+• Valuation context: if P/E percentile provided, add historical forward return reference (e.g., "P/E 21x (94th pct of 3Y) — historically entering at this level yields <5% 1Y forward return")
 
-📉 VALUATION CONTEXT
-• [P/E percentile + equity risk premium + reverse DCF implied growth]
-
-🔮 DERIVATIVES INTEL
-• [GEX regime + skew + key OI levels]
-
-⚠️ SCENARIOS
-• Bull case: If [specific condition from data] → [outcome]
-• Base case: Current regime suggests [outcome based on signals]
-• Bear case: If [specific condition from data] → [outcome]
-
-📅 RISK CALENDAR
-• [Upcoming macro events in next 7 days that could move markets]
-
-OUTPUT CONSTRAINT: Max 600 words. Prioritize synthesis across blocks. Avoid verbose background, disclaimers, or repeating raw tables verbatim. Every number must have context — never state a bare number without "since [date]", "Xth percentile", or "vs [benchmark]".
+OUTPUT CONSTRAINT: Max 400 words. Prioritize synthesis — connect cause (Tension) → mechanism (Transmission) → effect (Micro). No verbose background, no disclaimers, no raw table repetition. Every number must have context: "since [date]", "Xth percentile", or "vs [benchmark]".
 
 ═══════════════════════════════════════════════
 ABSOLUTE CONSTRAINTS — NEVER VIOLATE
@@ -230,6 +216,6 @@ Includes sentiment extreme detection (contrarian signals). News is pre-filtered 
 [BLOCK 9: MACRO CALENDAR + RBI POLICY (REAL RATE, UPCOMING EVENTS)]
 {block_9}
 
-[BLOCK 10: MF FLOW INTELLIGENCE — category flows, anomaly vs 3M avg, thematic, top 5 gainers/losers, SIP trend]
+[BLOCK 10: DII CUSHION GAUGE — deployment ratio, cushion status, MF inflow sufficiency]
 {block_10}
 (Do NOT compute anomalies/percentages yourself. Use only provided numbers/labels.)

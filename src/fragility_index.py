@@ -234,14 +234,10 @@ def _get_external_debt_stress_multiplier() -> float:
 
 
 def format_fragility_banner(fragility: Dict) -> str:
-    """Decomposed fragility banner with Base/Breadth/Raw Peak components."""
+    """Compact fragility banner — score and severity only."""
     if not fragility.get("ok"):
         return ""
     score = fragility["fragility_score"]
     severity = fragility["severity"]
-    comps = fragility.get("components", {})
-    base = comps.get("base", 0)
-    breadth = comps.get("breadth", 0)
-    raw_peak = comps.get("raw_peak", comps.get("intensity", 0))
     emoji = "🚨" if score >= 85 else "⚠️" if score >= 65 else "📌"
-    return f"{emoji} Fragility: {severity} ({score:.0f}/100) Base:{base:.0f} Breadth:{breadth:.0f} Peak:{raw_peak:.0f}"
+    return f"{emoji} Fragility: {severity} ({score:.0f}/100)"

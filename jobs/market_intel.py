@@ -1496,7 +1496,7 @@ def main():
         "block_7": "[BLOCK 7: INSIDER ACTIVITY]",
         "block_8": "[BLOCK 8: WATCHLIST — price, day_change%, volume_spike, MA20, 5D momentum, 1M return]",
         "block_9": "[BLOCK 9: MACRO CALENDAR (NEXT 7 DAYS)]",
-        "block_10": "[BLOCK 10: MF FLOW INTELLIGENCE — category flows, anomaly vs 3M avg, thematic, top 5 gainers/losers, SIP trend]",
+        "block_10": "[BLOCK 10: DII CUSHION GAUGE — deployment ratio, cushion status, MF inflow sufficiency]",
     }
 
     for key, content in blocks.items():

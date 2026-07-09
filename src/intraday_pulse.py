@@ -367,8 +367,6 @@ def format_intraday_pillar_check(check: Dict) -> str:
             icon = "❌"
         else:
             icon = "⚪"
-        c = pc.get("confirming_ticks", 0)
-        d = pc.get("diverging_ticks", 0)
-        lines.append(f"  {icon} {pc['pillar_name']}: {pc['result']} ({c}c/{d}d) — {pc['detail']}")
+        lines.append(f"  {icon} {pc['pillar_name']}: {pc['result']} — {pc['detail']}")
 
     return "\n".join(lines)

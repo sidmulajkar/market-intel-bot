@@ -585,8 +585,7 @@ def get_fallback_message() -> str:
     return (
         "🚨 *Market Intel Unavailable*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "All data sources temporarily unavailable.\n"
-        "Please try again in the next update cycle."
+        "Market data feed incomplete — retrying next cycle."
     )
 
 
@@ -599,7 +598,7 @@ def format_global_indices(index_data: dict) -> str:
     Uses proper index names (S&P 500, Nifty 50, etc.) instead of just country codes.
     """
     if not index_data:
-        return "_Note: Global indices data unavailable._"
+        return ""
 
     try:
         lines = []
@@ -635,7 +634,7 @@ def format_macro_anchors(anchor_data: list) -> str:
     Includes weekly change, status, and consequence layer for each anchor.
     """
     if not anchor_data:
-        return "_Note: Macro anchors data unavailable._"
+        return ""
 
     try:
         from src.consequence_engine import compute_all_consequences, format_consequence_line
@@ -869,7 +868,7 @@ def format_flows(ctx: Optional[Dict] = None) -> str:
         return _format_flows_from_db()
     except Exception as e:
         print(f"⚠️ format_flows: {e}")
-        return "_Note: FII/DII flow data unavailable._"
+        return ""
 
 
 def _format_flows_from_context(fm: Dict, ctx: Optional[Dict] = None) -> str:
@@ -1176,7 +1175,7 @@ def format_news(global_articles: list, indian_articles: list = None) -> str:
     Data sources (NSE, BSE, SEBI) are separated from news articles.
     """
     if not global_articles and not indian_articles:
-        return "_Note: News data unavailable._"
+        return ""
 
     try:
         from src.quant_enrichment import enrich_news_articles
@@ -1473,192 +1472,15 @@ def format_watchlist(watchlist_data: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────
 def format_mf_flows() -> str:
     """
-    Compute anomaly vs 3M avg, thematic signals, top5, SIP trend from DB.
-    Returns BLOCK 10 string.
+    DII cushion gauge — replaces verbose MF NAV list.
+    Returns BLOCK 10 string (compact 1-2 lines).
     """
     try:
-        from src.db import get_mf_flows
-        import pandas as pd
-
-        rows = get_mf_flows(months=4)
-
-        if not rows or len(rows) < 5:
-            return ""
-
-        df = pd.DataFrame(rows)
-        df["month"]      = pd.to_datetime(df["month"])
-        df["amount_cr"]   = df["amount_cr"].astype(float)
-        if "sip_amount_cr" in df.columns:
-            df["sip_amount_cr"] = pd.to_numeric(df["sip_amount_cr"], errors="coerce")
-
-        current_month  = df["month"].max()
-        current_df     = df[df["month"] == current_month]
-        prior_months   = df[df["month"] < current_month]
-
-        if current_df.empty or len(prior_months) < 1:
-            return ""
-
-        # ── Category flows ──
-        cat_parts = [f"{r['category']}: {r['amount_cr']:+.0f} Cr" for _, r in current_df.iterrows()]
-        # Data freshness indicator
-        data_date = current_month.strftime('%Y-%m-%d')
-        category_block = f"[Category Flows — {current_month.strftime('%b %Y')} | Data: {data_date}]\n" + " | ".join(cat_parts)
-
-        # ── Anomaly vs 3M avg ──
-        anomaly_lines = []
-        for _, row in current_df.iterrows():
-            cat  = row["category"]
-            curr = row["amount_cr"]
-            prior_cat = prior_months[prior_months["category"] == cat]
-            if len(prior_cat) >= 3:
-                avg_3m = prior_cat["amount_cr"].mean()
-                delta  = curr - avg_3m
-                if avg_3m != 0:
-                    pct_vs = (delta / abs(avg_3m)) * 100
-                    anomaly_lines.append(
-                        f"{cat}: {curr:+.0f} Cr (vs 3M avg {avg_3m:+.0f} Cr; {pct_vs:+.0f}% vs avg)"
-                    )
-                else:
-                    anomaly_lines.append(f"{cat}: {curr:+.0f} Cr (vs 3M avg: N/A)")
-            else:
-                anomaly_lines.append(f"{cat}: {curr:+.0f} Cr (insufficient history)")
-        anomaly_block = "[Anomaly vs 3M Avg]\n" + "\n".join(anomaly_lines)
-
-        # ── Thematic signals (with pace annualization) ──
-        import calendar as _cal
-        from datetime import datetime as _dt
-        thematic_lines = []
-        sector_df = current_df[current_df["category"].str.contains(
-            "Sector|Infra|IT|PSU|Thematic", case=False, na=False
-        )]
-        # Days elapsed in current month for pace projection
-        cm_date = current_month.to_pydatetime() if hasattr(current_month, 'to_pydatetime') else current_month
-        days_in_month = _cal.monthrange(cm_date.year, cm_date.month)[1]
-        today = _dt.now()
-        if today.month == cm_date.month and today.year == cm_date.year:
-            days_elapsed = today.day
-        else:
-            days_elapsed = days_in_month  # past month = full month
-
-        for _, row in sector_df.iterrows():
-            cat  = row["category"]
-            curr = row["amount_cr"]
-            prior_s = prior_months[prior_months["category"] == cat].sort_values("month", ascending=False)
-
-            # Compute annualized pace for current month
-            pace_str = ""
-            if days_elapsed > 0 and curr != 0:
-                monthly_pace = (curr / days_elapsed) * 22  # 22 avg trading days/month
-                annualized_pace = monthly_pace * 12
-                if len(prior_s) >= 3:
-                    prior_3m_avg = prior_s["amount_cr"].head(3).mean()
-                    prior_annualized = prior_3m_avg * 12
-                    if prior_annualized != 0:
-                        pace_delta_pct = ((annualized_pace / abs(prior_annualized)) - 1) * 100
-                        if abs(pace_delta_pct) > 30:
-                            pace_label = "accelerating" if pace_delta_pct > 0 else "decelerating"
-                            pace_str = f" (pace: ₹{annualized_pace:,.0f}Cr/yr vs avg ₹{prior_annualized:,.0f}Cr/yr → {pace_delta_pct:+.0f}% {pace_label})"
-
-            if len(prior_s) >= 2:
-                if curr > 0 and all(prior_s["amount_cr"] > 0):
-                    streak = sum(1 for x in prior_s["amount_cr"] if x > 0) + 1
-                    if pace_str:
-                        thematic_lines.append(f"{cat}: +₹{curr:.0f}Cr MTD{pace_str}")
-                    else:
-                        thematic_lines.append(f"{cat}: +₹{curr:.0f}Cr ({_ordinal(streak)} consecutive inflow)")
-                elif curr < 0 and all(prior_s["amount_cr"] < 0):
-                    streak = sum(1 for x in prior_s["amount_cr"] if x < 0) + 1
-                    if pace_str:
-                        thematic_lines.append(f"{cat}: ₹{curr:.0f}Cr MTD{pace_str}")
-                    else:
-                        thematic_lines.append(f"{cat}: ₹{curr:.0f}Cr ({_ordinal(streak)} consecutive outflow)")
-                else:
-                    if pace_str:
-                        thematic_lines.append(f"{cat}: {curr:+.0f}Cr MTD{pace_str}")
-                    else:
-                        thematic_lines.append(f"{cat}: {curr:+.0f}Cr")
-            else:
-                thematic_lines.append(f"{cat}: {curr:+.0f}Cr")
-        thematic_block = "[Thematic/Segment Signals]\n" + "\n".join(thematic_lines) if thematic_lines else ""
-
-        # ── Top 5 gainers/losers ──
-        sorted_df = current_df.sort_values("amount_cr", ascending=False)
-        gainers = sorted_df.head(5)
-        losers  = sorted_df.tail(5).iloc[::-1]
-        gainer_lines = [f"{i+1}) {r['category']}: {r['amount_cr']:+.0f} Cr" for i, (_, r) in enumerate(gainers.iterrows())]
-        loser_lines  = [f"{i+1}) {r['category']}: {r['amount_cr']:+.0f} Cr" for i, (_, r) in enumerate(losers.iterrows())]
-        top5_block = "[Top 5 Gainers]\n" + "\n".join(gainer_lines) + "\n\n[Top 5 Losers]\n" + "\n".join(loser_lines)
-
-        # ── SIP trend ──
-        sip_curr = current_df["sip_amount_cr"].sum() if "sip_amount_cr" in current_df else None
-        if pd.notna(sip_curr) and sip_curr > 0:
-            prev_month = prior_months["month"].max()
-            sip_prev   = prior_months[prior_months["month"] == prev_month]["sip_amount_cr"].sum()
-            if pd.notna(sip_prev) and sip_prev > 0:
-                if sip_curr > sip_prev * 1.01:
-                    sip_trend = f"SIP: {sip_curr:,.0f} Cr (vs prior month {sip_prev:,.0f} Cr; rising)"
-                elif sip_curr < sip_prev * 0.99:
-                    sip_trend = f"SIP: {sip_curr:,.0f} Cr (vs prior month {sip_prev:,.0f} Cr; falling)"
-                else:
-                    sip_trend = f"SIP: {sip_curr:,.0f} Cr (vs prior month {sip_prev:,.0f} Cr; flat)"
-            else:
-                sip_trend = f"SIP: {sip_curr:,.0f} Cr"
-        else:
-            sip_trend = "SIP trend: NOT AVAILABLE"
-        sip_block = "[SIP Trend]\n" + sip_trend
-
-        # ── MF Signals: Rotation, Risk Appetite, Bubble ──────────
-        signal_lines = []
-
-        # Rotation Index: Small Cap vs Large Cap
-        small = current_df[current_df["category"] == "Small Cap"]
-        large = current_df[current_df["category"] == "Large Cap"]
-        if not small.empty and not large.empty:
-            small_flow = small.iloc[0]["amount_cr"]
-            large_flow = large.iloc[0]["amount_cr"]
-            if large_flow > 0 and small_flow > 0:
-                ratio = small_flow / large_flow
-                if ratio > 2.0:
-                    signal_lines.append(f"🔴 Small Cap {ratio:.1f}x Large Cap — retail chasing risk, bubble signal")
-                elif ratio > 1.5:
-                    signal_lines.append(f"🟡 Small Cap {ratio:.1f}x Large Cap — risk appetite elevated")
-                elif ratio < 0.5:
-                    signal_lines.append(f"🟢 Large Cap {1/ratio:.1f}x Small Cap — defensive positioning")
-
-        # Risk Appetite: Equity vs Debt+Gold
-        equity_cats = ["Large Cap", "Mid Cap", "Small Cap", "Flexi Cap", "ELSS"]
-        debt_cats = ["Debt", "Liquid", "Hybrid"]
-        equity_flow = current_df[current_df["category"].isin(equity_cats)]["amount_cr"].sum()
-        debt_flow = current_df[current_df["category"].isin(debt_cats)]["amount_cr"].sum()
-        if equity_flow > 0 and debt_flow < 0:
-            signal_lines.append(f"🟢 Equity +₹{equity_flow:,.0f}Cr / Debt ₹{debt_flow:,.0f}Cr — risk-on rotation")
-        elif equity_flow < 0 and debt_flow > 0:
-            signal_lines.append(f"🔴 Equity ₹{equity_flow:,.0f}Cr / Debt +₹{debt_flow:,.0f}Cr — risk-off rotation")
-
-        # Consecutive streaks (3+ months)
-        for _, row in current_df.iterrows():
-            cat = row["category"]
-            curr = row["amount_cr"]
-            prior_s = prior_months[prior_months["category"] == cat].sort_values("month", ascending=False)
-            if len(prior_s) >= 2:
-                all_same_sign = all(prior_s["amount_cr"] > 0) if curr > 0 else all(prior_s["amount_cr"] < 0)
-                if all_same_sign and abs(curr) > 100:  # only flag meaningful flows
-                    streak = sum(1 for x in prior_s["amount_cr"] if (x > 0) == (curr > 0)) + 1
-                    if streak >= 3:
-                        direction = "inflow" if curr > 0 else "outflow"
-                        signal_lines.append(f"{'🟡' if curr < 0 else '🟢'} {cat}: {streak} months consecutive {direction} — trend building")
-
-        signal_block = "[MF Flow Signals]\n" + "\n".join(signal_lines) if signal_lines else ""
-
-        parts = [category_block, anomaly_block]
-        if thematic_block:
-            parts.append(thematic_block)
-        if signal_block:
-            parts.append(signal_block)
-        parts.extend([top5_block, sip_block])
-
-        return "MF Flow Intelligence:\n\n" + "\n\n".join(parts)
-
+        from src.dii_capacity import compute_dii_capacity, format_dii_capacity
+        cap = compute_dii_capacity(days=5)
+        if cap.get("ok"):
+            return format_dii_capacity(cap)
+        return ""
     except Exception as e:
         print(f"⚠️ format_mf_flows: {e}")
         return ""
@@ -2082,7 +1904,7 @@ def format_options_block(symbol: str = "NIFTY", run_label: str = "morning") -> s
                     lines.append(f"│ Max Pain: {stale['max_pain']}")
                 lines.append("└" + "─" * 30)
                 return "\n".join(lines)
-            return "_Note: Options data unavailable._"
+            return ""
 
         # Format output
         lines = []

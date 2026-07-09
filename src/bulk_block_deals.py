@@ -245,9 +245,59 @@ def fetch_bse_bulk_deals() -> List[Dict]:
 
 # ── MAIN AGGREGATOR ───────────────────────────────────────────────
 
+def _filter_cross_trades(deals: List[Dict]) -> List[Dict]:
+    """Filter out cross-trades where buy and sell prices match (±1%).
+    These are negotiated fiduciary transfers, not market-impact activity."""
+    from collections import defaultdict
+    by_sym_date = defaultdict(list)
+    for d in deals:
+        key = (d["symbol"], d["date"])
+        by_sym_date[key].append(d)
+
+    cross_trade_keys = set()
+    for key, day_deals in by_sym_date.items():
+        buys = [d for d in day_deals if "BUY" in d.get("buy_sell", "").upper()]
+        sells = [d for d in day_deals if "SELL" in d.get("buy_sell", "").upper()]
+        if not buys or not sells:
+            continue
+        for b in buys:
+            for s in sells:
+                bp = b.get("price", 0)
+                sp = s.get("price", 0)
+                if sp > 0 and bp > 0 and abs(bp - sp) / sp <= 0.01:
+                    cross_trade_keys.add((b["symbol"], b["date"], b["client"], s["client"]))
+                    break
+
+    if not cross_trade_keys:
+        return deals
+
+    filtered = [
+        d for d in deals
+        if (d["symbol"], d["date"], d["client"], None) not in cross_trade_keys
+        and (d["symbol"], d["date"], None, d["client"]) not in cross_trade_keys
+    ]
+    # Broader filter: remove all deals in a cross-traded pair
+    for sym, date, _, _ in cross_trade_keys:
+        filtered = [d for d in filtered if not (d["symbol"] == sym and d["date"] == date)]
+    # Re-add non-cross-traded deals for the same symbol on same date
+    for (sym, date, bc, sc) in cross_trade_keys:
+        for d in deals:
+            if d["symbol"] == sym and d["date"] == date:
+                is_cross = (
+                    ("BUY" in d.get("buy_sell", "").upper() and d["client"] == bc) or
+                    ("SELL" in d.get("buy_sell", "").upper() and d["client"] == sc)
+                )
+                if not is_cross and d not in filtered:
+                    filtered.append(d)
+
+    print(f"  🔄 Cross-trade filter: removed {len(deals) - len(filtered)} of {len(deals)} deals")
+    return filtered
+
+
 def get_all_deals(watchlist: List[str] = None) -> Dict:
     """
     Fetch and combine NSE bulk + NSE block + BSE bulk deals.
+    Cross-trades (matched buyer/seller at same price) are filtered out.
     Optionally filter to watchlist symbols only.
     Returns categorised dict for Telegram formatting.
     """
@@ -257,6 +307,9 @@ def get_all_deals(watchlist: List[str] = None) -> Dict:
     bse   = fetch_bse_bulk_deals()
 
     all_deals = bulk + block + bse
+
+    # Filter cross-trades (matched price → fiduciary transfer, not market activity)
+    all_deals = _filter_cross_trades(all_deals)
 
     # Filter to watchlist if provided
     if watchlist:

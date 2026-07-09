@@ -230,29 +230,35 @@ def main():
     except Exception as e:
         print(f"   ⚠️ Corp actions: {e}")
 
-    # ── Consequence mapping: macro events → India sector impact ───
+    # ── Macro transmission (synthesized, not independent bullets) ─
     consequence_block = ""
-    compound_lines = []
     try:
-        from src.consequence_engine import (
-            compute_all_consequences, format_consequence_block,
-            compute_compound_consequences,
-        )
-        consequences = compute_all_consequences(macro_anchors)
-        if consequences:
-            # Compress: only show ⚠️ or 🚨 severity variables
-            significant = {
-                k: v for k, v in consequences.items()
-                if v.get("severity") in ("ELEVATED", "HIGH", "STRESS", "EXTREME")
-            }
-            if significant:
-                consequence_block = format_consequence_block(significant)
-            else:
-                consequence_block = "Macro crosswinds balanced. No urgent tailwinds/headwinds."
-        # Cross-asset compounding (e.g., USDINR extreme → amplify oil impact)
-        compound_lines = compute_compound_consequences(macro_anchors)
+        usdinr_val = None
+        brent_val = None
+        us10y_val = None
+        for a in macro_anchors:
+            if a.get("name") == "USD/INR" and a.get("ok"):
+                usdinr_val = a.get("price")
+            if a.get("name") == "Brent Crude" and a.get("ok"):
+                brent_val = a.get("price")
+            if a.get("name") == "US10Y" and a.get("ok"):
+                us10y_val = a.get("price")
+        parts = []
+        if usdinr_val and usdinr_val >= 87:
+            parts.append(f"USDINR at {usdinr_val:.1f} (CAD pressure)")
+        if us10y_val and us10y_val >= 4.5:
+            parts.append(f"US10Y at {us10y_val:.1f}% (FII outflow risk)")
+        if brent_val and brent_val >= 80:
+            parts.append(f"Brent at ${brent_val:.0f} (input cost)")
+        if parts and len(parts) >= 2:
+            consequence_block = "🔄 TRANSMISSION: " + " combines with ".join(parts[:-1]) + ". " + parts[-1] + "."
+            consequence_block += " Net: FII outflow risk elevated, IT margins cushioning."
+        elif parts:
+            consequence_block = "🔄 TRANSMISSION: " + parts[0]
+        else:
+            consequence_block = "🔄 Macro crosswinds balanced."
     except Exception as e:
-        print(f"   ⚠️ Consequence mapping: {e}")
+        print(f"   ⚠️ Transmission: {e}")
 
     # ── Bulk/Block Deals ──────────────────────────────────────────
     deals_block = ""
@@ -358,8 +364,6 @@ def main():
         msg += "\n".join(lines) + "\n"
     if consequence_block:
         msg += f"\n{consequence_block}"
-    if compound_lines:
-        msg += "\n\n" + "\n".join(compound_lines)
     if derivs_block:
         msg += f"\n\n{derivs_block}"
     if deals_block:

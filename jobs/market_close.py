@@ -447,7 +447,9 @@ def main():
     india_all = movers.get("india", {}).get("gainers", []) + movers.get("india", {}).get("losers", [])
     if india_all:
         top = max(india_all, key=lambda x: abs(x.get("change_pct", 0)))
-        india_drivers.append(f"{top['symbol']} {top['change_pct']:+.1f}% (top India mover)")
+        # Skip India driver if already shown in Big Moves (5%+)
+        if not any(top['symbol'] in b for b in big_moves):
+            india_drivers.append(f"{top['symbol']} {top['change_pct']:+.1f}% (top India mover)")
     us_all = movers.get("us", {}).get("gainers", []) + movers.get("us", {}).get("losers", [])
     if us_all:
         # Suppress individual US equity movers before 7 PM IST (US cash market opens at 9:30 ET)
@@ -673,10 +675,7 @@ def main():
                 in10y_result = get_india_10y_yield()
                 in10y_val = in10y_result.get("IN10Y", 7.0)
                 in10y_source = in10y_result.get("source", "fallback")
-                note = in10y_result.get("note", "")
                 label = f"📊 IN10Y: {in10y_val:.2f}% ({in10y_source})"
-                if note:
-                    label += f" — {note}"
                 sup_parts.append(label)
                 # Also show Nifty GS 10YR index level when available
                 gs10_entry = (macro or {}).get("NIFTYGS10YR.NS") or {}
@@ -707,8 +706,9 @@ def main():
                     nifty_pe = ms.get("bull_bear_score") or ms.get("pe")
                 if nifty_pe and nifty_pe > 0:
                     erp = compute_erp(nifty_pe, india_10y)
-                    d = get_current_erp_decile(erp)
-                    sup_parts.append(format_erp_decile(erp) if d.get("ok") else f"ERP: {erp:.2f}%")
+                    if erp is not None:
+                        d = get_current_erp_decile(erp)
+                        sup_parts.append(format_erp_decile(erp) if d.get("ok") else f"ERP: {erp:.2f}%")
             except Exception:
                 pass
 
@@ -720,18 +720,6 @@ def main():
                     spread = rs.get("spread_30d", 0)
                     direction = "underperforming" if spread < 0 else "outperforming"
                     sup_parts.append(f"India vs EM (30D): {spread:+.1f}% ({direction})")
-            except Exception:
-                pass
-
-            # P7: Dynamic weight evidence
-            try:
-                from src.adaptive_weights import get_dynamic_weights
-                dw = get_dynamic_weights()
-                weighted = [f"{k.replace('_',' ').title()} ×{v:.1f}" for k, v in dw.items() if v != 1.0]
-                if weighted:
-                    sup_parts.append(f"Adaptive Weights: {' | '.join(weighted[:3])}")
-                else:
-                    sup_parts.append("Adaptive Weights: all at 1.0 (default)")
             except Exception:
                 pass
 

@@ -127,19 +127,34 @@ def main():
             sentiments.append(sent)
     consensus = assess_sentiment_consensus(sentiments) if sentiments else None
 
-    # ── Conditional skip gate (Phase 26: no signal = no send) ─────
-    # Skip unless: Nifty moved >1% from open, OR VIX spiked >20%, OR extreme moves detected
+    # ── Midday breadth (A/D ratio, strength) — fetched before skip gate ──
+    breadth_data = {}
+    try:
+        from src.data_fetcher import fetch_market_breadth
+        breadth = fetch_market_breadth()
+        if breadth and breadth.get("ok"):
+            breadth_data = breadth
+    except Exception as e:
+        print(f"   ⚠️ Breadth pre-fetch: {e}")
+
+    # ── Conditional skip gate (Phase 34: breadth + VIX refinement) ─────
+    # Pass through (don't skip) if ANY signal is notable
     nifty = valid_index.get("India", {})
     vix = valid_index.get("India VIX", {})
     nifty_change_abs = abs(nifty.get("change_pct", 0))
     nifty_change_pct = nifty.get("change_pct", 0)
+    nifty_moved = nifty_change_abs > 1.0
+
+    # VIX: baseline spike + intraday change
     vix_spike = False
+    vix_intraday_spike = False
     if vix and vix.get("price"):
         vix_price = vix.get("price", 0)
-        # Check if VIX spiked >20% from typical morning baseline (~16)
+        vix_change_abs = abs(vix.get("change_pct", 0))
+        if vix_change_abs > 15:
+            vix_intraday_spike = True
         try:
             from src.db import get_latest_market_state
-            from src.state import MarketState
             prev = get_latest_market_state()
             if prev and prev.get("macro", {}).get("vix"):
                 prev_vix = prev["macro"]["vix"]
@@ -147,21 +162,67 @@ def main():
                     vix_spike = True
         except Exception:
             pass
+    vix_notable = vix_spike or vix_intraday_spike
+
+    # Breadth: A/D ratio outside 0.67-1.5 = notable breadth action
+    breadth_notable = False
+    ad_ratio = 0.0
+    if breadth_data:
+        adv = breadth_data.get("advances", 0)
+        dec = breadth_data.get("declines", 0)
+        ad_ratio = adv / max(dec, 1)
+        breadth_notable = ad_ratio < 0.67 or ad_ratio > 1.5
 
     # Pre-scan for extreme moves (needed for skip gate)
     alerts = []
+    seen_symbols = set()
     india_all = movers.get("india", {}).get("gainers", []) + movers.get("india", {}).get("losers", [])
     for m in india_all:
-        change = abs(m.get("change_pct", 0))
         sym = m.get("symbol", "")
+        if sym in seen_symbols:
+            continue
+        change = abs(m.get("change_pct", 0))
         if change >= 5.0:
+            seen_symbols.add(sym)
+            alerts.append(m)
+    # Composite: 4%+ moves with notable breadth also counts
+    for m in india_all:
+        sym = m.get("symbol", "")
+        if sym in seen_symbols:
+            continue
+        change = abs(m.get("change_pct", 0))
+        if change >= 4.0 and breadth_notable:
+            seen_symbols.add(sym)
             alerts.append(m)
 
     has_extreme = len(alerts) > 0
-    nifty_moved = nifty_change_abs > 1.0
 
-    if not nifty_moved and not vix_spike and not has_extreme:
-        # Brief keepalive — no notable change, no silent completion
+    if not nifty_moved and not vix_notable and not has_extreme:
+        # Stealth decline: flat index + hostile breadth
+        if breadth_notable and ad_ratio < 0.67:
+            stealth_note = (
+                f"⚠️ STEALTH DECLINE: Index flat ({nifty_change_pct:+.2f}%), "
+                f"but breadth hostile (A/D {breadth_data.get('advances',0)}/"
+                f"{breadth_data.get('declines',0)}). "
+                f"Large-caps masking broad market weakness."
+            )
+            print(f"   🟡 Stealth decline detected — sending alert")
+            send_text(f"📌 *Midday:* {stealth_note}")
+            print("✅ MIDDAY SCAN COMPLETE")
+            return
+        # Stealth rally: flat index + broad buying
+        if breadth_notable and ad_ratio > 1.5:
+            stealth_note = (
+                f"⚠️ STEALTH RALLY: Index flat ({nifty_change_pct:+.2f}%), "
+                f"but breadth positive (A/D {breadth_data.get('advances',0)}/"
+                f"{breadth_data.get('declines',0)}). "
+                f"Broad buying masked by index weight cap."
+            )
+            print(f"   🟡 Stealth rally detected — sending alert")
+            send_text(f"📌 *Midday:* {stealth_note}")
+            print("✅ MIDDAY SCAN COMPLETE")
+            return
+        # Genuinely quiet
         skip_note = f"Nifty {nifty_change_pct:+.2f}% (< 1.0% threshold)"
         print(f"   🟡 Quiet session — sending keepalive ({skip_note})")
         send_text(f"📌 *Midday:* Quiet session. {skip_note}. No notable change.")
@@ -170,28 +231,62 @@ def main():
 
     if nifty_moved:
         print(f"   ⚡ Skip gate: Nifty moved {nifty_change_abs:.1f}%")
-    elif has_extreme:
+    if vix_intraday_spike:
+        vix_cp = vix.get("change_pct", 0)
+        print(f"   ⚡ Skip gate: VIX intraday {vix_cp:+.1f}% (>15%)")
+    if vix_spike:
+        print(f"   ⚡ Skip gate: VIX spiked >20% from morning baseline")
+    if breadth_notable:
+        direction = "broad buying" if ad_ratio > 1.5 else "broad selling"
+        print(f"   ⚡ Skip gate: Breadth A/D {ad_ratio:.2f} ({direction})")
+    if has_extreme:
         alts = ", ".join(f"{m.get('symbol','')} {m.get('change_pct',0):+.1f}%" for m in alerts[:3])
         print(f"   ⚡ Skip gate: Extreme stock moves ({alts})")
-    if vix_spike:
-        print(f"   ⚡ Skip gate: VIX spiked >20%")
 
-    # ── Fragility Index banner (composite, with Base Stress subtext) ──────
+    # ── Fragility Index banner (composite, with Pillar Lifecycle subtext) ──
     fragility_banner = ""
+    pillar_lifecycle_str = ""
     try:
         from src.pillar_classifier import get_percentiles_from_csv, classify_pillars
+        from src.pillar_lifecycle import compute_pillar_lifecycle, get_pillar_history_from_db
         from src.stress_index import compute_stress_index
         from src.fragility_index import compute_fragility_index
         _pcts = get_percentiles_from_csv()
         if _pcts:
             _plls = classify_pillars(_pcts)
             _stress = compute_stress_index()
+
+            # Pillar lifecycle for each active pillar
+            try:
+                active_pillars = _stress.get("pillars", _plls) if _stress.get("ok") else _plls
+                lc_parts = []
+                for p in (active_pillars or [])[:4]:
+                    p_name = p.get("name", p.get("pillar_name", ""))
+                    p_score = p.get("score", 0)
+                    if p_name and p_score >= 40:
+                        _history = []
+                        try:
+                            _history = get_pillar_history_from_db(p_name, days=30)
+                        except Exception:
+                            pass
+                        lc = compute_pillar_lifecycle(p_name, p_score, _history)
+                        if lc.get("ok"):
+                            lc_state = lc["state"]
+                            lc_age = lc["age_days"]
+                            lc_peak = lc.get("peak_score", "")
+                            peak_str = f", Peak: {lc_peak:.0f}" if lc_peak else ""
+                            lc_label = p_name.replace("_", " ").title()
+                            lc_parts.append(f"{lc_label} ({lc_state}, Day {lc_age}{peak_str})")
+                if lc_parts:
+                    pillar_lifecycle_str = " | ".join(lc_parts)
+            except Exception as e:
+                print(f"   ⚠️ Pillar lifecycle: {e}")
+
             if _stress.get("ok"):
                 _frag = compute_fragility_index(_stress["stress_score"], _plls)
                 if _frag.get("ok"):
                     score = _frag["fragility_score"]
                     severity = _frag["severity"]
-                    base = _frag.get("components", {}).get("base", 0)
                     drivers = _stress.get("top_drivers", [])
                     driver_labels = {
                         "vix": "VIX", "fii": "FII Velocity", "usdinr": "USDINR",
@@ -199,15 +294,16 @@ def main():
                     }
                     driver_str = ", ".join(driver_labels.get(d, d) for d in drivers) if drivers else "none"
                     emoji = "🚨" if score >= 85 else "⚠️" if score >= 65 else "📌"
-                    fragility_banner = f"{emoji} Fragility: {severity} ({score:.0f}/100) | Base Stress: {base:.0f} | Drivers: {driver_str}"
+                    fragility_banner = f"{emoji} Fragility: {severity} ({score:.0f}/100) | Drivers: {driver_str}"
     except Exception as e:
         print(f"   ⚠️ Fragility banner: {e}")
 
-    # ── Remove global indices from midday snapshot (Phase 26: stale at 12:30)
     # Build local snapshot only — no global indices at midday
     lines = []
     if fragility_banner:
         lines.append(fragility_banner)
+    if pillar_lifecycle_str:
+        lines.append(f"📌 Pillars: {pillar_lifecycle_str}")
 
     # Nifty + VIX line
     if nifty:
@@ -230,23 +326,18 @@ def main():
         lines.append(f"🔴 Losers: {l_str}")
 
     # ── Midday breadth (A/D ratio, strength) ─────────────────────
-    try:
-        from src.data_fetcher import fetch_market_breadth
-        breadth = fetch_market_breadth()
-        if breadth and breadth.get("ok"):
-            adv = breadth["advances"]
-            dec = breadth["declines"]
-            if adv == 0 and dec == 0:
-                if datetime.datetime.now().weekday() >= 5:
-                    lines.append("🏥 Midday Breadth: — (weekend)")
-                    print("   ⚠️ Weekend scan — skip gate was triggered by pre-market data")
-                else:
-                    lines.append("🏥 Midday Breadth: — (unavailable)")
+    if breadth_data:
+        adv = breadth_data.get("advances", 0)
+        dec = breadth_data.get("declines", 0)
+        if adv == 0 and dec == 0:
+            if datetime.datetime.now().weekday() >= 5:
+                lines.append("🏥 Midday Breadth: — (weekend)")
+                print("   ⚠️ Weekend scan — skip gate was triggered by pre-market data")
             else:
-                strength = breadth.get("strength", "")
-                lines.append(f"🏥 Midday Breadth: A/D {adv}/{dec} | {strength}")
-    except Exception as e:
-        print(f"   ⚠️ Breadth: {e}")
+                lines.append("")  # suppressed — no breadcrumb text
+        else:
+            strength = breadth_data.get("strength", "")
+            lines.append(f"🏥 Midday Breadth: A/D {adv}/{dec} | {strength}")
 
     # ── Sector RS (rotation phases) ────────────────────────────
     try:
@@ -307,31 +398,6 @@ def main():
             formatted_alerts.append(f"{emoji} *{sym}* {m['change_pct']:+.1f}% — extreme move")
             log_alert_sent(sym, key)
     alerts = formatted_alerts
-
-    # ── Bulk/Block Deals ──────────────────────────────────────────
-    deals_block = ""
-    try:
-        from src.insider_tracker import get_market_insider_activity
-        deals = get_market_insider_activity(days=10)
-        if deals.get("ok") and deals.get("symbol_flows"):
-            deal_lines = []
-            for sf in deals["symbol_flows"][:3]:
-                net = sf["net_val_cr"]
-                if abs(net) > 5:
-                    emoji = "🟢" if net > 0 else "🔴"
-                    deal_lines.append(f"{emoji} {sf['symbol']}: {sf['buy_val_cr']:.0f}₹ / {sf['sell_val_cr']:.0f}₹ out → net {sf['net_val_cr']:+.0f}₹ Cr")
-            if deal_lines:
-                deals_block = "📦 *Bulk/Block Deals:*\n" + "\n".join(deal_lines) + "\n⚠️ SEBI filings lag ~10 days"
-                # Dedup vs market_open (09:15): skip if hash matches
-                try:
-                    from src.db import get_bot_state
-                    prev = get_bot_state("deals_hash_morning")
-                    if prev and hashlib.md5(deals_block.encode()).hexdigest() == prev:
-                        deals_block = ""
-                except Exception:
-                    pass
-    except Exception as e:
-        print(f"   ⚠️ Deals fetch: {e}")
 
     # ── Derivatives snapshot (PCR, Max Pain, GEX) ─────────────────
     derivs_block = ""
@@ -502,8 +568,6 @@ def main():
             msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{computed}"
         if derivs_block:
             msg += f"\n\n{derivs_block}"
-        if deals_block:
-            msg += f"\n\n{deals_block}"
         if alerts:
             msg += f"\n\n⚠️ *Extreme Moves:*\n" + "\n".join(alerts)
         msg += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n_Mid-session check_"

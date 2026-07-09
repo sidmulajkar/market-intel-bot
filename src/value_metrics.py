@@ -236,12 +236,16 @@ def format_erp_decile(erp_value: float) -> str:
     return "📊 " + " | ".join(parts)
 
 
-def compute_erp(nifty_pe: float, india_10y_yield: float) -> float:
-    """Compute Equity Risk Premium: (1 / Nifty PE) - India 10Y Yield."""
+def compute_erp(nifty_pe: float, india_10y_yield: float) -> Optional[float]:
+    """Compute Equity Risk Premium: (1 / Nifty PE) - India 10Y Yield.
+    Returns None if out of plausible bounds (-10% to +15%)."""
     if not nifty_pe or nifty_pe <= 0:
-        return 0.0
+        return None
     earnings_yield = 100.0 / nifty_pe
-    return round(earnings_yield - india_10y_yield, 4)
+    erp = round(earnings_yield - india_10y_yield, 4)
+    if erp < -10.0 or erp > 15.0:
+        return None
+    return erp
 
 
 def _get_series(data, symbol: str):

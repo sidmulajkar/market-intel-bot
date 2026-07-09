@@ -324,6 +324,41 @@ Under 100 words. Reference actual data only. No bias, no key levels, no conditio
             pass
         return ""
 
+    def _build_tomorrow_trap_line():
+        """Deterministic forward outlook: key level + overnight risk + catalyst."""
+        parts = []
+        try:
+            # Key level from snapshot
+            from src.db import get_latest_market_state
+            prev = get_latest_market_state()
+            if prev:
+                levels = prev.get("key_levels", {})
+                support = levels.get("support") or prev.get("support")
+                resistance = levels.get("resistance") or prev.get("resistance")
+                if support:
+                    parts.append(f"Nifty must hold {support}")
+            # Macro calendar for next 1-2 days
+            from src.macro_calendar import get_macro_calendar
+            events = get_macro_calendar(days=3)
+            tomorrow = datetime.now() + timedelta(days=1)
+            tomorrow_str = tomorrow.strftime("%Y-%m-%d")
+            next_events = [e for e in (events or []) if e.get("date", "")[:10] == tomorrow_str]
+            if next_events:
+                event_names = [e.get("event", e.get("name", "")) for e in next_events[:2]]
+                if event_names:
+                    parts.append(f"Tomorrow: {', '.join(event_names)}")
+            # US market close impact
+            if valid_index.get("US"):
+                us_change = valid_index["US"].get("change_pct")
+                if us_change is not None and abs(us_change) > 0.5:
+                    dir_str = "up" if us_change > 0 else "down"
+                    parts.append(f"US {dir_str} {abs(us_change):.1f}% — gap {dir_str} risk")
+            if not parts:
+                return ""
+            return "  Tomorrow's Trap: " + " | ".join(parts)
+        except Exception:
+            return ""
+
     def send_evening(text):
         bluf = ""
         regime_verdict = {}
@@ -346,6 +381,9 @@ Under 100 words. Reference actual data only. No bias, no key levels, no conditio
         outlook = _build_outlook_line()
         if outlook and "Watch:" not in text:
             msg += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n{outlook}"
+        trap = _build_tomorrow_trap_line()
+        if trap:
+            msg += f"\n{trap}"
         send_text(msg)
 
     try:

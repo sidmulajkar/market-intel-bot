@@ -90,7 +90,7 @@ def format_rotation_map(active_pillar_names: List[str], fragility_score: float =
 
     tilt_map = get_sector_tilt_map(supabase)
     if not tilt_map:
-        return "📈 *SECTOR ROTATION MAP:* Data pending (Sunday backfill required)."
+        return ""
 
     lines = []
     for name in active_pillar_names:

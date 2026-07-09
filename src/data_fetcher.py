@@ -918,7 +918,7 @@ NIFTY_50 = [
     "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
     "LT.NS", "AXISBANK.NS", "BAJFINANCE.NS", "ASIANPAINT.NS", "MARUTI.NS",
     "SUNPHARMA.NS", "TITAN.NS", "ULTRACEMCO.NS", "NESTLEIND.NS", "WIPRO.NS",
-    "HCLTECH.NS", "M&M.NS", "NTPC.NS", "TATAMOTORS.NS", "POWERGRID.NS",
+    "HCLTECH.NS", "M&M.NS", "NTPC.NS", "TRENT.NS", "POWERGRID.NS",
     "ONGC.NS", "JSWSTEEL.NS", "TATASTEEL.NS", "ADANIENT.NS", "ADANIPORTS.NS",
     "BAJAJFINSV.NS", "TECHM.NS", "HDFCLIFE.NS", "DIVISLAB.NS", "DRREDDY.NS",
     "CIPLA.NS", "EICHERMOT.NS", "BRITANNIA.NS", "COALINDIA.NS", "GRASIM.NS",
@@ -983,10 +983,16 @@ def fetch_top_movers(top_n: int = 10) -> Dict:
             return []
 
     def _fetch_single_chunk(symbols, market):
-        """Fetch a single chunk of tickers."""
+        """Fetch a single chunk of tickers (timeout 30s)."""
         try:
-            data = yf.download(symbols, period="5d", interval="1d",
-                               group_by="ticker", progress=False, threads=True)
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeout
+            _pool = ThreadPoolExecutor(max_workers=1)
+            _fut = _pool.submit(
+                yf.download, symbols, period="5d", interval="1d",
+                group_by="ticker", progress=False, threads=True,
+            )
+            data = _fut.result(timeout=30)
+            _pool.shutdown(wait=False)
             movers = []
             for sym in symbols:
                 try:
@@ -998,7 +1004,6 @@ def fetch_top_movers(top_n: int = 10) -> Dict:
                         current = float(series.iloc[-1])
                         prev = float(series.iloc[-2])
                         change_pct = round((current - prev) / prev * 100, 2) if prev > 0 else 0
-                        # Get weekly change (5-day)
                         if len(series) >= 5:
                             week_ago = float(series.iloc[-5])
                             weekly_pct = round((current - week_ago) / week_ago * 100, 2) if week_ago > 0 else 0
@@ -1014,8 +1019,11 @@ def fetch_top_movers(top_n: int = 10) -> Dict:
                 except Exception:
                     continue
             return movers
+        except _FutureTimeout:
+            print(f"⚠️  {market} chunk timed out (>30s)...")
+            return []
         except Exception as e:
-            print(f"⚠️  {market} batch fetch error: {e}")
+            print(f"⚠️  {market} fetch error: {e}")
             return []
 
     # Fetch India (Nifty 50) and US in parallel
@@ -1277,6 +1285,6 @@ def get_india_10y_yield(fallback: float = 7.0) -> dict:
 
     return {
         "IN10Y": fallback,
-        "source": "fallback",
-        "note": "using last known print" if fallback else "RBI API unavailable, no last known print",
+        "source": "last known",
+        "note": "",
     }

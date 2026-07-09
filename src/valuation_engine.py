@@ -136,8 +136,11 @@ def compute_equity_risk_premium(earnings_yield: float, g_sec_yield: float) -> Di
     """
     Equity Risk Premium = Earnings Yield - 10Y G-Sec Yield.
     Negative = equities expensive vs bonds. Positive = equities attractive.
+    Returns {"ok": False} if out of plausible bounds (-10% to +15%).
     """
     premium = round(earnings_yield - g_sec_yield, 2)
+    if premium < -10.0 or premium > 15.0:
+        return {"ok": False, "premium": premium, "note": "ERP out of plausible bounds"}
     if premium < -2:
         label = "EXTREMELY EXPENSIVE vs bonds"
     elif premium < -1:
